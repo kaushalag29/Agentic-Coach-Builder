@@ -1,0 +1,18 @@
+# What every Pack's plugin shares (ADR-0012, ADR-0016); each Pack's identity is in packs/<id>/pack.toml.
+# scripts/assemble_plugin.py writes these into everything that ships (plugin.json, .mcp.json,
+# hooks.json, the plugin's pyproject.toml, the skills; scripts/release.py writes marketplace.json) and into
+# founder_coach/product.json, which the runtime reads. To rename a Pack: edit `id` in its pack.toml, run the
+# assembler, run the tests. A changed `id` changes the install id, the slash-command prefix,
+# the CLI, the data folder (~/.<id>) and the settings prefix (<ID>_*), so people who installed it
+# reinstall and move their data folder once.
+
+[product]
+# What every Pack shares. Each Pack's own identity (id, display_name, description, keywords) lives in
+# packs/<id>/pack.toml [product] (ADR-0016: one plugin per Pack); the founder Pack is today's Founder Coach.
+author = "Kaushal"
+license = "BUSL-1.1"
+
+[repos]
+owner = "kaushalag29"                  # GitHub user or organization
+dev = "Agentic-Coach-Builder"          # this repo: pipeline, runtime, plugin source, evals
+marketplace = "founder-coach-marketplace"   # optional: where scripts/release.py publishes a build

@@ -1,0 +1,76 @@
+---
+status: proposed
+---
+# Domains are inferred from content against a controlled Domain list
+
+Supersedes "a Document's Domains are configuration, never extracted" (decisions #23, #24, #29 and #32
+of the Library and Packs plan). A person adding an unknown channel, site or book should not have to
+say what it is about: the system reads the content and tags it. Configuration (`domains:` on a
+Source, a book's folder) becomes a **hint** that breaks ties, never a requirement.
+
+How tagging stays correct and repeatable:
+- **A closed list.** Passages and Knowledge items are tagged only with Domains already in `domains.yaml`
+  (name, description, aliases, examples). The answer "none fits" is allowed; inventing a name is not.
+- **Embeddings first, an LLM only for close calls.** Each Passage and item is scored against each
+  Domain's profile by cosine (deterministic, free, offline). Only when the top two Domains are within a
+  margin does a cheap LLM decide, given the full list and a structured output whose allowed values are
+  the Domain names, at temperature 0 on a pinned model, cached by (text hash, prompt version, model,
+  Domain list version). The same input and the same list always give the same tags.
+- **The content decides, metadata only hints.** A Document's Domains are those covering a tuned share
+  of its Passages (which cover all its text), so a talk on hiring and pricing gets leadership and gtm
+  with no summary or table of contents. Its items carry their own tags. A Domain also needs two of those
+  Passages, unless it covers half the Document: in a short essay one stray Passage is noise (on the 2026-10-05
+  Library this removed 108 one-Passage Document tags, mostly finance and investment on Paul Graham essays).
+  A close call the tie-break model leaves undecided is cached like an answer and keeps every candidate.
+- **A new Domain is proposed, never created by a tagger.** On request (`ytbrain domains propose`),
+  "none fits" items are clustered (fixed seed) and each cluster must pass four checks before it is
+  shown: a normalised name match (case, punctuation, spaces, plural), the aliases, meaning (embedding
+  similarity to each existing Domain), and an LLM given the whole list asking "same, narrower, or new".
+  Near matches become aliases; narrower subjects become Facets.
+- **The person decides what changes safety.** A new Domain's Risk tier, a Pack's Domains, every
+  high-tier tag (finance, investment: "suggested" until confirmed, in bulk per group after a preview) and
+  Visibility are human choices. Unconfirmed high-tier tags are not used by `pack build`.
+- **Measured.** About 100 hand-labelled items gate the tagger whenever its version or the Domain list
+  changes (precision, recall, no high-tier label missed); every tag records its origin (`inferred`
+  with model, version and score; `hint`; `confirmed`), shown by `ytbrain domains why`.
+
+## Considered Options
+
+- **Configuration only (today):** auditable and free, but someone must read every Source first, a
+  talk gets one Domain, and a new kind of content falls into the default Domain.
+- **An LLM names subjects freely:** dynamic, but "sales", "selling" and "b2b-sales" become three
+  Domains, routing and Packs break, and runs disagree with each other.
+- **An LLM tags everything:** closed-list but pays per item on every run and is not repeatable.
+- **Map the extracted Category to Domains:** free, but one Category per Document gives at most one
+  extra Domain, and the Category list is startup-shaped.
+
+## Consequences
+
+Retagging rewrites metadata only (no re-extraction, no re-embedding); a new Domain or alias re-scores
+everything by embedding in seconds and asks the LLM only about results that changed or became close,
+then swaps the tags in atomically. `domains.yaml` gains `aliases:`; `sync --strict-domains` no longer
+stops on an unknown folder (the folder name is a hint and goes through the same four checks).
+
+## Amendment (2026-10-13): a policy for fully automatic tagging
+
+The labelled set and a person's yes on every high-tier tag kept untuned thresholds away from the packs, but they
+also made ingestion stop at a manual step: new Sources fell back to their `domains:` line or the default Domain.
+The goal is now an ingestion loop with no manual step, where content reaches the coaches by what it says.
+
+- **`YTBRAIN_TAG_POLICY`, `auto` by default.** `auto` applies each run's tags with no labelled set; a missing,
+  failed or outdated labelled set is reported in the run's output and `last-run.md`, not blocking. `reviewed` is
+  the previous behaviour: applied only after `ytbrain eval tags` passed.
+- **High-tier tags from the content.** Under `auto`, a high-tier Domain is applied to a Document when it covers at
+  least `YTBRAIN_TAG_AUTO_SHARE` (0.5) of all its Passages, counting only Passages whose tag was decided; an
+  unresolved close call keeps every candidate and proves nothing. Weaker evidence stays a suggestion that no pack
+  ships. Each such tag is recorded (`auto_tags`, shown by `ytbrain domains why`), counted in the summary, and undone
+  for a whole Source by `ytbrain domains review --reject`. A rejection always wins; a hint or a confirmation is not
+  counted as automatic.
+- **A held-back run never removes applied tags.** Under `reviewed`, a run that may not apply keeps the stored and
+  applied tags as they are (before, it marked them unapplied, so re-indexed Documents lost them).
+- **Settings are checked, never guessed.** An unknown policy or a share outside (0, 1] stops the tag Step with the
+  reason, before anything is written.
+
+What stays human: creating a Domain, its Risk tier, and the Domains a Pack serves. Trade-off accepted: a Source about
+startup or angel investing may occasionally be tagged `investment`; the Domain's `not_about` guides the tie-break, the
+half-the-Document bar filters weak evidence, and a rejection fixes a Source once and for all.

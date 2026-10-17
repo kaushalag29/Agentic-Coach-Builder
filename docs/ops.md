@@ -1,0 +1,116 @@
+# `ytbrain ops`: the whole loop in one command
+
+```bash
+ytbrain ops                 # or sh ops/all.sh: ingest, then eval if the index changed, then the plugin if it passed
+ytbrain ops ingest          # sh ops/ingest.sh
+ytbrain ops eval            # sh ops/eval.sh
+ytbrain ops plugin          # sh ops/plugin.sh
+ytbrain ops --dry-run       # what is due and every step, nothing run
+```
+
+Flags: `--max-cost USD` (this run's eval and coach-judge spend, default 5), `--max-extract N` (extract at
+most N Documents), `--no-sync`, `--coach` (also run the coach eval, before a release), `--restart` (don't resume), `--force` (run eval and the
+plugin even when nothing changed or the last verdict wasn't a pass), `--version patch|minor|skip` (answer
+the version question up front), `--no-notify`.
+
+Nothing is manual: references, versions, retries and notices are handled by the run (below). It runs
+when you start it; it isn't scheduled (the 03:15 launchd job still runs only `ytbrain run`).
+
+## What each plan runs
+
+| Plan | Steps (each an ordinary `ytbrain` command, with its own resume) | When |
+|---|---|---|
+| ingest | `sync` → `clean` → `extract` → `verify` → one more extract + verify for Documents verify newly flagged → `index` → `tag --gated` → `enrich` → `verify` → `index` | every run (sync is how new talks, pages and books are found; a book folder that is no Domain name is only noted, since `tag` tags its Books by content, ADR-0017; `tag --gated` stores the Domains every run, at most $1 of tie-breaks, and applies them to the index as `YTBRAIN_TAG_POLICY` says (`auto`, the default: every run; `reviewed`: only after `ytbrain eval tags` passed for this tagger, Domain list and thresholds); `enrich` adds Rules and Facts to investment, coding and system-design Documents, at most $2 a run, and the second `verify` and `index` check and index only what it changed) |
+| eval | `eval build --set <split> --top-up` for every split with Documents → `eval run --config full` → `eval judge --config full` → gate | the index or the labels changed since the last eval, or its verdict wasn't a pass |
+| plugin | `pack build` → assemble `dist/plugin` (+ zip) → with private Sources, `pack build --include-private` → `dist/plugin-private` (+ zip) → every other Pack in `packs/` (its pack from its Domains, its plugin assembled and validated, Private and/or Release as its `pack.toml` says) → `eval gap` on the shipped pack (a report: it never stops the run) → `claude plugin validate` → with `--coach`, `eval coach` | the last eval passed on the current index, and the index or the plugin's code changed; the coach eval only with `--coach`, and then only the gates whose inputs changed |
+
+`eval gap` prints how often the coach would wrongly answer a Gap question or refuse an answerable one, so each plugin build
+shows whether coverage is honest. It is a report because with few judged questions it can only say "inconclusive", and
+because `eval calibrate` and `eval gap --tune` change what founders see: run those yourself when the report says to
+([configuration.md](configuration.md#domains-and-tagging), "Coverage").
+
+The gate re-scores the saved baseline (`eval rescore --refresh-baseline`) on the labels the judge just
+released, compares the new run with it, and saves the new run as the baseline only on PASS. FAIL or
+INCONCLUSIVE stops before the plugin and keeps the baseline. The first eval becomes the baseline.
+
+## Resume and change detection
+
+`data/ops/state.json` records each finished step; an interrupted or stopped run (Ctrl+C, spend cap, a
+refused endpoint, a failed gate) resumes at the first step not done. It also keeps fingerprints: of the
+index (every indexed Document with the input it was indexed from), the labels (released version and the
+private overlay), and the plugin (index + `plugin/`, `founder_coach/`, `packs/`, `ytbrain/pack.py`, the assembler). What changed decides
+what runs. Flagged Documents are retried once each (the list is kept), never on every run.
+
+## When something stops
+
+A command that stops early writes why (`data/ops/last-stop.json`: budget, endpoint, network, plan_limit,
+interrupted, auth, books, config); the runner acts on it:
+
+| Reason | What happens |
+|---|---|
+| network (sync, a slow provider) | the step is retried twice, after 1 and 5 minutes; a sync that still fails is skipped and the run goes on with what is fetched |
+| YouTube HTTP 429 (sync) | not a stop and never retried: sync ends its YouTube pass at the first 429, the run goes on, and later runs skip YouTube for 24 h (doubling after a pause, up to 7 days; websites and Books still sync). The summary says `YouTube paused until …`; `ytbrain sync --ignore-pause` tries sooner |
+| auth (the Claude host's login expired) | the run stops at once with `run claude, /login`; the plugin is already built, and the next `ytbrain ops plugin` resumes at the coach eval |
+| books (a PDF refused or unparsable) | not retried: the run goes on with the Books that registered and names the files (`skip: true` in sources.yaml silences one) |
+| endpoint refused (key, credits, model, quota) | stop; the notice says to fix `.env` and re-run |
+| spend cap | stop; the notice says to raise `--max-cost` |
+| gate FAIL or INCONCLUSIVE | stop before the plugin; the baseline is kept |
+| Claude plan limit (coach eval) | the plugin is built; the coach eval is pending and runs alone on the next `ytbrain ops` |
+| no `claude` on PATH | validate and the coach eval are skipped (pending) |
+| a crash signal (SIGABRT, SIGSEGV) after a pack build | ops checks the pack: written by this run and matching its sha256, the run goes on with a warning; otherwise it stops like any failure |
+| interrupted, another ops running | resume with the same command / exit |
+
+Every stop and every finished run sends a macOS notification and writes `data/ops/last-run.md`: what
+happened and the one command to run next.
+
+## Tagging (Domains by content)
+
+`ingest` runs `tag --gated`. Under `YTBRAIN_TAG_POLICY=auto` (the default) the tags are applied every run with no
+labelled set, so new Sources reach the right coaches with no `domains:` line; `finance` and `investment` are applied only
+where they cover half of a Document (`YTBRAIN_TAG_AUTO_SHARE`), the rest wait as suggestions. Under `reviewed` they are
+applied only after `ytbrain eval tags` passed, and a run held back keeps the tags already applied. The summary and
+`last-run.md` say what the step did ("tags applied", "held back, earlier tags kept", how many high-tier tags were
+applied from the content). A bad policy value stops the run at that step, with the reason, before anything is written.
+
+## Public builds of the other Packs
+
+A Pack builds a public plugin only when its `builds` in `pack.toml` lists `release` (today: none of the coding and
+investor Packs). Each of that plugin's steps checks at its turn whether its Domains have public Documents, and is
+skipped with that reason when they don't; the private plugin is never affected. Once they do, its own coach gates run
+(`ytbrain ops plugin --coach`), and `eval choice` runs once more over the public set (`dist/plugin` plus each public
+build). `ops` never publishes: `scripts/release.py` does, on your command.
+
+## Plugin version
+
+A new build gets a new version so Cowork installs it as an update. The run asks in the terminal: patch
+(default), minor or skip; with no answer in 60 s, or no terminal, it takes patch (a notification says the
+question is waiting). A version you set by hand since the last build is kept. It is written to
+plugin.json, plugin/pyproject.toml and founder_coach (the same helper `scripts/release.py` uses).
+
+## References to compare with
+
+Before the gate moves the baseline, the run keeps it as `full-<date>` (the last 10), and the first time a
+kind of Source is indexed, as `full-before-<kind>` (what `full-prebooks` was for Books). Compare any time,
+free: `ytbrain eval rescore --config full --compare full-2026-10-01` (after new labels, refresh it first:
+`ytbrain eval rescore --config full-2026-10-01 --refresh-baseline`).
+
+## Questions as Sources grow
+
+Each Tuning split holds at most 20% of the Documents it is written from (one question per Document at
+most), never fewer than it has (eval/splits.py, `EVAL_SPLIT_RATIO`). `eval build
+--top-up` (which `ops eval` runs) writes the missing ones from Documents added since the split was last
+seeded first. A question whose seed Document was removed is retired at the next build or judge.
+`ytbrain eval status` shows each split's target.
+
+## Spend
+
+`--max-cost` caps what this run spends on eval questions, judging and the coach eval's judges: each paid
+step gets what is left. Extraction is billed by your LLM endpoint and isn't metered: the runner prints how
+many Documents it will extract; `--max-extract` limits them. The coach eval runs on your Claude plan.
+
+The scheduled job (`ops/com.ytbrain.sync.plist`, `ytbrain run`) stays as it is: it never writes eval
+questions or builds a plugin.
+
+`ops plugin` sets the new version itself (above); if you assemble by hand, bump `version` in
+`plugin/.claude-plugin/plugin.json` before installing the build in Cowork as an update. The private zip is
+`dist/founder-coach-<version>-private.plugin`.

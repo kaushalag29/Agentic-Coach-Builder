@@ -1,0 +1,85 @@
+# Copy to sources.yaml (git-ignored) and edit, or let `ytbrain discover` build it:
+#   cp sources.example.yaml sources.yaml
+#   ytbrain discover --method ytdlp --channel @SomeChannel
+#
+# Two Source types (ADR-0013):
+#   YouTube playlists: a PLAYLIST id (PL... or a channel's uploads UU...), never a channel id
+#     (UC...). Specific playlists win over a `fallback: true` catch-all.
+#   Websites: `type: website` and a `url`; everything else is optional and worked out from the
+#     pages themselves (ADR-0013). Needs: uv pip install -e ".[web]", and for
+#     JavaScript sites: playwright install chromium
+# Leave `domains:` out: the tag Step reads every Document and gives it its Domains (ADR-0017; ytbrain ops does it
+# each run). `domains: [leadership]` on an entry, or a Book folder named after a Domain, is only an optional hint
+# that breaks ties (names declared in domains.yaml). After changing one run `ytbrain index`: it re-tags in place,
+# nothing is re-fetched or re-extracted.
+# `enabled: false` on any entry stops fetching it (its Documents stay until `ytbrain drop --source ID`).
+defaults:                              # applied to every source unless it overrides them
+  # no sub_langs: sync picks each talk's caption track itself (README: "Caption tracks")
+  sleep_requests: 5                    # seconds between yt-dlp requests; >= 5 avoids most YouTube 429s
+sources:
+- id: how_to_start_a_startup_2014      # stable slug, unique
+  name: How to Start a Startup (CS183B, 2014)
+  kind: playlist
+  playlist_id: PL11qn6zM2Y3bMZdChxEqHKaCaKUjwItGL
+  fallback: false
+# - id: channel_uploads                # optional catch-all: every upload of a channel
+#   name: Channel uploads
+#   kind: playlist
+#   playlist_id: UUxxxxxxxxxxxxxxxxxxxxxx
+#   fallback: true
+- type: website                        # crawled politely: robots.txt, 1 request/s per host, no login
+  url: https://paulgraham.com/articles.html
+  depth: 1                             # link hops from the start page (default 3)
+  render: auto                         # auto (browser only when a page's text is thin) | always | never
+  enabled: true
+  author: Paul Graham                  # optional: the speaker when a page names no author
+#   id and name default from the URL; a name you write is the series (else the site's own name);
+#   max_pages (default 10000 per run)
+# - type: website
+#   url: https://www.ycombinator.com/library
+#   render: always                     # a JavaScript site
+
+# Public Sources for the investment and coding coaches. They stay commented until you have the playlists or
+# sites. `domains:` is optional: the tag Step reads the content and routes it (YTBRAIN_TAG_POLICY=auto); a line only
+# breaks ties, so the examples below leave it out. A Pack builds a public plugin
+# only when its pack.toml lists `release` in `builds` (coding and investor list only `private` for now), and
+# that plugin waits until one of its Domains has public Documents (`ytbrain ops` says so while it waits).
+# - id: investing_playlist_example
+#   name: Investing talks (example)
+#   kind: playlist
+#   playlist_id: PLxxxxxxxxxxxxxxxxxxxx   # a playlist id, never a channel id (UC...)
+#   fallback: false
+# - type: website                         # investing articles: robots.txt respected, 1 request/s per host
+#   url: https://example.com/investing
+#   depth: 1
+#   render: auto
+#   enabled: true
+# - id: coding_playlist_example
+#   name: Engineering talks (example)
+#   kind: playlist
+#   playlist_id: PLxxxxxxxxxxxxxxxxxxxx
+#   fallback: false
+# - type: website                         # engineering essays
+#   url: https://example.com/engineering
+#   depth: 1
+#   render: auto
+#   enabled: true
+
+# PDF Books you own (ADR-0014): one Document per Chapter, text only, private (never in the Knowledge pack).
+# Title, subtitle, authors, year and ISBN are detected (copyright page, then the PDF's metadata); correct
+# only what is wrong. Check first: ytbrain books inspect data/books
+# - type: pdf_books
+#   path: data/books                   # a folder (every PDF in it and in any subfolder you add, e.g. startup/,
+#                                      # leadership/, finance/; the caches are skipped) or one file; relative to the repo
+#   # or several:  path: [data/books/startup, ~/Documents/more-books]   (file names must be unique)
+#   distribute: false                  # books are private: the only value in v1
+#   lookup: openlibrary                # optional: fill still-missing fields from openlibrary.org by ISBN
+#   books:                             # optional, by file name
+#     "Ground Floor.pdf":
+#       authors: [Mara Quill, Tobias Reed]
+#       subtitle: Notes on Starting, or How to Begin
+#     "The Steady Venture.pdf":
+#       chapters:                      # corrects the detected split; page = printed label or PDF page
+#         - {page: 274, title: Join the Movement}   # renames the chapter that starts there
+#         - {page: 12, skip: true}                  # a detected start that isn't one
+#       # chapters_only: true          # use exactly this list instead of detection

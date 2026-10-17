@@ -1,0 +1,55 @@
+[project]
+name = "ytbrain"
+version = "0.1.0"
+description = "Build your own AI coach from YouTube talks, websites and PDF books: verified, cited knowledge, local memory and an evaluation framework, shipped as Claude Code plugins over MCP"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "yt-dlp[default]>=2026.8.19",   # [default] brings yt-dlp-ejs (YouTube JS challenges)
+  "pyyaml>=6.0",
+  "pydantic>=2.9",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Each extra is independently installable so the core pipeline stays dependency-light.
+extract = ["langextract>=1.7.0", "ollama>=0.4"]
+index   = ["lancedb>=0.39.0", "sentence-transformers>=3.0"]
+serve   = ["mcp>=2.2.0,<3", "tzdata", "numpy>=1.26"]   # the founder_coach MCP server (+ "pack" for semantic search)
+eval    = ["lancedb>=0.39.0", "sentence-transformers>=3.0", "fastembed>=0.8"]   # index + pack; metrics are stdlib
+# The Knowledge pack and its ONNX query models (no torch): `ytbrain pack build`,
+# `search --pack`, `eval run --config pack`, and the coach runtime (founder_coach)
+pack    = ["fastembed>=0.8", "numpy>=1.26"]
+dev     = ["pytest>=8.0", "ruff>=0.6", "pypdfium2>=4.30"]    # pypdfium2: the book probe in the offline tests
+# Website Sources (ADR-0013): main-text extraction and, for JavaScript sites,
+# a headless browser (then run once: playwright install chromium)
+web     = ["trafilatura>=2.2", "playwright>=1.55"]
+# PDF Books (ADR-0014): PDFium only, no model and no download.
+pdf     = ["pypdfium2>=4.30"]                                  # the default, model-free parser
+# Parked (ADR-0014 amendment): Docling's layout models, downloaded once from Hugging Face; torch as in `index`
+pdf-docling = ["docling-slim[format-pdf,convert-core,models-local]>=2.130", "pypdfium2>=4.30"]
+# yt-dlp plugin that supplies YouTube PO tokens; also needs a provider server or
+# script-mode checkout (README: "Optional: a PO-token provider")
+pot     = ["bgutil-ytdlp-pot-provider~=2.0"]   # 2.x, matching the server checkout (branch 2.0.0)
+
+[project.scripts]
+ytbrain = "ytbrain.cli:main"
+founder-coach = "founder_coach.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ytbrain*", "founder_coach*"]
+
+[tool.setuptools.package-data]
+founder_coach = ["playbooks/*.md", "product.json"]
+ytbrain = ["eval/coach_cases/*.jsonl", "eval/golden.example.jsonl", "eval/gap_questions.txt", "books/ligature_words.txt"]
+
+# Lint guardrail (CI and scripts/check.sh run `ruff check .`): only rules that find real bugs, not style.
+# E9 = syntax errors; F = pyflakes (undefined names, unused imports and variables, redefinitions).
+[tool.ruff]
+line-length = 130
+
+[tool.ruff.lint]
+select = ["E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["F401", "F541", "F841"]      # tests import inside functions and keep throwaway locals on purpose

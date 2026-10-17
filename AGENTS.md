@@ -1,0 +1,82 @@
+# AGENTS.md
+
+Agentic Coach Builder turns Sources (YouTube talks, website articles, PDF books) into verified, citable knowledge
+(`ytbrain/`) and serves it to coaches built as Claude Code plugins over MCP (`founder_coach/`, `plugin/`, `packs/`).
+
+## Before you change anything
+
+- **Vocabulary:** read `CONTEXT.md` when naming anything or writing docs; use its terms
+  (Document, Advice, Evidence, Verified, Stage, Step …) and add a term there when you
+  introduce a new domain concept.
+- **Decisions:** read `docs/adr/` before changing architecture, storage, the MCP surface,
+  or what reaches the coach; record a new ADR when a choice is hard to reverse.
+- **Docs:** `docs/architecture.md` (diagrams, layout), `docs/build-your-own-coach.md` (what a Pack is) and
+  `CHANGELOG.md` (what changed); `tests/test_docs.py` fails when a doc names a command, flag, setting or path that
+  doesn't exist.
+
+## Commands
+
+- Setup: `uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e ".[serve,pack,dev,web]" "lancedb>=0.39.0"` (what CI installs; with less, suites skip tests). Everything: `".[extract,index,serve,eval,pack,dev,pot,web,pdf]"`
+- Before a commit: `sh scripts/check.sh` runs what CI runs (secret scan, `ruff check .`, every suite with skips failing, generated files fresh, `claude plugin validate`), offline and free; `CONTRIBUTING.md` shows it as a pre-commit hook.
+- Tests: `for s in core eval pack coach projects invest plugin web books gaps docs; do YTBRAIN_DOTENV=0 python tests/test_$s.py || break; done` — offline and fast; run before and after every change. `tests/golden/coach_tools.json` pins the MCP tool schemas: after an intended change, review the diff and regenerate with `UPDATE_GOLDEN=1 python tests/test_coach.py`.
+- CLI reference: `ytbrain --help` and `docs/commands.md`. Testing the whole system end to end (what CI covers and what only you can run): `docs/testing.md`.
+- Plugin: edit `plugin/skills/*/SKILL.md`, never `founder_coach/playbooks/*.md` or `founder_coach/product.json` (generated); `python scripts/assemble_plugin.py --pack data/pack --check` builds `dist/plugin`. `plugin/` is a template: load `dist/plugin`, not `plugin/`.
+- CI and releases: `.github/workflows/ci.yml`, `scripts/release.py` (publishes a build to a marketplace repo), `scripts/check_secrets.py`.
+
+## Invariants
+
+- **Runtime boundary:** `founder_coach/` is what founders install; it never imports `ytbrain`, torch, LanceDB or yt-dlp (ADR-0010). Ranking changes go in `founder_coach/search.py` so the index and the pack stay identical.
+- **Every source competes:** ranking never looks at a result's source kind; a diversity rule is a `DiversityRule` in `founder_coach/search.py`, measured as an eval config before it becomes the default. Per-kind behaviour (Locator, Moments) lives in one `SourceKind` class (`ytbrain/source_kinds.py`), never in `if kind == ...` branches (ADR-0014, amendment 2026-09-30).
+- **Privacy comes from the Source** (`distribute: false`, `ytbrain/visibility.py`), never from a kind or an id format: private labels go to the eval's private overlay, never to `eval/`.
+- **Git:** the maintainer runs every git command (including `scripts/release.py`); agents leave the repository state alone.
+- **Product id:** a coach's id and name live only in its `packs/<id>/pack.toml` `[product]` (ADR-0016); `product.toml` holds what every coach shares. Shipped files say `{{id}}` (plugin/) or use `founder_coach.product` (runtime: `product.ID`, `product.env("HOME")`); a test fails on a spelled-out id.
+- **Founder store schema:** a change to its tables is a new numbered migration in `founder_coach/store.py` (bump `SCHEMA_VERSION`); migrations are forward-only and take a backup first (ADR-0010, ADR-0011).
+- **Only what the person said:** `coach_update_profile` refuses `name`, `role` and `answer_style` without `stated` (their own words); the coach never fills them from the account, email or host context. A new field about the person itself goes in `domain.STATED_FIELDS`. A missing profile never replaces `coach_search` (the setup Nudge, hook and instructions say so; `tests/test_plugin.py` pins the wording in every Pack).
+- **Secrets:** `.env` holds API keys — leave it unread; configuration you need is documented
+  in `.env.example` and `docs/configuration.md`. Pass dummy values when a test needs a key.
+- **Checkpoints:** a Step marks a Document done only after its output file is complete, so an
+  interrupted run redoes exactly the unfinished Document. Keep this ordering in every new Step.
+- **Atomic writes:** write files with `pages.atomic_write_text` (temp file + rename), never in place.
+- **Damaged input goes upstream:** a missing or corrupt input sends the Document back to the Step
+  that produces it (mark that Step `stale`), rather than skipping it.
+- **Schema and prompts (ADR-0018):** any change to what the model generates (`Generated`, `Overview`,
+  `ChapterList` in `ytbrain/extract/schema.py`) or to an extraction prompt is a new release of its prompt
+  variant in `ytbrain/extract/versions.py`, declared **compatible** (older records stay valid; add an
+  `upcast` if their shape changed) or **breaking** (they re-extract). Bump `SCHEMA_VERSION` with the
+  schema; pin the hashes in `tests/golden/generated_schema.json` and `tests/golden/prompt_versions.json`
+  (tests fail otherwise). Never re-extract the whole Library to ship a change. Given fields (url, series,
+  source_kind…) may be added with defaults that match existing records, without a release (ADR-0013).
+  Two variants today: `startup` (2.2) and the subject-neutral `neutral` (Facts, Advice with `applies_when`,
+  free-text topics); `variant_for` picks one per Document from its Domains and the parity result, and both
+  record shapes are read everywhere (verify, items). Facts and Rules are verified like Advice.
+- **Domains are inferred, against a controlled list (ADR-0017):** `ytbrain/tagging.py` tags Passages and
+  items by content; configuration (`domains:` on a Source, a Book's folder) is a hint. Never let a tagger
+  invent a Domain name (closed list, "none fits" allowed), never apply a high-tier tag without a hint or a
+  confirmation, and keep tagging deterministic (embeddings first; model tie-breaks cached). `tag --gated` applies
+  tags every run under the default `auto` policy; under `reviewed` they reach the index only after `ytbrain eval tags` passes.
+- **Packs (ADR-0016):** one plugin per Pack, defined in `packs/<id>/pack.toml` (identity, Domains, memory modules,
+  skills, MCP prompts, builds). `product.toml` holds only what every Pack shares. The founder Pack builds today's
+  plugin from the shared `plugin/skills/`; a Pack's own `packs/<id>/skills/<name>/` overrides one. Coaches find each
+  other through `~/.ytbrain/installed/` (knowledge only, never another coach's memory).
+- **Source types:** a new one is an adapter (`sync` + `clean` to the shared text-units transcript)
+  registered in `ytbrain/sources.py`, plus a `SourceKind` in `ytbrain/source_kinds.py` if its Documents need a new
+  Locator; nothing after `clean` may depend on the Source type (ADR-0013).
+- **Books are a Private Source:** book records carry `private: true` and their Knowledge items
+  `visibility: private`; `pack build` drops them unless `--include-private`, `scripts/release.py` refuses such a
+  pack, and the released eval (`eval/`) never seeds from or labels them. Never commit a PDF, a parse or a
+  transcript of one (all under `data/`) (ADR-0014).
+- **Crawling:** obey robots.txt, pace per host, never log in, never rotate IPs or spoof a browser
+  fingerprint, never solve CAPTCHAs (ADR-0013).
+- **Persisted names:** `data/manifest.db` keeps its `stage_state` table and `stage` column
+  (ADR-0007); new code calls pipeline units Steps.
+- **Verified only:** only Verified knowledge (advice, takeaways, facts, rules, summaries and their transcript
+  Passages) is indexed, returned by tools or shown on pages (ADR-0004).
+- **Given vs generated fields:** Series, provenance, title and dates come from Sources, yt-dlp
+  or the page's own metadata, never from the model; change them with `ytbrain refresh`, not re-extraction.
+- **Tests stay offline and hermetic:** stub yt-dlp, LLM calls and HTTP (httpx.MockTransport, a localhost server, a fake browser); tests use `YTBRAIN_ROOT` set to a temp dir, set `YTBRAIN_DOTENV=0` before importing `ytbrain` (so a developer's `.env` never changes their behaviour or spends money; it also stops `founder_coach/settings.py` reading `.env` files) and never read the repo's `sources.yaml` (patch `cli.SOURCES` to a temp file; `scripts/check.sh` sets `YTBRAIN_SOURCES_FILE` to a missing file so a configured machine fails like CI). A clean checkout must pass exactly like a configured machine (CI runs one).
+
+## Data
+
+- `data/` is rebuildable pipeline output (git-ignored): safe to regenerate, never commit.
+- A coach's memory (`~/.ytbrain/<pack>/projects/<id>/`, or the folder `<ID>_HOME` pins) is private and not rebuildable: back it up before any
+  migration and never send its contents to a Judge or any service other than the host model.
