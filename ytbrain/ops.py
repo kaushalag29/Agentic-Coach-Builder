@@ -478,6 +478,7 @@ class Ops:
             db = T.TagDB()
             try:
                 status, n = db.meta("status"), int(db.meta("auto_confirmed") or 0)
+                waiting = int(db.meta("awaiting") or 0)
             finally:
                 db.close()
         except Exception:                      # noqa: BLE001 -- a summary line never stops the run
@@ -485,7 +486,9 @@ class Ops:
         if not status:
             return ""
         return (f"; tags {status}" + (f", {n} high-tier applied from the content (`ytbrain domains why`, "
-                                      f"`ytbrain domains review --reject`)" if n else ""))
+                                      f"`ytbrain domains review --reject`)" if n else "")
+                + (f", {waiting} Document(s) in no coach until a high-tier Domain is confirmed "
+                   f"(`ytbrain domains review`)" if waiting else ""))
 
     @staticmethod
     def other_release_builds() -> list[tuple[str, str]]:
@@ -549,9 +552,9 @@ class Ops:
         `ytbrain eval calibrate` / `eval gap --tune`, which change behaviour and so stay a human's call."""
         code = self.child(Step("coverage", ["eval", "gap", "--pack", str(pack)]))
         if code:
-            self.say(f"ops: eval gap exit {code} (report only): "
-                     f"{'not enough Gap or answerable questions yet' if code == 1 else 'targets missed: see the table above'}; "
-                     "the plugin build goes on")
+            why = {EXIT_FAIL: "coverage targets missed: see the table above",
+                   EXIT_INCONCLUSIVE: "not enough Gap or answerable questions yet"}.get(code, "it stopped: see above")
+            self.say(f"ops: eval gap exit {code} (report only): {why}; the plugin build goes on")
         self.last_reason = ""
         return 0
 
@@ -767,7 +770,9 @@ class Ops:
                     cur["done"].append(step.name)
                     self.save()
                     continue
-                what = " ".join(step.argv) + (f"  ({step.note})" if step.note else "") if step.argv else step.note
+                shown = [("<this build's version>" if self.opts.dry_run else self.build_version())
+                         if x == BUILD_VERSION[1] else x for x in (step.argv or [])]
+                what = " ".join(shown) + (f"  ({step.note})" if step.note else "") if step.argv else step.note
                 self.say(f"\n=== ops {plan} [{i}/{len(steps)}] {step.name.split(':', 1)[1]}: {what} ===")
                 if self.opts.dry_run:
                     continue

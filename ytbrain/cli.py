@@ -1784,6 +1784,9 @@ def cmd_tag(args) -> int:
         print(f"tag: {res.awaiting_review} high-tier tag(s) await your review (they stay out of packs until "
               f"confirmed): " + ("`ytbrain domains review` after a real run (`ytbrain tag --no-apply` stores them)"
                                   if args.dry_run else "`ytbrain domains review`"))
+    if res.awaiting:
+        print(f"tag: {len(res.awaiting)} Document(s) are about a high-tier Domain nobody confirmed yet, so no coach "
+              f"gets them until then (`ytbrain domains review --accept SOURCE:DOMAIN`)")
     if res.unplaced:
         print(f"tag: {len(res.unplaced)} Document(s) matched no Domain by content (they keep their configured "
               f"Domain or the default); `ytbrain domains propose` groups such content into proposed Domains")
@@ -1799,6 +1802,7 @@ def cmd_tag(args) -> int:
     meta = {**T.meta_for(reg, s, store.embed_model() or EMBED_MODEL, model),
             "applied": "1" if action == "apply" else "0", "policy": pol,
             "auto_confirmed": str(res.auto_confirmed if action == "apply" else 0),
+            "awaiting": str(len(res.awaiting) if action == "apply" else 0),
             "status": "applied" + (f" ({why})" if why else "") if action == "apply" else f"stored for review: {why}"}
     db.replace(res.items, res.docs, meta)
     if action == "store":

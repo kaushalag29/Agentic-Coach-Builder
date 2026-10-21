@@ -11,6 +11,13 @@ released benchmark carries its version in `eval/VERSION`.
 - **Private-terms check:** `scripts/check_private_terms.py`, run by `scripts/check.sh` and an optional pre-push hook
   (`scripts/hooks/pre-push`), refuses a commit or push holding a term from a list you keep outside the repo
   (`YTBRAIN_PRIVATE_TERMS`).
+- **Tagging:** under `auto`, a high-tier Domain's share is now taken over a Document's tagged Passages (Passages that
+  fit no Domain no longer count against it), with at least two decided Passages; videos mostly about investing now
+  reach the investor coach instead of falling to the default Domain. A Document about nothing but an unconfirmed
+  high-tier Domain is now *unplaced* (in no coach) until it is confirmed, never given the default Domain
+  (ADR-0017 amendment).
+- **`ytbrain ops`:** the coverage step's note now reads `eval gap`'s exit code right (1: targets missed, 3: too
+  few questions).
 - **Builds leave the repo clean:** `ytbrain ops plugin` keeps its build counter in the data folder and passes it to
   `scripts/assemble_plugin.py --version`; the repo's version changes only with a release.
 

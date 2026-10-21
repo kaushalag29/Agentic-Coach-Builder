@@ -691,11 +691,15 @@ def test_ops_runs_only_what_changed_resumes_and_stops_at_a_failed_gate():
     ops.STATE.write_text(json.dumps(st))
     code, out = run(plan="plugin")
     assert "plugin skipped: the current index has no passing eval" in out and "eval pass (on an older index)" in out, out
-    fail["eval gap"] = 3                                 # coverage targets missed: reported, never a stop
+    fail["eval gap"] = 3                                 # too few questions to judge: reported, never a stop
     ops.STATE.unlink()
     run(plan="eval", force=True)
     code, out = run(plan="plugin", force=True)
-    assert code == 0 and "eval gap exit 3 (report only)" in out and "eval coach --plugin dist/plugin --max-cost" in calls
+    assert code == 0 and "eval gap exit 3 (report only): not enough Gap or answerable questions yet" in out, out
+    assert "eval coach --plugin dist/plugin --max-cost" in calls
+    fail["eval gap"] = 1                                 # targets missed: also reported, never a stop
+    code, out = run(plan="plugin", force=True)
+    assert code == 0 and "eval gap exit 1 (report only): coverage targets missed" in out, out
     fail.clear()
     # the default: the plugin is built and validated, and the coach eval waits for --coach (before a release)
     code, out = run(plan="plugin", force=True, coach=False)

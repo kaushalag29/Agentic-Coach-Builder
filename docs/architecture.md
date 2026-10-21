@@ -117,8 +117,8 @@ flowchart LR
     HT -->|low tier| PK
 ```
 
-High-tier Domains are applied from content only when they cover at least half of a Document
-(`YTBRAIN_TAG_AUTO_SHARE`), or when you confirm them (`ytbrain domains review`). A
+High-tier Domains are applied from content only when they cover at least half of a Document's tagged Passages,
+and at least two of them (`YTBRAIN_TAG_AUTO_SHARE`), or when you confirm them (`ytbrain domains review`). A
 [documented experiment](experiments/laya-tagging-tiebreak.md) compared the tie-break model with a local
 classifier and with no model at all.
 

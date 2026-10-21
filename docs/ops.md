@@ -67,7 +67,8 @@ happened and the one command to run next.
 
 `ingest` runs `tag --gated`. Under `YTBRAIN_TAG_POLICY=auto` (the default) the tags are applied every run with no
 labelled set, so new Sources reach the right coaches with no `domains:` line; `finance` and `investment` are applied only
-where they cover half of a Document (`YTBRAIN_TAG_AUTO_SHARE`), the rest wait as suggestions. Under `reviewed` they are
+where they cover half of a Document's tagged Passages, at least two (`YTBRAIN_TAG_AUTO_SHARE`), the rest wait as
+suggestions. Under `reviewed` they are
 applied only after `ytbrain eval tags` passed, and a run held back keeps the tags already applied. The summary and
 `last-run.md` say what the step did ("tags applied", "held back, earlier tags kept", how many high-tier tags were
 applied from the content). A bad policy value stops the run at that step, with the reason, before anything is written.

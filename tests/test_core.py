@@ -1958,8 +1958,9 @@ def test_auto_applies_a_high_tier_domain_only_where_the_decided_content_carries_
             ("f2", "b", ["FIN", "LEAD", "LEAD"]),                # 1 of 3: only suggested
             ("f3", "c", ["FIN", "FIN"]),                         # rejected for its Source: never
             ("f4", "d", ["FIN LEAD", "FIN LEAD"]),               # unresolved close calls prove nothing
-            ("f5", "e", ["FIN", "NOISE", "NOISE", "NOISE"]),     # 1 of 4 Passages: the whole Document counts
-            ("f6", "f", ["FIN", "FIN"])]                         # a hint confirms it: not automatic
+            ("f5", "e", ["FIN", "NOISE", "NOISE", "NOISE"]),     # one Passage: never enough, whatever its share
+            ("f6", "f", ["FIN", "FIN"]),                         # a hint confirms it: not automatic
+            ("f7", "g", ["FIN", "FIN", "NOISE", "NOISE", "NOISE"])]   # 2 of 2 tagged: Passages that fit nothing don't count
     rows, texts = [], []
     for doc, src, psgs in spec:
         for i, x in enumerate(psgs, 1):
@@ -1981,23 +1982,33 @@ def test_auto_applies_a_high_tier_domain_only_where_the_decided_content_carries_
         assert "finance" in doc["f2"].suggested and not doc["f2"].auto
         assert "finance" not in doc["f3"].domains + doc["f3"].suggested, "a rejection always wins"
         assert "finance" in doc["f4"].suggested and not doc["f4"].auto, "unresolved close calls never confirm"
-        assert "finance" in doc["f5"].suggested and not doc["f5"].auto, "one Passage in four is not half the Document"
+        assert "finance" in doc["f5"].suggested and not doc["f5"].auto, "one stray Passage never confirms a high-tier Domain"
+        from founder_coach.search import UNPLACED
+        assert doc["f5"].domains == (UNPLACED,) and doc["f5"].origin == "awaiting" and res.awaiting == ["f5"], \
+            "about nothing but an unconfirmed high-tier Domain: no coach gets it, never the default Domain's"
+        assert all(res.items[f"psg:f5:{i}"].domains == (UNPLACED,) for i in range(1, 5))
+        assert "finance" in res.items["psg:f5:1"].suggested, "the suggestion stays, for `domains review`"
+        assert doc["f7"].auto == ("finance",) and "finance" in doc["f7"].domains, \
+            "the share is of the tagged Passages: three that fit no Domain don't outvote two about finance"
         assert "finance" in doc["f6"].domains and not doc["f6"].auto, "a hint confirms; nothing is automatic there"
-        assert res.auto_confirmed == 1
+        assert res.auto_confirmed == 2
         db.replace(res.items, res.docs, {"applied": "1"})
         assert db.auto_of("f1") == ["finance"] and db.auto_of("f2") == []
-        assert db.auto_groups() == {("a", "finance"): ["f1"]}, "review lists them by Source, ready to reject"
+        assert db.auto_groups() == {("a", "finance"): ["f1"], ("g", "finance"): ["f7"]}, "review lists them by Source, ready to reject"
         reviewed = T.run(rows, vecs, reg, _axis_embed, {"f6": ["finance"]}, s, None, db, "m", say=lambda m: None)
         assert "finance" in reviewed.docs["f1"].suggested and reviewed.auto_confirmed == 0, "reviewed is unchanged"
+        assert reviewed.docs["f7"].domains == (UNPLACED,), "under `reviewed` too, unconfirmed means no coach yet"
         db.replace(reviewed.items, reviewed.docs, {"applied": "1"})
         assert db.auto_of("f1") == [], "each run's record replaces the last"
         db.confirm(["source:a"], "finance")
+        db.confirm(["source:g"], "finance")
         again = T.run(rows, vecs, reg, _axis_embed, {"f6": ["finance"]}, s, None, db, "m", say=lambda m: None,
                       auto_share=0.5)
         assert "finance" in again.docs["f1"].domains and not again.docs["f1"].auto, "a person's yes is not automatic"
+        assert again.docs["f7"].domains == ("finance",), "confirmed by a person: the unplaced Document reaches its coach"
         strict = T.run(rows, vecs, reg, _axis_embed, {}, s, None, db, "m", say=lambda m: None, auto_share=1.0)
         assert strict.docs["f6"].auto == ("finance",), "without its hint, a Document wholly about finance is automatic"
-        assert not strict.docs["f2"].auto and strict.auto_confirmed == 1, "a stricter share applies less"
+        assert not strict.docs["f2"].auto and strict.auto_confirmed == 1, "a stricter share applies less (f7 is confirmed)"
         db.close()
 
 
@@ -2014,6 +2025,13 @@ def test_ops_reports_what_the_tag_step_did():
             db.close()
             note = ops.Ops.tag_note()
             assert note.startswith("; tags applied") and "2 high-tier applied from the content" in note, note
+            db = T.TagDB()
+            db.set_meta({"awaiting": 3})
+            db.close()
+            assert "3 Document(s) in no coach until a high-tier Domain is confirmed" in ops.Ops.tag_note()
+            db = T.TagDB()
+            db.set_meta({"awaiting": 0})
+            db.close()
             db = T.TagDB()
             db.set_meta({"status": "held back, earlier tags kept: no `ytbrain eval tags` result yet", "auto_confirmed": 0})
             db.close()
@@ -3233,6 +3251,22 @@ def test_private_terms_block_a_push_and_are_skipped_without_a_list():
             assert "scripts/check.sh:" in out.getvalue(), out.getvalue()
         finally:
             os.environ.pop("YTBRAIN_PRIVATE_TERMS", None) if old is None else os.environ.__setitem__("YTBRAIN_PRIVATE_TERMS", old)
+
+
+
+def test_the_unplaced_marker_is_reserved_and_no_pack_can_serve_it():
+    from founder_coach.search import UNPLACED
+    from ytbrain import domains as D
+    from ytbrain import packs as PK
+    try:
+        D.parse({"domains": {"startup": {}, UNPLACED: {}}})
+        raise AssertionError("the marker can't be declared as a Domain")
+    except D.DomainConfigError as e:
+        assert "reserved" in str(e)
+    reg = D.load()
+    assert UNPLACED not in reg
+    for pid in PK.all_ids():
+        assert UNPLACED not in PK.load(pid, check_skills=False, known_domains=reg.names).domains
 
 
 if __name__ == "__main__":

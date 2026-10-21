@@ -15,11 +15,13 @@ adds a small bonus. Then, deterministically:
 A Document's Domains are those covering at least `share` of its tagged Passages (which cover all its
 text), so a talk on hiring and pricing gets leadership and gtm with no summary or table of contents.
 
-High-tier Domains (finance, investment) are only *suggested* until confirmed: by a hint (the person
+High-tier Domains (finance, investment) are only *suggested* until confirmed (a Document about nothing else is
+`unplaced` meanwhile: in no coach's pack, never in the default Domain's): by a hint (the person
 put the Book in that folder or named the Domain on the Source), by `ytbrain domains review`, or, under
 the `auto` policy (YTBRAIN_TAG_POLICY, the default), by the content itself: a high-tier Domain that
-covers at least YTBRAIN_TAG_AUTO_SHARE (0.5) of a Document's Passages, counting only Passages whose tag
-was decided (never an unresolved close call), is applied and recorded as automatic. A rejection always
+covers at least YTBRAIN_TAG_AUTO_SHARE (0.5) of a Document's tagged Passages (those that fit some Domain),
+counting only Passages whose tag was decided (never an unresolved close call) and at least two of them, is
+applied and recorded as automatic. A rejection always
 wins. Unconfirmed, they stay out of the index's `domains`, so `pack build` never ships them.
 
 Policies (ADR-0017 amendment, 2026-10-13): `auto` applies every run's tags with no labelled set needed;
@@ -41,6 +43,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from founder_coach.search import UNPLACED
+
 from .config import DATA
 
 TAGS_DIR = DATA / "tags"
@@ -60,6 +64,7 @@ Texts:
 {texts}
 
 Answer with JSON only: {{"answers": [{{"n": 1, "domains": ["<a candidate>"]}}, ...]}}, one entry per text."""
+AUTO_MIN_PASSAGES = 2           # `auto`: decided Passages a high-tier Domain needs, whatever its share
 TIEBREAK_VERSION = "tb1-" + hashlib.sha256(TIEBREAK_PROMPT.encode()).hexdigest()[:8]
 
 
@@ -319,7 +324,7 @@ class DocTag:
     source_id: str
     domains: tuple[str, ...]
     suggested: tuple[str, ...] = ()
-    origin: str = "passages"       # passages | items | hint | default
+    origin: str = "passages"       # passages | items | hint | default | awaiting (high-tier, unconfirmed: UNPLACED)
     shares: dict = field(default_factory=dict)
     hints: tuple[str, ...] = ()
     auto: tuple[str, ...] = ()     # high-tier Domains applied by the `auto` policy (not by a hint or a person)
@@ -346,6 +351,11 @@ class Result:
     def auto_confirmed(self) -> int:
         """High-tier Document tags the `auto` policy applied this run."""
         return sum(len(d.auto) for d in self.docs.values())
+
+    @property
+    def awaiting(self) -> list[str]:
+        """Documents in no coach's pack yet: what they are about is a high-tier Domain nobody has confirmed (UNPLACED)."""
+        return sorted(d for d, t in self.docs.items() if t.origin == "awaiting")
 
     @property
     def unplaced(self) -> list[str]:
@@ -493,17 +503,20 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
 
     def is_confirmed(domain: str, doc_id: str, source_id: str, hinted: set[str],
                      strong: frozenset[str] = frozenset()) -> bool:
-        return (reg.get(domain).risk_tier != "high" or domain in hinted or domain in strong
+        return (domain == UNPLACED or reg.get(domain).risk_tier != "high" or domain in hinted or domain in strong
                 or (f"doc:{doc_id}", domain) in confirmed or (f"source:{source_id}", domain) in confirmed)
 
     def strong_high_tier(psg: list[ItemTag]) -> frozenset[str]:
-        """`auto`: high-tier Domains covering at least `auto_share` of ALL the Document's Passages, counting only
-        Passages whose tag was decided (an unresolved close call keeps every candidate and proves nothing)."""
+        """`auto`: high-tier Domains covering at least `auto_share` of the Document's tagged Passages (the same
+        base as its other Domains' shares: a Passage that fits no Domain says nothing either way), counting only
+        Passages whose tag was decided (an unresolved close call keeps every candidate and proves nothing), and
+        at least AUTO_MIN_PASSAGES of them (one stray Passage never confirms a high-tier Domain)."""
         if auto_share is None or not psg:
             return frozenset()
-        decided = Counter(d for t in psg if t.origin != "unresolved" for d in t.domains)
+        tagged = [t for t in psg if t.domains]
+        decided = Counter(d for t in tagged if t.origin != "unresolved" for d in t.domains)
         return frozenset(d for d, n in decided.items()
-                         if reg.get(d).risk_tier == "high" and n / len(psg) >= auto_share)
+                         if reg.get(d).risk_tier == "high" and n >= AUTO_MIN_PASSAGES and n / len(tagged) >= auto_share)
 
     def is_rejected(domain: str, doc_id: str, source_id: str, hinted: set[str]) -> bool:
         """You said no for this Document or Source (a hint, which you configured yourself, still wins)."""
@@ -533,8 +546,12 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
         ok = tuple(d for d in doms if is_confirmed(d, doc_id, source_id, hinted, strong))
         sugg = tuple(d for d in doms if d not in ok)
         auto = tuple(d for d in ok if d in strong and not is_confirmed(d, doc_id, source_id, hinted))
-        if not ok:
-            ok = tuple(sorted(hinted)) or (reg.default,)
+        if not ok and hinted:
+            ok = tuple(sorted(hinted))
+        elif not ok and sugg:                      # what it is about is high-tier and not confirmed: no coach gets it
+            ok, origin = (UNPLACED,), "awaiting"   # until it is (never the default Domain, which is another coach's)
+        elif not ok:
+            ok = (reg.default,)
         res.docs[doc_id] = DocTag(source_id, ok, sugg, origin, shares, tuple(sorted(hinted)), auto)
         for r in items:
             t = res.items[r["item_id"]]

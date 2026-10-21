@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from founder_coach.search import DEFAULT_DOMAIN
+from founder_coach.search import DEFAULT_DOMAIN, UNPLACED
 
 DOMAINS_FILE = Path(os.environ.get("YTBRAIN_DOMAINS_FILE") or Path(__file__).resolve().parents[1] / "domains.yaml")
 RISK_TIERS = ("low", "medium", "high")
@@ -130,6 +130,8 @@ def parse(doc: dict | None) -> Registry:
         where = f"domains.yaml: {name!r}"
         if not isinstance(name, str) or not _NAME.match(name):
             raise DomainConfigError(f"{where}: a Domain name is lowercase letters, digits and dashes (max 40)")
+        if name == UNPLACED:
+            raise DomainConfigError(f"{where}: `{UNPLACED}` is reserved (content no coach serves yet)")
         cfg = cfg or {}
         if not isinstance(cfg, dict):
             raise DomainConfigError(f"{where}: settings must be a mapping")

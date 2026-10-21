@@ -30,6 +30,8 @@ MIN_PER_DOMAIN = 2                   # when a question routes to several Domains
 DOMAIN_FLOOR = 0.5                   # ... if they are at least this share as relevant as the best result
 
 DEFAULT_DOMAIN = "startup"           # the Domain of every item indexed before Domains existed
+UNPLACED = "unplaced"                # reserved, never declared: content no coach serves yet (a high-tier Domain
+                                     # awaiting confirmation); no Pack lists it, so no pack ships it
 
 PUBLIC_FIELDS = ("item_id", "kind", "text", "evidence", "deep_link", "start_ms", "doc_id",
                  "title", "speaker", "series", "published_at", "stages", "stage_origin",

@@ -74,3 +74,16 @@ The goal is now an ingestion loop with no manual step, where content reaches the
 What stays human: creating a Domain, its Risk tier, and the Domains a Pack serves. Trade-off accepted: a Source about
 startup or angel investing may occasionally be tagged `investment`; the Domain's `not_about` guides the tie-break, the
 half-the-Document bar filters weak evidence, and a rejection fixes a Source once and for all.
+
+## Amendment (2026-10-21): the share of a high-tier tag is of the tagged Passages
+
+Measuring the `auto` share against all of a Document's Passages let Passages that fit no Domain (an intro, small
+talk) outvote the content: a video about investing with most of its Passages under the floor kept `investment` as a
+suggestion, and with nothing else confirmed it fell to the default Domain and reached the wrong coach. The share is
+now taken over the tagged Passages, the same base as every other Domain's share, and a high-tier Domain also needs at
+least two decided Passages, so one stray Passage still never confirms it. And a Document whose only content Domains
+are unconfirmed high-tier ones is now *unplaced* (a reserved marker, `unplaced`, that no Pack lists and domains.yaml
+may not declare) instead of taking the default Domain: no coach gets it until a person confirms the Domain or a later
+run's content does. An empty Domain list keeps its old meaning (the default Domain, for indexes from before Domains).
+Everything else in the 2026-10-13 amendment stands.
+

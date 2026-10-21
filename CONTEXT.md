@@ -126,7 +126,7 @@ Everything ingested on this machine, synced, extracted, verified and indexed onc
 _Avoid_: corpus (when meaning all Packs), database, knowledge base
 
 **Domain**:
-A named subject area (startup, gtm, finance, leadership, system design, investment) from a controlled list. Passages and Knowledge items are tagged with Domains by what they say, and a Document belongs to every Domain that covers a sizeable share of its text, so one talk can have several. A Source's or folder's Domain is only a hint. A new Domain is proposed by the system and accepted by the person, never created by a tagger; synonyms become its aliases. A Pack chooses Domains; a search covers all of them unless the person restricts it to some.
+A named subject area (startup, gtm, finance, leadership, system design, investment) from a controlled list. Passages and Knowledge items are tagged with Domains by what they say, and a Document belongs to every Domain that covers a sizeable share of its text, so one talk can have several. A Source's or folder's Domain is only a hint. A new Domain is proposed by the system and accepted by the person, never created by a tagger; synonyms become its aliases. A Pack chooses Domains; a search covers all of them unless the person restricts it to some. Content whose only Domain is a high-tier one nobody has confirmed yet is **unplaced**: in no Pack until it is confirmed, never given the default Domain.
 _Avoid_: category, profile, vertical, collection
 
 **Routing**:

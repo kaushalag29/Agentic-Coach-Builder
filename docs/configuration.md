@@ -174,8 +174,10 @@ whose Packs list its Domains with no configuration. A new coach is a Pack (`pack
 `domains.yaml`; the next `ytbrain ops` run retags the Library against the new list (cached, so only close calls cost).
 
 High-tier Domains (`finance`, `investment`) are held to a higher bar. Under the default policy (`YTBRAIN_TAG_POLICY=auto`)
-one is applied from the content when it covers at least half of a Document's Passages (`YTBRAIN_TAG_AUTO_SHARE`), counting
-only decided tags, never an unresolved close call; anything weaker stays *suggested* and out of every pack.
+one is applied from the content when it covers at least half of a Document's tagged Passages (`YTBRAIN_TAG_AUTO_SHARE`;
+Passages that fit no Domain don't count), counting only decided tags, never an unresolved close call, and at least two
+of them; anything weaker stays *suggested* and out of every pack. A Document about nothing else is *unplaced* meanwhile:
+no coach gets it (never the default Domain's coach) until `ytbrain domains review --accept SOURCE:DOMAIN` confirms it.
 `ytbrain domains review` lists the tags applied this way by Source (`ytbrain domains why <doc>` marks them per Document),
 and `ytbrain domains review --reject SOURCE:DOMAIN` removes one
 for good (a rejection always wins, and so does your yes). Under `reviewed`, every high-tier tag waits for your yes
@@ -276,7 +278,7 @@ All settings are environment variables (`.env` or shell). Defaults in parenthese
 | `YTBRAIN_EVAL_JUDGES` (`google/gemma-4-31b-it,qwen/qwen3.8-flash,mistralai/mistral-medium-3.1`) | Two judges and a tie-breaker from other model families; an unlisted model falls back to the cheapest of its family |
 | `YTBRAIN_EVAL_WORKERS` (8) · `YTBRAIN_EVAL_MAX_RPM` (60) · `YTBRAIN_EVAL_MAX_COST` (5) · `YTBRAIN_EVAL_TIMEOUT_S` (120) | Eval parallelism, the request-rate ceiling (the working rate halves on 429s and climbs back), the per-split USD spend cap, and how long one eval call may take before it's retried |
 | `YTBRAIN_ENRICH_MODEL` (the tag model, else `YTBRAIN_LLM_MODEL`) | The model `enrich` uses for Rules and Facts |
-| `YTBRAIN_TAG_POLICY` (`auto`) · `YTBRAIN_TAG_AUTO_SHARE` (`0.5`) | The tag Step: `auto` applies every run with no labelled set and applies `finance`/`investment` on a Document they cover by at least the share; `reviewed` waits for a passing `eval tags` and keeps the tags already applied |
+| `YTBRAIN_TAG_POLICY` (`auto`) · `YTBRAIN_TAG_AUTO_SHARE` (`0.5`) | The tag Step: `auto` applies every run with no labelled set and applies `finance`/`investment` on a Document when they cover at least the share of its tagged Passages (two or more); `reviewed` waits for a passing `eval tags` and keeps the tags already applied |
 | `YTBRAIN_EMBED_MODEL` (`BAAI/bge-m3`) | Local embedding model for the Knowledge index; changing it rebuilds the index |
 | `YTBRAIN_RERANK_MODEL` (`BAAI/bge-reranker-v2-m3`) | Cross-encoder reranker for `search`; `none` disables |
 | `YTBRAIN_PACK_EMBED_MODEL` (`BAAI/bge-base-en-v1.5`) · `YTBRAIN_PACK_RERANK_MODEL` (`none`) | ONNX models for `pack build` (fastembed names); the pack records them, so its searches always use the same ones |
