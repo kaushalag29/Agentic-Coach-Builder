@@ -16,6 +16,11 @@ released benchmark carries its version in `eval/VERSION`.
   reach the investor coach instead of falling to the default Domain. A Document about nothing but an unconfirmed
   high-tier Domain is now *unplaced* (in no coach) until it is confirmed, never given the default Domain
   (ADR-0017 amendment).
+- **Coach status reports how the app runs it:** `coach_corpus_status` gains `host` (process id and start time,
+  the folder the app named, whether it offers workspace roots), to settle ADR-0019's open question before Projects
+  follow the work folder.
+- **ADR-0019 (accepted): memory belongs to the work.** Projects will be shared by every coach and chosen by the work
+  folder; ADR-0016 is amended. Not built yet.
 - **`ytbrain ops`:** the coverage step's note now reads `eval gap`'s exit code right (1: targets missed, 3: too
   few questions).
 - **Builds leave the repo clean:** `ytbrain ops plugin` keeps its build counter in the data folder and passes it to

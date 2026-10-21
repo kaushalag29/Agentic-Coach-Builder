@@ -13,6 +13,7 @@ import functools
 import inspect
 import json
 import logging
+import os
 import re
 import secrets
 import sqlite3
@@ -463,6 +464,9 @@ class StatusOut(BaseModel):
     gap_threshold_provisional: bool
     calibration: dict[str, Any] = Field(default_factory=dict, description="what coverage is calibrated on")
     store: dict[str, Any]
+    host: dict[str, Any] = Field(default_factory=dict, description="how the app runs this coach: its process, the "
+                                 "folder it was started in and the one the app named, the app's name, whether it "
+                                 "offers workspace roots (ADR-0019)")
 
 
 # ---------------------------------------------------------------------------- usage log
@@ -1250,7 +1254,7 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
     def coach_corpus_status(ctx: Context) -> Annotated[CallToolResult, StatusOut]:
         """What the knowledge covers (talks, years, series), whether semantic search is ready, and where
         the Founder's data lives. Use it to state Gaps honestly."""
-        return _result(_status(_state(ctx)))
+        return _result(_status(_state(ctx), ctx))
 
     # 8 ------------------------------------------------------------------------------
     @_tool(name="coach_feedback", title="Save the Founder's Feedback on an answer", annotations=WRITE)
@@ -1501,7 +1505,34 @@ def _project_summary(st: State, pid: str) -> dict:
             store.close()
 
 
-def _status(st: State) -> StatusOut:
+_PROCESS_STARTED = time.strftime("%Y-%m-%dT%H:%M:%S%z")    # when this server process started (import time)
+_SESSIONS_SEEN: set[int] = set()                            # client sessions this process has served
+
+
+def _host(ctx: Context | None) -> dict[str, Any]:
+    """What the app tells this process about where it runs, for ADR-0019's open fact: does the app say which folder
+    the work is in (CLAUDE_PROJECT_DIR, workspace roots), and does one process serve one conversation or several
+    (compare `pid` and `process_started` across two conversations; `sessions_seen` counts the client sessions this
+    process has had). Facts about the process only: nothing about the person, nothing saved."""
+    out: dict[str, Any] = {"pid": os.getpid(), "process_started": _PROCESS_STARTED, "started_in": os.getcwd(),
+                           "project_dir": os.environ.get("CLAUDE_PROJECT_DIR")}
+    try:
+        session = ctx.session if ctx is not None else None
+    except Exception:                               # noqa: BLE001 -- outside a request: process facts only
+        session = None
+    if session is not None:
+        _SESSIONS_SEEN.add(id(session))
+        params = getattr(session, "client_params", None)
+        info = getattr(params, "client_info", None)
+        if info is not None:
+            out["app"] = f"{getattr(info, 'name', '?')} {getattr(info, 'version', '')}".strip()
+        caps = getattr(params, "capabilities", None)
+        out["offers_roots"] = getattr(caps, "roots", None) is not None
+    out["sessions_seen"] = len(_SESSIONS_SEEN)
+    return out
+
+
+def _status(st: State, ctx: Context | None = None) -> StatusOut:
     m = st.models
     meta = st.pack.meta if st.pack else None
     pack = None
@@ -1535,7 +1566,7 @@ def _status(st: State) -> StatusOut:
                      gap_threshold_provisional=st.calibration.provisional,
                      calibration={"basis": "provisional" if st.calibration.provisional else "calibrated",
                                   "points": len(st.calibration.points), **st.calibration.fitted_on},
-                     store=store_info)
+                     store=store_info, host=_host(ctx))
 
 
 def serve(pack: str | Path | None = None, home: str | Path | None = None) -> None:

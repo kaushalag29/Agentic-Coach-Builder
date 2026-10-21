@@ -1479,6 +1479,28 @@ def test_without_embeddings_coverage_says_matches_exist_but_not_how_close_and_a_
                  calibration={"embed_model": TP.HashEmbed.name, "points": [[0.2, 0.0], [0.9, 1.0]], "n": 99, "base_rate": 0.4})
 
 
+
+def test_status_reports_how_the_app_runs_the_coach():
+    """ADR-0019's open fact: does the app name the work's folder, and does one process serve one conversation?
+    `coach_corpus_status` reports the process and what the app said, nothing about the person."""
+    import types
+    from founder_coach import server as S
+    alone = S._host(None)
+    assert alone["pid"] == os.getpid() and alone["process_started"] and alone["started_in"] == os.getcwd()
+    assert "app" not in alone and "offers_roots" not in alone, "outside a request: process facts only"
+    old = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = "/work/acme"
+    try:
+        params = types.SimpleNamespace(client_info=types.SimpleNamespace(name="claude-code", version="2.1"),
+                                       capabilities=types.SimpleNamespace(roots={"listChanged": True}))
+        one, two = (types.SimpleNamespace(session=types.SimpleNamespace(client_params=params)) for _ in range(2))
+        seen = S._host(one)
+        assert seen["project_dir"] == "/work/acme" and seen["app"] == "claude-code 2.1" and seen["offers_roots"] is True
+        assert S._host(one)["sessions_seen"] == seen["sessions_seen"], "the same session counts once"
+        assert S._host(two)["sessions_seen"] == seen["sessions_seen"] + 1, "a second session in one process shows"
+    finally:
+        os.environ.pop("CLAUDE_PROJECT_DIR", None) if old is None else os.environ.__setitem__("CLAUDE_PROJECT_DIR", old)
+
 if __name__ == "__main__":
     import inspect
     fns = [f for n, f in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(f)]

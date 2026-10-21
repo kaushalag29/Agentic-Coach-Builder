@@ -1556,6 +1556,12 @@
       "title": "Gap Threshold Provisional",
       "type": "boolean"
      },
+     "host": {
+      "additionalProperties": true,
+      "description": "how the app runs this coach: its process, the folder it was started in and the one the app named, the app's name, whether it offers workspace roots (ADR-0019)",
+      "title": "Host",
+      "type": "object"
+     },
      "models": {
       "additionalProperties": true,
       "title": "Models",

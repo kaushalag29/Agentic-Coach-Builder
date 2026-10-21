@@ -3,6 +3,9 @@ status: accepted
 ---
 # A plugin per Pack; memory isolated per Project, with one shared Common profile
 
+> Amended by [ADR-0019](0019-memory-belongs-to-the-work.md): Projects belong to the work and are shared by every
+> coach; the per-Pack Project folders below are replaced by `projects/<id>/`.
+
 Amends ADR-0015 ("one plugin and one MCP server host every installed Pack") and ADR-0012 (the data
 folder follows the product id). Each Pack installs as its own plugin (`founder-coach`, `coding-coach`,
 `investor-coach`) with its own skills, MCP server, Knowledge pack and coaching loop. Inside a Pack, the

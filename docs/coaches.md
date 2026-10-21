@@ -118,7 +118,9 @@ ytbrain gaps [--pack founder|coding|investor] [--days 30] [--json]   # strong/pa
   - `coach_update_profile`, `coach_project`, `coach_record`, `coach_update`: every write needs a `request_id`
     and is logged, and names the Project it was proposed for (another Project's save is refused);
     `coach_project` lists, switches, creates and renames Projects, or summarises one on request;
-  - `coach_corpus_status`;
+  - `coach_corpus_status`: what the pack covers, the search models, where memory lives, and `host`: the coach's
+    process id and start time, the folder the app started it in or named (`CLAUDE_PROJECT_DIR`), the app's name and
+    whether it offers workspace roots;
   - `coach_feedback`: a Founder's report of a wrong answer, saved only after they approve it.
 - **Also served:** 4 prompts (`ask`, `weekly-focus`, `check-in`, `setup`) and the resources
   `founder://profile`, `founder://this-week`, `corpus://status` and `corpus://item/{id}`.
