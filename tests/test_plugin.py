@@ -11,6 +11,8 @@ import json
 import os
 import subprocess
 os.environ["YTBRAIN_DOTENV"] = "0"          # hermetic: never read the developer's .env (keys, backend)
+for _k in ("YTBRAIN_DATA", "YTBRAIN_DIST", "YTBRAIN_PRIVATE_TERMS"):   # hermetic: never your data, builds or terms list
+    os.environ.pop(_k, None)
 os.environ.setdefault("YTBRAIN_SOURCES_FILE", os.path.join(__import__("tempfile").mkdtemp(prefix="ytbrain-nosources-"), "sources.yaml"))   # hermetic: never read your sources.yaml (the file does not exist)
 import re
 import sys
@@ -511,6 +513,42 @@ def test_product_toml_and_pack_toml_are_checked_and_unknown_placeholders_never_s
         raise AssertionError("an unknown placeholder must stop the build")
 
 
+def test_a_build_version_goes_into_the_build_only_and_the_repo_stays_clean():
+    """`ytbrain ops plugin` counts your builds in the data folder and hands the assembler --version: the built
+    manifest, package and runtime carry it, the .plugin file is named after it, and the repo's files never change."""
+    try:
+        import numpy  # noqa: F401  -- the runtime's own dependency
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_pack import HashEmbed, _build
+    except ImportError:
+        _skipped("runtime or pipeline dependencies not installed")
+        return
+    import shutil
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        repo = tmp / "repo"
+        shutil.copytree(PLUGIN, repo / "plugin")
+        shutil.copy2(ROOT / "product.toml", repo / "product.toml")
+        shutil.copytree(ROOT / "packs", repo / "packs")
+        shutil.copytree(ROOT / "founder_coach", repo / "founder_coach", ignore=A.IGNORE)
+        before = {rel: (repo / rel).read_text() for rel in
+                  ("plugin/.claude-plugin/plugin.json", "plugin/pyproject.toml", "founder_coach/__init__.py")}
+        pack = tmp / "pack"
+        _build(pack, emb=HashEmbed())
+        out = tmp / "dist" / "plugin"
+        A.assemble(repo, pack, out, version="7.8.9")
+        assert json.loads((out / ".claude-plugin" / "plugin.json").read_text())["version"] == "7.8.9"
+        assert 'version = "7.8.9"' in (out / "pyproject.toml").read_text()
+        assert '__version__ = "7.8.9"' in (out / "founder_coach" / "__init__.py").read_text()
+        assert A.zip_plugin(out).name.endswith("-7.8.9.plugin")
+        assert {rel: (repo / rel).read_text() for rel in before} == before, "the repo's version files are untouched"
+        try:
+            A.assemble(repo, pack, out, version="7.8")
+            raise AssertionError("a version that isn't X.Y.Z is refused")
+        except A.AssembleError as e:
+            assert "1.2.3" in str(e)
+
+
 def test_release_commits_tags_refuses_a_released_version_and_maps_a_renamed_id():
     try:
         import numpy  # noqa: F401  -- release always runs the assembler's --check on the real runtime
@@ -533,7 +571,7 @@ def test_release_commits_tags_refuses_a_released_version_and_maps_a_renamed_id()
             shutil.copy2(ROOT / "product.toml", repo / "product.toml")
             shutil.copytree(ROOT / "packs", repo / "packs")
             shutil.copytree(ROOT / "founder_coach", repo / "founder_coach", ignore=A.IGNORE)
-            cur = R.current_version(repo)       # the repo's own version moves with every `ytbrain ops plugin`: start this copy at 0.1.0
+            cur = R.current_version(repo)       # the repo's own version moves with each release: start this copy at 0.1.0
             for path in R.version_files(repo).values():
                 path.write_text(path.read_text(encoding="utf-8").replace(f'"{cur}"', '"0.1.0"'), encoding="utf-8")
             assert R.current_version(repo) == "0.1.0"

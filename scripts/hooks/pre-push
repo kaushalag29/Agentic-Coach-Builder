@@ -1,0 +1,9 @@
+#!/bin/sh
+# git pre-push hook: refuses a push whose files or commit messages hold one of your private terms
+# (scripts/check_private_terms.py, the list YTBRAIN_PRIVATE_TERMS names). Install once:
+#   ln -s ../../scripts/hooks/pre-push .git/hooks/pre-push
+# `git push --no-verify` skips it.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=python3
+if [ -x .venv/bin/python ]; then PY=.venv/bin/python; fi
+exec "$PY" scripts/check_private_terms.py --pre-push

@@ -11,6 +11,8 @@ checkpoint independence, series precedence, and deterministic serialization.
 import json
 import os
 os.environ["YTBRAIN_DOTENV"] = "0"          # hermetic: never read the developer's .env (keys, backend)
+for _k in ("YTBRAIN_DATA", "YTBRAIN_DIST", "YTBRAIN_PRIVATE_TERMS"):   # hermetic: never your data, builds or terms list
+    os.environ.pop(_k, None)
 os.environ.setdefault("YTBRAIN_SOURCES_FILE", os.path.join(__import__("tempfile").mkdtemp(prefix="ytbrain-nosources-"), "sources.yaml"))   # hermetic: never read your sources.yaml (the file does not exist)
 import sys
 import tempfile
@@ -3158,6 +3160,79 @@ def test_the_command_lines_keep_their_commands_options_and_handlers():
     if os.environ.get("UPDATE_GOLDEN") or not golden.exists():
         golden.write_text(text)
     assert golden.read_text() == text, "a command, option or handler changed: review it, then UPDATE_GOLDEN=1 python tests/test_core.py"
+
+
+
+def _config_paths(env: dict, cwd: Path) -> dict:
+    """config.DATA, DIST and SOURCES_BASE as a fresh interpreter sees them under `env` (they are read at import)."""
+    import subprocess
+    repo = Path(__file__).resolve().parents[1]
+    base = {k: v for k, v in os.environ.items() if k not in ("YTBRAIN_ROOT", "YTBRAIN_SOURCES_FILE")}
+    code = ("import json, sys; sys.path.insert(0, %r); from ytbrain import config as C; "
+            "print(json.dumps({k: str(getattr(C, k)) for k in ('ROOT', 'DATA', 'DIST', 'SOURCES_BASE')}))" % str(repo))
+    out = subprocess.run([sys.executable, "-c", code], env={**base, "YTBRAIN_DOTENV": "0", **env}, cwd=cwd,
+                         capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
+
+def test_data_dist_and_sources_can_live_outside_the_checkout():
+    """The public checkout runs on a private workspace: YTBRAIN_DATA moves data/, YTBRAIN_DIST the built plugins,
+    YTBRAIN_SOURCES_FILE the sources (and its relative book paths); packs/ and eval/ stay with the code."""
+    repo = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as t:
+        ws = Path(t).resolve()
+        dflt = _config_paths({}, ws)
+        assert dflt["ROOT"] == str(repo) and dflt["DATA"] == str(repo / "data"), dflt
+        assert dflt["DIST"] == str(repo / "dist") and dflt["SOURCES_BASE"] == str(repo), "defaults: the repo, from any folder"
+        moved = _config_paths({"YTBRAIN_DATA": str(ws / "data"), "YTBRAIN_DIST": str(ws / "dist"),
+                               "YTBRAIN_SOURCES_FILE": str(ws / "sources.yaml")}, repo)
+        assert moved["DATA"] == str(ws / "data") and moved["DIST"] == str(ws / "dist"), moved
+        assert moved["SOURCES_BASE"] == str(ws) and moved["ROOT"] == str(repo), "code, packs and eval stay in the repo"
+        old = _config_paths({"YTBRAIN_ROOT": str(ws)}, repo)
+        assert old["DATA"] == str(ws / "data"), "YTBRAIN_ROOT alone still moves data/ (existing setups)"
+
+
+def test_ops_names_built_plugins_relative_to_the_repo_unless_they_live_elsewhere():
+    from ytbrain import ops
+    assert ops._shown(ops.CODE / "dist" / "plugin") == "dist/plugin"
+    elsewhere = Path(tempfile.gettempdir()).resolve() / "acb-dist" / "plugin"
+    assert ops._shown(elsewhere) == str(elsewhere)
+
+
+
+def test_private_terms_block_a_push_and_are_skipped_without_a_list():
+    """scripts/check_private_terms.py (check.sh, the pre-push hook): a term from your list anywhere in a tracked
+    file fails the check; no list (a fresh clone, CI) passes with a note."""
+    import importlib.util
+    import io
+    from contextlib import redirect_stdout
+    repo = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("check_private_terms", repo / "scripts" / "check_private_terms.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.find(["Acme Corp"], "a.md", "x\nmeet ACME corp today\n") == ["a.md:2: Acme Corp"], "case-insensitive"
+    with tempfile.TemporaryDirectory() as t:
+        terms = Path(t) / "terms.txt"
+        old = os.environ.get("YTBRAIN_PRIVATE_TERMS")
+        try:
+            os.environ["YTBRAIN_PRIVATE_TERMS"] = str(Path(t) / "missing.txt")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                assert m.main([]) == 0
+            assert "skipped" in out.getvalue()
+            absent = "zq" + "-absent-" + str(os.getpid())     # built here, so no file holds it
+            terms.write_text(f"# a comment\n\n{absent}\n")
+            assert m.load_terms(terms) == [absent]
+            os.environ["YTBRAIN_PRIVATE_TERMS"] = str(terms)
+            with redirect_stdout(io.StringIO()):
+                assert m.main([]) == 0, "a term the repo doesn't hold passes"
+            terms.write_text("check_secrets.py\n")                 # scripts/check.sh runs it by name
+            out = io.StringIO()
+            with redirect_stdout(out):
+                assert m.main([]) == 1
+            assert "scripts/check.sh:" in out.getvalue(), out.getvalue()
+        finally:
+            os.environ.pop("YTBRAIN_PRIVATE_TERMS", None) if old is None else os.environ.__setitem__("YTBRAIN_PRIVATE_TERMS", old)
 
 
 if __name__ == "__main__":

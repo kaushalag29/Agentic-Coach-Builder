@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("YTBRAIN_DOTENV", "0")
+for _k in ("YTBRAIN_DATA", "YTBRAIN_DIST", "YTBRAIN_PRIVATE_TERMS"):   # hermetic: never your data, builds or terms list
+    os.environ.pop(_k, None)
 
 DOCS = sorted([ROOT / "README.md", ROOT / "CONTRIBUTING.md", ROOT / "AGENTS.md", *(ROOT / "docs").rglob("*.md")])
 DOCS = [p for p in DOCS if p.exists() and not ({"adr", "research"} & set(p.relative_to(ROOT).parts))]

@@ -70,7 +70,7 @@ sources:
 # only what is wrong. Check first: ytbrain books inspect data/books
 # - type: pdf_books
 #   path: data/books                   # a folder (every PDF in it and in any subfolder you add, e.g. startup/,
-#                                      # leadership/, finance/; the caches are skipped) or one file; relative to the repo
+#                                      # leadership/, finance/; the caches are skipped) or one file; relative to this file's folder
 #   # or several:  path: [data/books/startup, ~/Documents/more-books]   (file names must be unique)
 #   distribute: false                  # books are private: the only value in v1
 #   lookup: openlibrary                # optional: fill still-missing fields from openlibrary.org by ISBN

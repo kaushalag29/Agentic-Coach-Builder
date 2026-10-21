@@ -45,8 +45,15 @@ if os.environ.get("YTBRAIN_DOTENV") != "0":
 
 ROOT = Path(os.environ.get("YTBRAIN_ROOT", Path(__file__).resolve().parents[1]))
 # your Sources (git-ignored); the env var points tests at a file that need not exist
-SOURCES_FILE = Path(os.environ.get("YTBRAIN_SOURCES_FILE") or Path(__file__).resolve().parents[1] / "sources.yaml")
-DATA = ROOT / "data"
+SOURCES_FILE = Path(os.environ.get("YTBRAIN_SOURCES_FILE") or Path(__file__).resolve().parents[1] / "sources.yaml").expanduser()
+# A relative path in sources.yaml (a pdf_books `path`) is relative to the folder sources.yaml is in: the repo by
+# default, your workspace when YTBRAIN_SOURCES_FILE points there
+SOURCES_BASE = SOURCES_FILE.resolve().parent
+# Your pipeline data (manifest, transcripts, index, tags, eval runs, built packs). YTBRAIN_DATA keeps it outside the
+# checkout, e.g. in a private workspace next to your sources.yaml; the code, packs/ and eval/ stay in the repo.
+DATA = Path(os.environ.get("YTBRAIN_DATA") or ROOT / "data").expanduser()
+# Built plugins (`ytbrain ops plugin`, scripts/assemble_plugin.py from ops): the repo's dist/ wherever you run from
+DIST = Path(os.environ.get("YTBRAIN_DIST") or Path(__file__).resolve().parents[1] / "dist").expanduser()
 RAW = DATA / "raw"                   # yt-dlp: <id>.info.json, <id>.en.srt
 TRANSCRIPTS = DATA / "transcripts"   # cleaned, utterance-merged
 METADATA = DATA / "metadata"         # canonical JSON record per video

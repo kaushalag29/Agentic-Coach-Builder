@@ -92,7 +92,7 @@ lives in a synced folder (iCloud, Dropbox, OneDrive), point ytbrain at a local f
 SQLite needs real file locking:
 
 ```bash
-export YTBRAIN_ROOT=~/ytbrain-data        # or put it in .env
+export YTBRAIN_DATA=~/ytbrain-data/data   # or put it in .env
 ```
 
 ## Configure an LLM backend (`.env`)
@@ -313,7 +313,8 @@ claude --plugin-dir dist/plugin    # or: ytbrain claude -- --plugin-dir dist/plu
 
 **Cowork** (the Claude desktop app): **Customize → Plugins**, upload `dist/founder-coach-<version>.plugin`. A build that
 includes your Books is named `…-private.plugin`: keep it to your own account. An installed plugin belongs to your
-account, so every Cowork project has it; to update, bump the version, remove the old plugin and upload the new file.
+account, so every Cowork project has it; to update, build with a higher version (`ytbrain ops plugin` counts them;
+by hand, `assemble_plugin.py --version`), remove the old plugin and upload the new file.
 
 **First run and everyday use**
 

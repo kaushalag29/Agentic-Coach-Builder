@@ -35,10 +35,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import runstatus
-from .config import DATA, EVAL_DATA, EVAL_DIR, EVAL_MAX_COST, EVAL_PRIVATE, MANIFEST_DB
+from .config import DATA, DIST, EVAL_DATA, EVAL_DIR, EVAL_MAX_COST, EVAL_PRIVATE, MANIFEST_DB
 from .pages import atomic_write_text
 
-CODE = Path(__file__).resolve().parents[1]          # the repo: scripts/, plugin/, founder_coach/, dist/
+CODE = Path(__file__).resolve().parents[1]          # the repo: scripts/, plugin/, founder_coach/ (built plugins: DIST)
+
+
+BUILD_VERSION = ("--version", "{build version}")   # an assemble step's version, filled in when it runs (Ops.child)
+
+
+def _shown(path: Path) -> str:
+    """A built plugin's folder as the steps name it: relative to the repo when it is inside (dist/plugin), else
+    absolute (YTBRAIN_DIST elsewhere). Children run in the repo, so both forms resolve the same."""
+    try:
+        return str(path.relative_to(CODE))
+    except ValueError:
+        return str(path)
 STATE = DATA / "ops" / "state.json"
 LAST_RUN = DATA / "ops" / "last-run.md"
 VERSION_WAIT_S = 60
@@ -207,7 +219,7 @@ class Ops:
             return False
 
     def child(self, step: Step) -> int:
-        argv = list(step.argv or [])
+        argv = [self.build_version() if a == BUILD_VERSION[1] else a for a in (step.argv or [])]
         if step.paid:
             cap = self.spent(step.paid) + self.remaining()
             if self.remaining() <= 0:
@@ -360,19 +372,19 @@ class Ops:
 
     def plugin_steps(self) -> list[Step]:
         private = self.has_private()
-        target = "dist/plugin-private" if private else "dist/plugin"
+        target = _shown(DIST / ("plugin-private" if private else "plugin"))
         steps = [Step("plugin:version", run=self.version, note="a new build gets a new version (Cowork updates on it)"),
                  Step("plugin:pack", ["pack", "build", "--out", str(DATA / "pack")],
                       check=lambda since: pack_written(DATA / "pack", since)),
                  Step("plugin:assemble", ["scripts/assemble_plugin.py", "--pack", str(DATA / "pack"), "--out",
-                                          "dist/plugin", "--check", "--zip"], script=True)]
+                                          _shown(DIST / "plugin"), "--check", "--zip", *BUILD_VERSION], script=True)]
         if private:
             steps += [Step("plugin:pack-private", ["pack", "build", "--include-private", "--out",
                                                     str(DATA / "pack-private")],
                            check=lambda since: pack_written(DATA / "pack-private", since)),
                       Step("plugin:assemble-private", ["scripts/assemble_plugin.py", "--pack", str(DATA / "pack-private"),
-                                                       "--out", "dist/plugin-private", "--check", "--zip"],
-                           script=True)]
+                                                       "--out", _shown(DIST / "plugin-private"), "--check", "--zip",
+                                                       *BUILD_VERSION], script=True)]
         steps += self.other_pack_steps(private)
         shipped = DATA / ("pack-private" if private else "pack")
         steps.append(Step("plugin:coverage", run=lambda: self.coverage(shipped),
@@ -396,7 +408,7 @@ class Ops:
                                   run=lambda d=dist, k=f"coach:{pid}:release": self.coach(d, key=k),
                                   skip=Ops.release_skip(pid), note=f"eval coach --plugin {dist} (public build)"))
             if release:                              # P12 over the public set, the one that ships
-                plugins = ["dist/plugin", *(d for _, d in release)]
+                plugins = [_shown(DIST / "plugin"), *(d for _, d in release)]
                 steps.append(Step("plugin:choice-release", run=lambda ps=plugins: self.choice(ps),
                                   skip=Ops.release_set_skip(release),
                                   note="eval choice over the public builds (P12)"))
@@ -412,7 +424,7 @@ class Ops:
                 continue
             pk = PK.load(pid, check_skills=False)
             if "private" in pk.builds:
-                out.append((pid, str(pk.dist_dir(True, Path("dist")))))
+                out.append((pid, _shown(pk.dist_dir(True, DIST))))
         return out
 
     @staticmethod
@@ -428,14 +440,15 @@ class Ops:
             for priv in (False, True):
                 if ("private" if priv else "release") not in pk.builds or (priv and not private):
                     continue
-                out, dist = pk.pack_dir(priv, DATA), pk.dist_dir(priv, Path("dist"))
+                out, dist = pk.pack_dir(priv, DATA), _shown(pk.dist_dir(priv, DIST))
                 tag = f"plugin:{pid}" + (":private" if priv else "")
                 n0 = len(steps)
                 steps += [Step(f"{tag}:pack", ["pack", "build", "--for", pid, *(["--include-private"] if priv else []),
                                                "--out", str(out)],
                                check=lambda since, o=out: pack_written(o, since)),
                           Step(f"{tag}:assemble", ["scripts/assemble_plugin.py", "--for", pid, "--pack", str(out),
-                                                   "--out", str(dist), "--check", "--zip"], script=True),
+                                                   "--out", str(dist), "--check", "--zip", *BUILD_VERSION],
+                               script=True),
                           Step(f"{tag}:validate", run=lambda d=str(dist): Ops.validate_static(d),
                                note=f"claude plugin validate {dist}")]
                 if not priv:                       # a public build waits for public Documents (checked when it comes up)
@@ -484,7 +497,7 @@ class Ops:
                 continue
             pk = PK.load(pid, check_skills=False)
             if "release" in pk.builds:
-                out.append((pid, str(pk.dist_dir(False, Path("dist")))))
+                out.append((pid, _shown(pk.dist_dir(False, DIST))))
         return out
 
     @staticmethod
@@ -548,9 +561,14 @@ class Ops:
             return 0
         return subprocess.call(["claude", "plugin", "validate", str(CODE / target), "--strict"])
 
+    def build_version(self) -> str:
+        """The version this run's builds carry: chosen by the version step (kept in the state, so a resumed run
+        builds with it too), else the repo's own."""
+        return self.state.get("build_version") or _release().current_version(CODE)
+
     def record_plugin(self, target: str) -> int:
         self.state["plugin"] = {"fp": self.plugin_fp(self.index_fp()), "build": _build_id(CODE / target),
-                                "path": target, "version": _release().current_version(CODE), "at": _now()}
+                                "path": target, "version": self.build_version(), "at": _now()}
         return 0
 
     def declare_domains(self) -> bool:
@@ -595,14 +613,17 @@ class Ops:
 
     def version(self) -> int:
         """Ask for the new build's version: patch (default), minor or skip. With no one at the
-        terminal (or no answer within VERSION_WAIT_S), patch. A version you set by hand since the
-        last build is kept."""
-        rel = _release()
-        cur = rel.current_version(CODE)
+        terminal (or no answer within VERSION_WAIT_S), patch. The count is yours: it is kept in the data folder
+        (the state file) and written into the built plugins only, never into the repo, so a build leaves the
+        checkout clean. The repo's own version (plugin.json, moved only by a release) is the floor: one set there
+        above your last build is used as it is."""
+        base = _release().current_version(CODE)
         last = (self.state.get("plugin") or {}).get("version")
-        if last is not None and last != cur:
-            self.say(f"ops: plugin version {cur} (set since the last build {last}): kept")
+        if last is not None and _semver(base) > _semver(last):
+            self.state["build_version"] = base
+            self.say(f"ops: plugin version {base} (set in the repo since the last build {last}): kept")
             return 0
+        cur = last if last is not None and _semver(last) >= _semver(base) else base
         choice = self.opts.version
         if choice is None:
             nxt = {"patch": _bump(cur, "patch"), "minor": _bump(cur, "minor")}
@@ -616,11 +637,12 @@ class Ops:
             if answer is None:
                 self.say(f"ops: no answer: patch {nxt['patch']}")
         if choice == "skip":
+            self.state["build_version"] = cur
             self.say(f"ops: plugin version stays {cur} (Cowork won't see this build as an update)")
             return 0
         new = _bump(cur, choice)
-        rel.set_version(CODE, new)
-        self.say(f"ops: plugin version {cur} -> {new} (plugin.json, plugin/pyproject.toml, founder_coach)")
+        self.state["build_version"] = new
+        self.say(f"ops: plugin version {cur} -> {new} (written into the builds; the repo keeps {base})")
         return 0
 
     def choice(self, plugins: list[str]) -> int:
@@ -850,6 +872,10 @@ def _release():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _semver(version: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in version.split(".")[:3])
 
 
 def _bump(version: str, part: str) -> str:

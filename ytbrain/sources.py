@@ -180,7 +180,7 @@ def _skipped_dir(rel: Path, base: Path) -> bool:
 def book_files(src: dict, root: Path) -> list[Path]:
     """The PDFs of a pdf_books Source, sorted: every listed folder (recursively, so a new subfolder
     such as data/books/finance is picked up by itself) and file, never the caches. A relative
-    path is under the repo (YTBRAIN_ROOT). Per-book corrections are keyed by file name, so two
+    path is relative to `root`: the folder sources.yaml is in (config.SOURCES_BASE). Per-book corrections are keyed by file name, so two
     PDFs with the same name in one Source are refused."""
     found: dict[Path, None] = {}
     for raw in src.get("paths") or [src["path"]]:

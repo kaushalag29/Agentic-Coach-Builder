@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "{{id}}"
-version = "0.1.7"
+version = "0.1.8"
 description = "{{display_name}}: a local MCP coach server with its Knowledge pack and private, local memory"
 requires-python = ">=3.11"
 license = { text = "{{license}}" }

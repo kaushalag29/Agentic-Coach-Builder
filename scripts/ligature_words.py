@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ def count(transcripts: Path) -> collections.Counter:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--transcripts", type=Path, default=ROOT / "data" / "transcripts")
+    ap.add_argument("--transcripts", type=Path, default=Path(os.environ.get("YTBRAIN_DATA") or ROOT / "data").expanduser() / "transcripts")
     ap.add_argument("--min-count", type=int, default=3)
     ap.add_argument("--out", type=Path, default=OUT)
     a = ap.parse_args(argv)

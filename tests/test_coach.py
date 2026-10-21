@@ -5,6 +5,8 @@ import datetime as dt
 import json
 import os
 os.environ["YTBRAIN_DOTENV"] = "0"          # hermetic: never read the developer's .env (keys, backend)
+for _k in ("YTBRAIN_DATA", "YTBRAIN_DIST", "YTBRAIN_PRIVATE_TERMS"):   # hermetic: never your data, builds or terms list
+    os.environ.pop(_k, None)
 os.environ.setdefault("YTBRAIN_SOURCES_FILE", os.path.join(__import__("tempfile").mkdtemp(prefix="ytbrain-nosources-"), "sources.yaml"))   # hermetic: never read your sources.yaml (the file does not exist)
 import subprocess
 import sys

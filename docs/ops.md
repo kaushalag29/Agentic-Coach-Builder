@@ -84,8 +84,10 @@ build). `ops` never publishes: `scripts/release.py` does, on your command.
 
 A new build gets a new version so Cowork installs it as an update. The run asks in the terminal: patch
 (default), minor or skip; with no answer in 60 s, or no terminal, it takes patch (a notification says the
-question is waiting). A version you set by hand since the last build is kept. It is written to
-plugin.json, plugin/pyproject.toml and founder_coach (the same helper `scripts/release.py` uses).
+question is waiting). The count is yours: it lives in the data folder (`data/ops/state.json`, the last build's
+`version`) and is written into the built plugins only (`scripts/assemble_plugin.py --version`), so a build leaves the
+repo clean. The repo's own version (`plugin/.claude-plugin/plugin.json`, moved only by `scripts/release.py`) is the
+floor: one set there above your last build is used as it is.
 
 ## References to compare with
 
@@ -111,6 +113,6 @@ many Documents it will extract; `--max-extract` limits them. The coach eval runs
 The scheduled job (`ops/com.ytbrain.sync.plist`, `ytbrain run`) stays as it is: it never writes eval
 questions or builds a plugin.
 
-`ops plugin` sets the new version itself (above); if you assemble by hand, bump `version` in
-`plugin/.claude-plugin/plugin.json` before installing the build in Cowork as an update. The private zip is
+`ops plugin` sets the new version itself (above); if you assemble by hand, pass a version above the installed one
+(`scripts/assemble_plugin.py --version 0.1.10`) before installing the build in Cowork as an update. The private zip is
 `dist/founder-coach-<version>-private.plugin`.

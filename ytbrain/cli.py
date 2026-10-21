@@ -35,8 +35,8 @@ from pathlib import Path
 
 from . import captions, fetch, pages, source_kinds
 from .config import (ACCEPT_MIN_RECORD_RATE, ACCEPT_MIN_SPAN_PASS_RATE,
-                     ACCEPT_SAMPLE_SEED, EXTRACT_FAILURES, MANIFEST_DB, ROOT, METADATA, PAGES, RAW, REPORTS,
-                     MIN_TRANSCRIPT_WORDS, SCHEMA_VERSION, TRANSCRIPTS,
+                     ACCEPT_SAMPLE_SEED, DIST, EXTRACT_FAILURES, MANIFEST_DB, METADATA, PAGES, RAW, REPORTS,
+                     MIN_TRANSCRIPT_WORDS, SCHEMA_VERSION, SOURCES_BASE, TRANSCRIPTS,
                      YT_BACKFILL_PER_HOUR, YT_BACKFILL_SLEEP_SUBTITLES, YT_ENUM_RETRIES,
                      YT_ERROR_BACKOFF_S, YT_SLEEP_SUBTITLES, YT_VIDEO_RETRIES)
 from .lock import LockBusy, exclusive
@@ -214,7 +214,7 @@ def _doc_tags(m, doc_ids, default: bool = True) -> dict[str, tuple[list[str], st
                 book = json.loads((BOOKS_PLANS / f"{doc_id.split('__', 1)[0]}.json").read_text(encoding="utf-8")).get("path")
             except (OSError, ValueError):
                 book = None
-            roots = [(Path(p).expanduser() if Path(p).expanduser().is_absolute() else ROOT / p)
+            roots = [(Path(p).expanduser() if Path(p).expanduser().is_absolute() else SOURCES_BASE / p)
                      for p in src.get("paths") or [src["path"]]]
         try:
             out[doc_id] = (D.resolve(reg, src, book, roots or (), default=default), sid)
@@ -2343,7 +2343,7 @@ def cmd_eval(args) -> int:
     if args.eval_cmd == "coach":
         import shutil as _sh
         from .eval import build, coach
-        plugin = (Path(args.plugin) if args.plugin else ROOT / "dist" / "plugin").resolve()   # the host runs from another folder
+        plugin = (Path(args.plugin) if args.plugin else DIST / "plugin").resolve()   # the host runs from another folder
         if not (plugin / ".claude-plugin" / "plugin.json").exists() or not (plugin / "pack").exists():
             print(f"eval coach: no assembled plugin at {plugin}; run "
                   f"`python scripts/assemble_plugin.py --pack data/pack --check` first", file=sys.stderr)
@@ -2728,7 +2728,7 @@ def cmd_report(args) -> int:
         for r in failed_x:
             log = EXTRACT_FAILURES / f"{r['doc_id']}.json"
             print(f"    {r['doc_id']}  {(r['error'] or '')[:90]}"
-                  + (f"\n      call log: {log.relative_to(ROOT)}" if log.exists() else ""))
+                  + (f"\n      call log: {log}" if log.exists() else ""))
     if issues or failed_x:
         print("\n  Redo these: ytbrain invalidate extract --only-flagged && ytbrain extract "
               "&& ytbrain verify && ytbrain index")

@@ -55,9 +55,9 @@ class BookAdapter:
 
     def __init__(self, parser=None, lookup=None, say=print, root: Path | None = None,
                  parsed_dir: Path | None = None, plans_dir: Path | None = None, transcripts: Path | None = None):
-        from ..config import BOOKS_PARSED, BOOKS_PLANS, ROOT, TRANSCRIPTS
+        from ..config import BOOKS_PARSED, BOOKS_PLANS, SOURCES_BASE, TRANSCRIPTS
         self._parser, self._lookup, self.say = parser, lookup, say
-        self.root = root or ROOT
+        self.root = root or SOURCES_BASE      # relative book paths are relative to sources.yaml
         self.parsed_dir, self.plans_dir = parsed_dir or BOOKS_PARSED, plans_dir or BOOKS_PLANS
         self.transcripts = transcripts or TRANSCRIPTS
         self._parsers: dict[str, object] = {}
@@ -270,8 +270,8 @@ def stray_book_folders(sources: list[dict] | None = None, root: Path | None = No
     """Book folders below every enabled pdf_books Source that are not a declared Domain: {folder: Books}.
     `ytbrain ops` asks about these when sync stops on them (--strict-domains)."""
     from .. import sources as S
-    from ..config import ROOT, SOURCES_FILE
-    root = root or ROOT
+    from ..config import SOURCES_BASE, SOURCES_FILE
+    root = root or SOURCES_BASE
     if sources is None:
         sources = S.enabled(S.load(SOURCES_FILE), "pdf_books") if SOURCES_FILE.exists() else []
     ad = BookAdapter(root=root)

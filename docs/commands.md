@@ -228,6 +228,7 @@ it stops rather than mixing two builds' results.
 $EDITOR packs/founder/pack.toml                        # a coach's id, display name, SEO description ([product]); product.toml: shared author, license, repos
 python scripts/assemble_plugin.py --pack data/pack     # regenerates founder_coach/product.json and the playbooks
 python scripts/check_secrets.py                        # what CI and the pre-commit hook run
+python scripts/check_private_terms.py                  # your YTBRAIN_PRIVATE_TERMS list against files and unpushed commits (the pre-push hook)
 python scripts/release.py --pack data/pack --marketplace <your-plugin-repo> --version 0.1.1 [--push]   # optional: publish a build to a plugin repo of your own
 ```
 

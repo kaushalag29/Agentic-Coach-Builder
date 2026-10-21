@@ -41,6 +41,12 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _dist() -> Path:
+    """Where built plugins go: YTBRAIN_DIST, else the repo's dist/ (as `ytbrain ops`)."""
+    import os
+    return Path(os.environ.get("YTBRAIN_DIST") or ROOT / "dist").expanduser()
 PROMPT_SKILLS = ("ask", "weekly-focus", "check-in", "setup")   # the founder Pack's MCP prompts (its pack.toml `prompts`)
 # = founder_coach.pack's names; not imported, so the assembler runs without the runtime's dependencies
 PACK_FILE, MANIFEST_FILE = "knowledge.sqlite", "pack.json"
@@ -280,8 +286,30 @@ def tools_list_from_golden(golden: Path) -> dict:
     return {"tools": tools}
 
 
+BUILT_VERSION_FILES = {                       # where a build's version is written, relative to the built plugin
+    ".claude-plugin/plugin.json": r'("version":\s*")[^"]+(")',
+    "pyproject.toml": r'(?m)^(version = ")[^"]+(")',
+    "founder_coach/__init__.py": r'(?m)^(__version__ = ")[^"]+(")',
+}
+
+
+def stamp_version(build: Path, version: str) -> None:
+    """Write `version` into the built plugin only (manifest, package, runtime), never into the repo: a private
+    build's version is counted in your data folder by `ytbrain ops` (docs/ops.md), so building leaves the checkout
+    clean. Without it a build carries the repo's own version (plugin/.claude-plugin/plugin.json)."""
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise AssembleError(f"--version must look like 1.2.3, got {version!r}")
+    for rel, pattern in BUILT_VERSION_FILES.items():
+        path = build / rel
+        text, n = re.subn(pattern, lambda m: f"{m.group(1)}{version}{m.group(2)}", path.read_text(encoding="utf-8"),
+                          count=1)
+        if n != 1:
+            raise AssembleError(f"no version to set in {rel}")
+        path.write_text(text, encoding="utf-8")
+
+
 def assemble(root: Path, pack: Path, out: Path, check: bool = False, with_evals: bool = False,
-             pack_id: str | None = None) -> dict:
+             pack_id: str | None = None, version: str | None = None) -> dict:
     root, out = root.resolve(), out.resolve()
     if not pack.exists():
         raise AssembleError(f"no Knowledge pack at {pack}; build it with `ytbrain pack build` or pass --pack")
@@ -320,6 +348,8 @@ def assemble(root: Path, pack: Path, out: Path, check: bool = False, with_evals:
         if not default:
             (build / "founder_coach" / "product.json").write_text(product_json(prod), encoding="utf-8")
             generate_playbooks(root, prod, build / "founder_coach" / "playbooks")
+        if version:
+            stamp_version(build, version)
         _copy_pack(pack, build / "pack")
         stamp = (f"{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%SZ}-"
                  f"{_tree_hash(root / 'product.toml', the_pack.dir, root / 'plugin', root / 'founder_coach')}")
@@ -389,19 +419,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="include plugin/evals/ (for `claude plugin eval`); use a separate --out, e.g. dist/plugin-eval")
     ap.add_argument("--zip", action="store_true",
                     help="also write dist/<id>-<version>.plugin, the file Cowork's Plugins page uploads")
+    ap.add_argument("--version", default=None, metavar="X.Y.Z",
+                    help="this build's version, written into the build only (default: the repo's, plugin.json)")
     args = ap.parse_args(argv)
     if args.pack is None:
         print(f"assemble: pass --pack PATH (or set {env_pack})", file=sys.stderr)
         return 2
     if args.out is None:
         try:
-            args.out = load_product(args.root, args.pack_id)["pack"].dist_dir(False, ROOT / "dist")
+            args.out = load_product(args.root, args.pack_id)["pack"].dist_dir(False, _dist())
         except AssembleError as e:
             print(f"assemble: {e}", file=sys.stderr)
             return 2
     try:
         res = assemble(args.root, args.pack, args.out, check=args.check, with_evals=args.with_evals,
-                       pack_id=args.pack_id)
+                       pack_id=args.pack_id, version=args.version)
     except AssembleError as e:
         print(f"assemble: {e}", file=sys.stderr)
         return 2

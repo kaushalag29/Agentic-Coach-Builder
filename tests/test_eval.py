@@ -3,6 +3,8 @@ import datetime as dt
 import json
 import os
 os.environ["YTBRAIN_DOTENV"] = "0"          # hermetic: never read the developer's .env (keys, backend)
+for _k in ("YTBRAIN_DATA", "YTBRAIN_DIST", "YTBRAIN_PRIVATE_TERMS"):   # hermetic: never your data, builds or terms list
+    os.environ.pop(_k, None)
 os.environ.setdefault("YTBRAIN_SOURCES_FILE", os.path.join(__import__("tempfile").mkdtemp(prefix="ytbrain-nosources-"), "sources.yaml"))   # hermetic: never read your sources.yaml (the file does not exist)
 import re
 import shutil
@@ -820,7 +822,8 @@ def test_ops_handles_each_stop_reason_asks_for_a_version_and_keeps_references():
         answers.append("m")
         script["eval coach"] = [("plan_limit", 2)]
         code, out = run(plan="all", sync=False)
-        assert code == 0 and versions["v"] == "0.2.0", out
+        built = lambda: _json.loads(ops.STATE.read_text())["plugin"]["version"]       # noqa: E731
+        assert code == 0 and built() == "0.2.0" and versions["v"] == "0.1.0", "the build is 0.2.0; the repo is untouched"
         assert "coach eval pending" in ops.LAST_RUN.read_text(), "the plugin is built; the coach waits for the reset"
         # the Claude login expired on the resume: ops stops with the fix, and the next run does only the coach eval
         script["eval coach"] = [("auth", 2)]
@@ -842,12 +845,22 @@ def test_ops_handles_each_stop_reason_asks_for_a_version_and_keeps_references():
         assert code == 0 and coach_run() == 1 and not any(c.startswith("pack") for c in calls), out
         code, out = run(plan="plugin")
         assert coach_run() == 0 and "nothing changed" in out, out
-        # a hand-set version is kept; no answer means patch
+        # the count goes on from the last build, never from the repo; the assembler gets it (--version)
+        seen = []
+        real_call = call
+
+        def call(argv):                                  # noqa: F811 -- records each assemble's --version
+            if "scripts/assemble_plugin.py" in " ".join(argv):
+                seen.append(argv[argv.index("--version") + 1])
+            return real_call(argv)
+        code, out = run(plan="plugin", force=True)
+        assert built() == "0.2.1" and versions["v"] == "0.1.0" and seen and set(seen) == {"0.2.1"}, (out, seen)
+        # a version set in the repo above the last build (a release) is kept; no answer means patch from there
         versions["v"] = "0.5.0"
         code, out = run(plan="plugin", force=True)
-        assert versions["v"] == "0.5.0" and "set since the last build" in out
+        assert built() == "0.5.0" and "set in the repo since the last build" in out
         code, out = run(plan="plugin", force=True)
-        assert versions["v"] == "0.5.1" and "no answer: patch 0.5.1" in out
+        assert built() == "0.5.1" and versions["v"] == "0.5.0" and "no answer: patch 0.5.1" in out
         # references: the baseline in force before a change is kept, dated
         base = EVAL_DATA / "runs" / "baseline-all-full.json"
         base.parent.mkdir(parents=True, exist_ok=True)

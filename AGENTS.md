@@ -73,10 +73,11 @@ Agentic Coach Builder turns Sources (YouTube talks, website articles, PDF books)
   Passages) is indexed, returned by tools or shown on pages (ADR-0004).
 - **Given vs generated fields:** Series, provenance, title and dates come from Sources, yt-dlp
   or the page's own metadata, never from the model; change them with `ytbrain refresh`, not re-extraction.
-- **Tests stay offline and hermetic:** stub yt-dlp, LLM calls and HTTP (httpx.MockTransport, a localhost server, a fake browser); tests use `YTBRAIN_ROOT` set to a temp dir, set `YTBRAIN_DOTENV=0` before importing `ytbrain` (so a developer's `.env` never changes their behaviour or spends money; it also stops `founder_coach/settings.py` reading `.env` files) and never read the repo's `sources.yaml` (patch `cli.SOURCES` to a temp file; `scripts/check.sh` sets `YTBRAIN_SOURCES_FILE` to a missing file so a configured machine fails like CI). A clean checkout must pass exactly like a configured machine (CI runs one).
+- **Tests stay offline and hermetic:** stub yt-dlp, LLM calls and HTTP (httpx.MockTransport, a localhost server, a fake browser); tests use `YTBRAIN_ROOT` set to a temp dir and drop `YTBRAIN_DATA`, `YTBRAIN_DIST` and `YTBRAIN_PRIVATE_TERMS`, set `YTBRAIN_DOTENV=0` before importing `ytbrain` (so a developer's `.env` never changes their behaviour or spends money; it also stops `founder_coach/settings.py` reading `.env` files) and never read the repo's `sources.yaml` (patch `cli.SOURCES` to a temp file; `scripts/check.sh` sets `YTBRAIN_SOURCES_FILE` to a missing file so a configured machine fails like CI). A clean checkout must pass exactly like a configured machine (CI runs one).
 
 ## Data
 
-- `data/` is rebuildable pipeline output (git-ignored): safe to regenerate, never commit.
+- `data/` is rebuildable pipeline output (git-ignored): safe to regenerate, never commit. `YTBRAIN_DATA` may put it outside
+  the checkout (a private workspace with `sources.yaml` and the private-terms list: docs/configuration.md).
 - A coach's memory (`~/.ytbrain/<pack>/projects/<id>/`, or the folder `<ID>_HOME` pins) is private and not rebuildable: back it up before any
   migration and never send its contents to a Judge or any service other than the host model.

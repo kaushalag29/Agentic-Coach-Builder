@@ -221,13 +221,35 @@ YTBRAIN_LLM_MODEL=<model-a> ytbrain extract --limit 5 && ytbrain verify && ytbra
    mixed models make the quality numbers uninterpretable. To switch after a full run:
    `ytbrain invalidate extract` then `ytbrain extract`.
 
+## Keep your data outside the checkout
+
+The code, `packs/` and `eval/` stay in the repo; everything that is yours can live in a separate folder (a private
+workspace): `data/`, `sources.yaml` and the list of private terms. Point the checkout at it in the repo's `.env`:
+
+```bash
+export YTBRAIN_DATA="$HOME/coach-workspace/data"
+export YTBRAIN_SOURCES_FILE="$HOME/coach-workspace/sources.yaml"
+export YTBRAIN_PRIVATE_TERMS="$HOME/coach-workspace/private-terms.txt"
+```
+
+Existing data is read in place: nothing is fetched or extracted again. Built plugins still go to the repo's `dist/`
+(git-ignored) unless `YTBRAIN_DIST` says otherwise. Before you push, the private-terms check
+(`python scripts/check_private_terms.py`, also in `scripts/check.sh`) refuses any tracked or new file, file name or
+unpushed commit message that holds a term from your list; install it as a git hook once with
+`ln -s ../../scripts/hooks/pre-push .git/hooks/pre-push`.
+
 ## Environment variables
 
 All settings are environment variables (`.env` or shell). Defaults in parentheses.
 
 | Variable | Purpose |
 |---|---|
-| `YTBRAIN_ROOT` (repo dir) | Where `data/` lives |
+| `YTBRAIN_DATA` (`data/` in the repo) | Your pipeline data: manifest, transcripts, index, tags, eval runs, built packs. See [Keep your data outside the checkout](#keep-your-data-outside-the-checkout) |
+| `YTBRAIN_SOURCES_FILE` (`sources.yaml` in the repo) | Your Sources. A relative path in it (a `pdf_books` folder) is relative to the folder this file is in |
+| `YTBRAIN_DOMAINS_FILE` (`domains.yaml` in the repo) | The controlled Domain list |
+| `YTBRAIN_DIST` (`dist/` in the repo) | Where `ytbrain ops plugin` and `scripts/assemble_plugin.py` put built plugins |
+| `YTBRAIN_PRIVATE_TERMS` (none) | A text file outside the repo, one term per line (company, book titles, ISBNs, local paths): `scripts/check.sh` and the pre-push hook refuse files or commit messages that hold one |
+| `YTBRAIN_ROOT` (repo dir) | Older: moves `data/` and the `eval/` benchmark files together; prefer `YTBRAIN_DATA` |
 | `YTBRAIN_LLM_BACKEND` (`ollama`) | `ollama` or `openai` (any OpenAI-compatible API) |
 | `YTBRAIN_LLM_BASE_URL` (`http://localhost:11434`) | Endpoint base URL |
 | `YTBRAIN_LLM_API_KEY` (none) | API key for hosted providers |
