@@ -21,6 +21,10 @@ released benchmark carries its version in `eval/VERSION`.
   follow the work folder.
 - **ADR-0019 (accepted): memory belongs to the work.** Projects will be shared by every coach and chosen by the work
   folder; ADR-0016 is amended. Not built yet.
+- **Checks run the repo's own Python:** `scripts/check.sh` and the pre-push hook now prefer the repo's `.venv` over an
+  environment left active from another checkout (which would have tested that checkout's code), via `scripts/python.sh`.
+- **`finance` says what it is not:** markets, the economy and investing your own money belong to `investment`; the
+  tie-break reads it on close calls between the two (ADR-0017).
 - **`ytbrain ops`:** the coverage step's note now reads `eval gap`'s exit code right (1: targets missed, 3: too
   few questions).
 - **Builds leave the repo clean:** `ytbrain ops plugin` keeps its build counter in the data folder and passes it to

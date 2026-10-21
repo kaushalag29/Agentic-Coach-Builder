@@ -7,11 +7,9 @@
 # Offline and free: no .env, no model calls, no writes to data/ or dist/. Stops at the first failure.
 set -eu
 cd "$(dirname "$0")/.."
-# Python: $PYTHON, else the active venv, else the repo's .venv (git may run this hook from an IDE with no venv), else python3.
-if [ -n "${PYTHON:-}" ]; then PY="$PYTHON"
-elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then PY="$VIRTUAL_ENV/bin/python"
-elif [ -x .venv/bin/python ] && .venv/bin/python -c "" 2>/dev/null; then PY=".venv/bin/python"
-else PY="python3"; fi
+# Python: $PYTHON, else the repo's .venv (git may run this hook from an IDE with no venv), else the active venv,
+# else python3 (scripts/python.sh: an environment left active from another checkout never runs these tests)
+PY="$(sh scripts/python.sh)"
 echo "python: $PY"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export REQUIRE_ALL_TESTS=1 YTBRAIN_DOTENV=0 PYTHONDONTWRITEBYTECODE=1 YTBRAIN_ROOT="$TMP/data" YTBRAIN_SOURCES_FILE="$TMP/no-sources.yaml"   # like CI: your sources.yaml is never read

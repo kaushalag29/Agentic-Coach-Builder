@@ -3269,5 +3269,38 @@ def test_the_unplaced_marker_is_reserved_and_no_pack_can_serve_it():
         assert UNPLACED not in PK.load(pid, check_skills=False, known_domains=reg.names).domains
 
 
+
+def test_scripts_run_with_the_repos_own_python_before_an_environment_left_active_elsewhere():
+    """scripts/python.sh (check.sh, the pre-push hook): $PYTHON, else the repo's .venv, else the active virtualenv,
+    else python3. An environment active from another checkout would run that checkout's code under these tests."""
+    import shutil
+    import subprocess
+    src = Path(__file__).resolve().parents[1] / "scripts" / "python.sh"
+    with tempfile.TemporaryDirectory() as t:
+        repo = Path(t).resolve() / "repo"
+        (repo / "scripts").mkdir(parents=True)
+        shutil.copy2(src, repo / "scripts" / "python.sh")
+        other = Path(t).resolve() / "other-venv"
+        (other / "bin").mkdir(parents=True)
+        for py in (other / "bin" / "python", repo / ".venv" / "bin" / "python"):
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("#!/bin/sh\nexit 0\n")
+            py.chmod(0o755)
+        base = {k: v for k, v in os.environ.items() if k not in ("PYTHON", "VIRTUAL_ENV")}
+
+        def pick(**env):
+            r = subprocess.run(["sh", str(repo / "scripts" / "python.sh")], env={**base, **env}, cwd=t,
+                               capture_output=True, text=True, check=True)
+            return r.stdout.strip(), r.stderr
+
+        assert pick(PYTHON="/opt/py")[0] == "/opt/py", "$PYTHON always wins"
+        got, note = pick(VIRTUAL_ENV=str(other))
+        assert got == str(repo / ".venv" / "bin" / "python") and "ignoring the active environment" in note, (got, note)
+        assert pick(VIRTUAL_ENV=str(repo / ".venv"))[1] == "", "the repo's own environment, active: no note"
+        shutil.rmtree(repo / ".venv")
+        assert pick(VIRTUAL_ENV=str(other))[0] == str(other / "bin" / "python"), "no .venv: the active one"
+        assert pick()[0] == "python3"
+
+
 if __name__ == "__main__":
     raise SystemExit(_run())

@@ -58,6 +58,7 @@ domains:
   finance:
     aliases: ["corporate finance", "startup finance", "venture finance"]
     description: "A company's money: raising it (fundraising rounds, investors, valuations, term sheets and venture deal terms, cap tables, dilution), accounting basics, reading financial statements, runway and burn."
+    not_about: "Investing your own money, public markets and listed companies as investments, the wider economy and financial news: that is investment."
     examples:
       - How much should we raise in our seed round, and from whom?
       - How is a startup valued at a seed round?
