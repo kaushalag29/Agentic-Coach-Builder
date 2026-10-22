@@ -12,8 +12,10 @@ sh scripts/check.sh                                              # everything CI
 printf '#!/bin/sh\nexec sh scripts/check.sh\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit   # optional
 ```
 
-`git commit --no-verify` skips the hook for a work-in-progress commit; name the hook `pre-push` instead if a couple of
-minutes per commit is too slow.
+`git commit --no-verify` skips the hook for a work-in-progress commit. If you keep private material beside the repo
+(your own Sources, data, names), list the words that must never be published in a file outside the repo, point
+`YTBRAIN_PRIVATE_TERMS` at it, and install the pre-push hook that checks every push against it:
+`ln -s ../../scripts/hooks/pre-push .git/hooks/pre-push` (`scripts/check.sh` runs the same check).
 
 ## Tests
 

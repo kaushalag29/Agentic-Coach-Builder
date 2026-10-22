@@ -1114,7 +1114,9 @@ def test_u7_usage_cli_summarises_exports_and_clears():
     import contextlib, io
     from founder_coach import cli
     home = tempfile.mkdtemp()
-    s = _store(home=home)
+    # logged now: the command line reads the last 30 days by the real clock, so a fixed test date (Clock()'s
+    # 2026-09-21) fell out of the window a month later and the test started failing on its own
+    s = _store(home=home, clock=Clock(dt.datetime.now(dt.timezone.utc).isoformat()))
     for i, (tool, outcome, ms) in enumerate([("coach_search", "ok", 100), ("coach_search", "gap", 300),
                                               ("coach_search", "error", 50), ("coach_read", "ok", 20)]):
         s.log_usage(tool, outcome, ms, run="r1" if i < 2 else "r2",
