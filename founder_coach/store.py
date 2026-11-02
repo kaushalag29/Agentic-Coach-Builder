@@ -26,7 +26,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import domain as D
 from . import product
 
-SCHEMA_VERSION = 5
+RECENT_ERRORS = 10                     # usage_summary lists this many of the newest tool errors
+SCHEMA_VERSION = 7
 MIGRATIONS: dict[int, list[str]] = {
     1: [
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -75,9 +76,31 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX positions_snapshot ON positions (snapshot_id)",
         """CREATE TABLE asset_classes (founder_id TEXT NOT NULL, symbol TEXT NOT NULL, asset_class TEXT NOT NULL,
              set_at TEXT NOT NULL, PRIMARY KEY (founder_id, symbol))"""],
+    # v6: Notes (ADR-0020): dated, append-only memory of a discussion, research or insight, and the typed links
+    # between records. The keyword index (notes_fts, SQLite FTS5) is created apart: see FTS_STATEMENT.
+    6: ["""CREATE TABLE notes (id TEXT PRIMARY KEY, founder_id TEXT NOT NULL, title TEXT NOT NULL,
+             summary TEXT NOT NULL, type TEXT NOT NULL, origin TEXT NOT NULL, citations TEXT NOT NULL DEFAULT '[]',
+             evidence TEXT NOT NULL DEFAULT '[]', revisit_on TEXT, created_at TEXT NOT NULL,
+             superseded_by TEXT, superseded_at TEXT)""",
+        "CREATE INDEX notes_created ON notes (founder_id, created_at)",
+        """CREATE TABLE links (founder_id TEXT NOT NULL, src TEXT NOT NULL, dst TEXT NOT NULL, type TEXT NOT NULL,
+             created_at TEXT NOT NULL, PRIMARY KEY (founder_id, src, dst, type))""",
+        "CREATE INDEX links_dst ON links (founder_id, dst)"],
+    # v7: every record says which coach made it (ADR-0019). Rows from before take the coach that owns the store
+    # (_migrate fills them in). Until the read rules of ADR-0019 exist, a coach reads only its own records.
+    7: [f"ALTER TABLE {t} ADD COLUMN coach TEXT NOT NULL DEFAULT ''" for t in (
+        "profile_facts", "goals", "commitments", "decisions", "checkins", "changes", "feedback", "usage",
+        "holdings_snapshots", "asset_classes", "notes", "links")],
 }
+SHARED_KINDS = ("goals", "commitments", "decisions", "profile")      # what coaches in one Project read from each other
+COACH_TABLES = ("profile_facts", "goals", "commitments", "decisions", "checkins", "changes", "feedback", "usage",
+                "holdings_snapshots", "asset_classes", "notes", "links")
+# The Notes keyword index. A derived structure: it is rebuilt from `notes` (reindex_notes) and can be dropped without
+# losing a Note. A SQLite build without FTS5 skips it and search falls back to LIKE.
+FTS_STATEMENT = ("CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(id UNINDEXED, title, summary, "
+                 "tokenize='porter unicode61')")
 TABLES = ("profile_facts", "goals", "commitments", "decisions", "checkins", "feedback", "changes",
-          "holdings_snapshots", "positions", "asset_classes")
+          "holdings_snapshots", "positions", "asset_classes", "notes", "links")
 # the usage log is kept apart from TABLES: it isn't coaching memory, so it never makes the store
 # "have data" (daily backups) and never shows in FOUNDER.md; forget, export and restore still cover it
 USAGE_OUTCOMES = ("ok", "empty", "gap", "error")
@@ -135,7 +158,7 @@ class FounderStore:
 
     def __init__(self, home: str | Path | None = None, founder_id: str = "me",
                  clock: Callable[[], dt.datetime] | None = None, name: str = "founder",
-                 fields: tuple[str, ...] | None = None):
+                 fields: tuple[str, ...] | None = None, coach: str | None = None):
         self.home = Path(home).expanduser() if home else D.home()
         self.home.mkdir(parents=True, exist_ok=True)
         self.name = name
@@ -146,6 +169,23 @@ class FounderStore:
         self.common: FounderStore | None = None          # the Common profile (multi-Project mode only)
         self.common_fields: tuple[str, ...] = ()         # the shared facts this Pack reads from it
         self.fid = founder_id
+        # the coach whose records this store reads and writes (ADR-0019): the running Pack's id unless the caller says
+        # whose store it is (the move of another Pack's Projects); the Common profile belongs to no coach
+        self.coach = (coach if coach is not None else
+                      ("" if name != "founder" else str(product.PACK.get("id") or "founder")))
+        # what this coach keeps to itself, and the other coaches of the Project (Pack -> what they keep to themselves):
+        # the read rules of ADR-0019. With no peers (a pinned folder, a test) a coach reads only its own records.
+        self.owned: tuple[str, ...] = (tuple(product.PACK.get("owned") or ())
+                                       if self.coach == str(product.PACK.get("id") or "founder") else ())
+        self.peers: dict[str, list[str]] = {}
+        self.peers_home: Path | None = None              # the engine home whose installed/ registry names the peers
+        self._peers_seen: object = None
+        # derived files sit in the Project's folder, which coaches share: the founder Pack keeps its names, every other
+        # coach gets its own (slice C replaces them with one PROJECT.md)
+        own = self.coach not in ("", "founder")
+        if own:
+            self.md_path = self.home / f"{self.coach.upper()}.md"
+        self.vault_dir = f"notes-{self.coach}" if own else "notes"
         self.clock = clock or _utc_now
         self.cite_check: Callable[[list[str]], list[str]] | None = None    # -> unknown ids
         self.cite_lookup: Callable[[str], dict | None] | None = None       # id -> {title, deep_link}
@@ -227,11 +267,28 @@ class FounderStore:
                 for n in range(v + 1, SCHEMA_VERSION + 1):
                     for stmt in MIGRATIONS[n]:
                         self.db.execute(stmt)
+                    if n == 6:
+                        self._create_fts()
+                    if n == 7 and existed and self.coach:
+                        for t in COACH_TABLES:         # the rows that were here belong to the coach that owns this store
+                            self.db.execute(f"UPDATE {t} SET coach=?", (self.coach,))
                     self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(n),))
                 self.db.execute("COMMIT")
             except BaseException:
                 _rollback(self.db)
                 raise
+
+    def _create_fts(self) -> bool:
+        """Create the Notes keyword index; False when this SQLite has no FTS5 (search then uses LIKE)."""
+        try:
+            self.db.execute(FTS_STATEMENT)
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def has_fts(self) -> bool:
+        with self._lock:
+            return bool(self.db.execute("SELECT 1 FROM sqlite_master WHERE name='notes_fts'").fetchone())
 
     def close(self) -> None:
         with self._lock:
@@ -258,16 +315,16 @@ class FounderStore:
 
     def _new_id(self, kind: str) -> str:
         table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
-                 "feedback": "feedback", "holdings": "holdings_snapshots"}[kind]
+                 "feedback": "feedback", "holdings": "holdings_snapshots", "note": "notes"}[kind]
         while True:
             rid = f"{D.ID_PREFIX[kind]}-{secrets.token_hex(2)}"
             if not self.db.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
                 return rid
 
     def _change(self, entity: str, entity_id: str, op: str, before, after, source: str) -> None:
-        self.db.execute("INSERT INTO changes (at, founder_id, entity, entity_id, op, before, after, source) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (self._iso(), self.fid, entity, entity_id, op,
+        self.db.execute("INSERT INTO changes (at, founder_id, coach, entity, entity_id, op, before, after, source) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (self._iso(), self.fid, self.coach, entity, entity_id, op,
                          None if before is None else _j(before), None if after is None else _j(after), source))
 
     def _transact(self, request_id: str | None, fn: Callable[[], dict], what: object = None) -> dict:
@@ -301,6 +358,8 @@ class FounderStore:
                 _rollback(self.db)
                 raise
             self._write_markdown()
+            self._write_vault()
+            self._write_project_md()
         return out
 
     # ------------------------------------------------------------------ backups
@@ -366,7 +425,9 @@ class FounderStore:
             raise StoreError(f"{name} must be text")
         value = " ".join(value.split())
         if len(value) > D.TEXT_MAX:
-            raise StoreError(f"{name} is longer than {D.TEXT_MAX} characters; shorten it")
+            more = ("; for a longer account, keep this short and save the rest as a Note (coach_record kind note, "
+                    "linked to this record)") if product.has("notes") else ""
+            raise StoreError(f"{name} is longer than {D.TEXT_MAX} characters ({len(value)}); shorten it{more}")
         return value
 
     @staticmethod
@@ -473,8 +534,19 @@ class FounderStore:
     # ------------------------------------------------------------------ profile
     def _current(self, field: str) -> sqlite3.Row | None:
         with self._lock:
-            return self.db.execute("SELECT * FROM profile_facts WHERE founder_id=? AND field=? AND superseded_at IS NULL",
-                                   (self.fid, field)).fetchone()
+            return (self._currents(field) or [None])[0]
+
+    def _currents(self, field: str) -> list[sqlite3.Row]:
+        """The current fact(s) for `field`, newest first: this coach's, and another coach's when the field is shared
+        (the reader declares it) and that coach does not keep it to itself."""
+        if field in self.owned or "*" in self.owned:
+            who = [self.coach]
+        else:
+            who = self.readers("profile")
+        marks = ",".join("?" * len(who))
+        return self.db.execute(f"SELECT * FROM profile_facts WHERE founder_id=? AND coach IN ({marks}) AND field=? "
+                               "AND superseded_at IS NULL ORDER BY valid_from DESC, id DESC",
+                               (self.fid, *who, field)).fetchall()
 
     def _current_value(self, field: str):
         row = self._current(field)
@@ -517,9 +589,12 @@ class FounderStore:
         out = {}
         cutoff = self.now() - dt.timedelta(days=D.PROFILE_STALE_DAYS)
         with self._lock:
-            rows = self.db.execute("SELECT * FROM profile_facts WHERE founder_id=? AND superseded_at IS NULL",
-                                   (self.fid,)).fetchall()
+            sql, who = self._in("profile", "SELECT * FROM profile_facts WHERE founder_id=? AND coach=? "
+                                           "AND superseded_at IS NULL ORDER BY valid_from, id")
+            rows = self.db.execute(sql, (self.fid, *who)).fetchall()
         for r in rows:
+            if r["coach"] != self.coach and (r["field"] not in self.fields or r["field"] in self.owned):
+                continue                       # another coach's fact is read only for a field this coach declares
             confirmed = dt.datetime.fromisoformat(r["confirmed_at"])
             out[r["field"]] = {"value": json.loads(r["value"]), "since": r["valid_from"],
                                "confirmed_at": r["confirmed_at"],
@@ -528,8 +603,9 @@ class FounderStore:
 
     def profile_history(self, field: str) -> list[dict]:
         with self._lock:
-            rows = self.db.execute("SELECT * FROM profile_facts WHERE founder_id=? AND field=? ORDER BY id",
-                                   (self.fid, field)).fetchall()
+            sql, who = self._in("profile", "SELECT * FROM profile_facts WHERE founder_id=? AND coach=? AND field=? "
+                                           "ORDER BY id")
+            rows = self.db.execute(sql, (self.fid, *who, field)).fetchall()
         return [{"value": json.loads(r["value"]), "valid_from": r["valid_from"],
                  "superseded_at": r["superseded_at"]} for r in rows]
 
@@ -552,16 +628,16 @@ class FounderStore:
             updated, confirmed = [], []
             for field, value in clean.items():
                 cur = self._current(field)
-                if cur is not None and json.loads(cur["value"]) == value:
+                if cur is not None and json.loads(cur["value"]) == value and cur["coach"] == self.coach:
                     self.db.execute("UPDATE profile_facts SET confirmed_at=? WHERE id=?", (now, cur["id"]))
                     self._change("profile", field, "confirm", value, value, source)
                     confirmed.append(field)
                     continue
-                if cur is not None:
-                    self.db.execute("UPDATE profile_facts SET superseded_at=? WHERE id=?", (now, cur["id"]))
-                self.db.execute("INSERT INTO profile_facts (founder_id, field, value, valid_from, superseded_at, "
-                                "confirmed_at, source) VALUES (?,?,?,?,NULL,?,?)",
-                                (self.fid, field, _j(value), now, now, source))
+                for old in self._currents(field):         # one current value per field, whoever wrote it
+                    self.db.execute("UPDATE profile_facts SET superseded_at=? WHERE id=?", (now, old["id"]))
+                self.db.execute("INSERT INTO profile_facts (founder_id, coach, field, value, valid_from, superseded_at, "
+                                "confirmed_at, source) VALUES (?,?,?,?,?,NULL,?,?)",
+                                (self.fid, self.coach, field, _j(value), now, now, source))
                 self._change("profile", field, "update" if cur is not None else "create",
                              json.loads(cur["value"]) if cur is not None else None, value, source)
                 updated.append(field)
@@ -593,9 +669,11 @@ class FounderStore:
         return self._transact(request_id, lambda: self._record(entry, source), what=("record", entry))
 
     def _record(self, entry: dict, source: str) -> dict:
-        if not isinstance(entry, dict) or entry.get("kind") not in ("goal", "commitments", "decision", "checkin"):
-            raise StoreError("entry.kind must be goal, commitments, decision or checkin")
+        if not isinstance(entry, dict) or entry.get("kind") not in ("goal", "commitments", "decision", "checkin", "note"):
+            raise StoreError("entry.kind must be goal, commitments, decision, checkin or note")
         kind = entry["kind"]
+        if kind == "note":
+            return self._record_note(entry, source)
         now_week = self.this_week()
         if kind == "goal":
             rows = [{"text": self._text(entry.get("text"), "text"), "measure": self._text(entry.get("measure"), "measure", False),
@@ -612,7 +690,7 @@ class FounderStore:
                 if not isinstance(it, dict):
                     raise StoreError(f"commitment {i} must be an object with action, cue and outcome")
                 gid = it.get("goal_id")
-                if gid and not self.db.execute("SELECT 1 FROM goals WHERE id=? AND founder_id=?", (gid, self.fid)).fetchone():
+                if gid and not self._goal_visible(gid):
                     raise StoreError(f"commitment {i}: no Goal {gid}; ids come from coach_get_context")
                 rows.append({"week": week, "action": self._text(it.get("action"), f"commitment {i} action"),
                              "cue": self._text(it.get("cue"), f"commitment {i} cue", False),
@@ -632,29 +710,29 @@ class FounderStore:
             for r in rows:
                 if kind == "goal":
                     rid = self._new_id("goal")
-                    self.db.execute("INSERT INTO goals (id, founder_id, text, measure, target_date, status, citations, "
-                                    "created_at) VALUES (?,?,?,?,?,?,?,?)",
-                                    (rid, self.fid, r["text"], r["measure"], r["target_date"], "active",
+                    self.db.execute("INSERT INTO goals (id, founder_id, coach, text, measure, target_date, status, "
+                                    "citations, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                                    (rid, self.fid, self.coach, r["text"], r["measure"], r["target_date"], "active",
                                      _j(r["citations"]), now))
                     self._change("goal", rid, "create", None, r, source)
                 elif kind == "commitments":
                     rid = self._new_id("commitment")
-                    self.db.execute("INSERT INTO commitments (id, founder_id, week, action, cue, outcome, goal_id, "
-                                    "citations, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                                    (rid, self.fid, r["week"], r["action"], r["cue"], r["outcome"], r["goal_id"],
+                    self.db.execute("INSERT INTO commitments (id, founder_id, coach, week, action, cue, outcome, goal_id, "
+                                    "citations, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                                    (rid, self.fid, self.coach, r["week"], r["action"], r["cue"], r["outcome"], r["goal_id"],
                                      _j(r["citations"]), "open", now))
                     self._change("commitment", rid, "create", None, r, source)
                 elif kind == "decision":
                     rid = self._new_id("decision")
-                    self.db.execute("INSERT INTO decisions (id, founder_id, text, reasoning, citations, decided_at, "
-                                    "revisit_on) VALUES (?,?,?,?,?,?,?)",
-                                    (rid, self.fid, r["text"], r["reasoning"], _j(r["citations"]), now, r["revisit_on"]))
+                    self.db.execute("INSERT INTO decisions (id, founder_id, coach, text, reasoning, citations, decided_at, "
+                                    "revisit_on) VALUES (?,?,?,?,?,?,?,?)",
+                                    (rid, self.fid, self.coach, r["text"], r["reasoning"], _j(r["citations"]), now, r["revisit_on"]))
                     self._change("decision", rid, "create", None, r, source)
                 else:
                     rid = self._new_id("checkin")
-                    self.db.execute("INSERT INTO checkins (id, founder_id, week, summary, wins, blockers, created_at) "
-                                    "VALUES (?,?,?,?,?,?,?)",
-                                    (rid, self.fid, r["week"], r["summary"], _j(r["wins"]), _j(r["blockers"]), now))
+                    self.db.execute("INSERT INTO checkins (id, founder_id, coach, week, summary, wins, blockers, created_at) "
+                                    "VALUES (?,?,?,?,?,?,?,?)",
+                                    (rid, self.fid, self.coach, r["week"], r["summary"], _j(r["wins"]), _j(r["blockers"]), now))
                     self._change("checkin", rid, "create", None, r, source)
                 ids.append(rid)
             warnings = self._warnings(week=rows[0].get("week") if kind == "commitments" else None)
@@ -667,6 +745,187 @@ class FounderStore:
                                     "Founder reported or after asking.")
             return {"ids": ids, "warnings": warnings}
         return apply()
+
+
+    # ------------------------------------------------------------------ Notes (ADR-0020)
+    def _note_fields(self, entry: dict) -> dict:
+        title = self._text(entry.get("title"), "title")
+        if len(title) > D.NOTE_TITLE_MAX:
+            raise StoreError(f"title is longer than {D.NOTE_TITLE_MAX} characters; shorten it")
+        kind = entry.get("type")
+        if kind not in D.NOTE_TYPES:
+            raise StoreError(f"type must be one of: {', '.join(D.NOTE_TYPES)}")
+        origin = entry.get("origin") or "coach"
+        if origin not in D.NOTE_ORIGINS:
+            raise StoreError(f"origin must be one of: {', '.join(D.NOTE_ORIGINS)} (user: the person said it; "
+                             "coach: the coach concluded it)")
+        citations = self._check_citations(entry.get("citations"))
+        quotes = entry.get("quotes") or {}
+        if not isinstance(quotes, dict) or any(k not in citations for k in quotes):
+            raise StoreError("quotes must map a cited item_id to the words that support the Note")
+        evidence = []
+        for cid in citations:         # what was cited is kept as it was seen: an item id may vanish when the pack is rebuilt
+            info = (self.cite_lookup(cid) if self.cite_lookup else None) or {}
+            row = {"id": cid, "title": info.get("title"), "deep_link": info.get("deep_link") or None}
+            if cid in quotes:
+                q = self._text(quotes[cid], f"quote for {cid}")
+                row["quote"] = q[:D.NOTE_QUOTE_MAX]
+            evidence.append({k: v for k, v in row.items() if v})
+        links = entry.get("links") or []
+        if not isinstance(links, list) or len(links) > D.MAX_NOTE_LINKS:
+            raise StoreError(f"links must be a list of up to {D.MAX_NOTE_LINKS} {{to, type}} objects")
+        clean_links = []
+        for ln in links:
+            if not isinstance(ln, dict) or not ln.get("to"):
+                raise StoreError("each link needs `to` (a record id) and `type`")
+            if ln.get("type") not in D.LINK_TYPES:
+                raise StoreError(f"link type must be one of: {', '.join(D.LINK_TYPES)}")
+            clean_links.append((str(ln["to"]).strip(), ln["type"]))
+        return {"title": title, "summary": self._long_text(entry.get("summary"), "summary", D.NOTE_SUMMARY_MAX),
+                "type": kind, "origin": origin, "citations": citations, "evidence": evidence,
+                "revisit_on": self._date(entry.get("revisit_on"), "revisit_on"), "links": clean_links,
+                "supersedes": (str(entry["supersedes"]).strip() or None) if entry.get("supersedes") else None}
+
+    def _record_note(self, entry: dict, source: str) -> dict:
+        r = self._note_fields(entry)
+
+        def apply() -> dict:
+            now = self._iso()
+            for to, _ in r["links"]:
+                if self.get(to) is None:
+                    raise StoreError(f"no record {to!r} to link to; ids come from coach_get_context or coach_recall")
+            old = None
+            if r["supersedes"]:
+                old = self.get(r["supersedes"])
+                if old is None or old["kind"] != "note":
+                    raise StoreError(f"no Note {r['supersedes']!r} to supersede; ids come from coach_get_context "
+                                     "or coach_recall")
+                if old.get("superseded_by"):
+                    raise StoreError(f"{old['id']} was already superseded by {old['superseded_by']}; "
+                                     "supersede that one instead")
+            rid = self._new_id("note")
+            self.db.execute("INSERT INTO notes (id, founder_id, coach, title, summary, type, origin, citations, "
+                            "evidence, revisit_on, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (rid, self.fid, self.coach, r["title"], r["summary"], r["type"], r["origin"], _j(r["citations"]),
+                             _j(r["evidence"]), r["revisit_on"], now))
+            for to, kind in r["links"]:
+                self.db.execute("INSERT OR IGNORE INTO links (founder_id, coach, src, dst, type, created_at) "
+                                "VALUES (?,?,?,?,?,?)", (self.fid, self.coach, rid, to, kind, now))
+            if self.has_fts():
+                self.db.execute("INSERT INTO notes_fts (id, title, summary) VALUES (?,?,?)",
+                                (rid, r["title"], r["summary"]))
+            self._change("note", rid, "create", None, {k: v for k, v in r.items() if k != "supersedes"}, source)
+            if old is not None:
+                self.db.execute("UPDATE notes SET superseded_by=?, superseded_at=? WHERE id=?", (rid, now, old["id"]))
+                self.db.execute("INSERT OR IGNORE INTO links (founder_id, coach, src, dst, type, created_at) "
+                                "VALUES (?,?,?,?,?,?)", (self.fid, self.coach, rid, old["id"], "supersedes", now))
+                self._change("note", old["id"], "supersede", {"superseded_by": None}, {"superseded_by": rid}, source)
+            return {"ids": [rid], "warnings": self._note_warnings(r, old)}
+        return apply()
+
+    def _note_warnings(self, r: dict, old: dict | None) -> list[str]:
+        out = []
+        if r["origin"] == "coach":
+            out.append("origin is coach: this Note is the coach's own conclusion, a lead to check, not something the "
+                       "person said")
+        if old is not None and old.get("revisit_on") and not r["revisit_on"]:
+            out.append(f"the superseded Note {old['id']} had a revisit date ({old['revisit_on']}); the new one has "
+                       "none: set one with coach_update if it still applies")
+        return out
+
+    def notes(self, limit: int = 5, include_superseded: bool = False) -> list[dict]:
+        """Newest Notes first, without their summaries (the context digest and indexes list titles)."""
+        sql = ("SELECT id, title, type, origin, revisit_on, created_at, superseded_by FROM notes WHERE founder_id=? AND coach=?"
+               + ("" if include_superseded else " AND superseded_by IS NULL") + " ORDER BY created_at DESC, id DESC")
+        return self._rows(sql + (" LIMIT ?" if limit else ""), *((limit,) if limit else ()))
+
+    def notes_to_revisit(self) -> list[dict]:
+        return self._rows("SELECT id, title, revisit_on FROM notes WHERE founder_id=? AND coach=? AND superseded_by IS NULL "
+                          "AND revisit_on IS NOT NULL AND revisit_on<=? ORDER BY revisit_on", self.today().isoformat())
+
+    def note_count(self) -> int:
+        with self._lock:
+            return self.db.execute("SELECT COUNT(*) FROM notes WHERE founder_id=? AND coach=? AND superseded_by IS NULL",
+                                   (self.fid, self.coach,)).fetchone()[0]
+
+    def reindex_notes(self) -> int:
+        """Rebuild the keyword index from `notes` (it is derived, so this loses nothing); returns the Notes indexed."""
+        with self._lock:
+            if not self.has_fts() and not self._create_fts():
+                return 0
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                self.db.execute("DELETE FROM notes_fts")
+                self.db.execute("INSERT INTO notes_fts (id, title, summary) SELECT id, title, summary FROM notes")
+                n = self.db.execute("SELECT COUNT(*) FROM notes WHERE founder_id=? AND coach=?",
+                                    (self.fid, self.coach)).fetchone()[0]
+                self.db.execute("COMMIT")
+            except BaseException:
+                _rollback(self.db)
+                raise
+            return n
+
+    # ------------------------------------------------------------------ keyword search over the Project's memory
+    _WORD = re.compile(r"[^\W_]{2,}", re.UNICODE)
+
+    def recall(self, query: str, kinds: list[str] | None = None, limit: int = 8,
+               include_superseded: bool = False) -> list[dict]:
+        """Keyword search over this Project's Notes, Decisions, Goals, Commitments and Check-ins, best first.
+        [{id, kind, title, snippet, date, score, superseded_by?}]. Notes use the FTS5 index (bm25); the other kinds
+        are small and are scored by how many of the query's words they contain."""
+        words = list(dict.fromkeys(w.lower() for w in self._WORD.findall(query or "")))[:12]
+        if not words:
+            raise StoreError("query needs at least one word of two or more letters")
+        limit = max(1, min(25, int(limit)))
+        want = set(kinds or ("note", "decision", "goal", "commitment", "checkin"))
+        out: list[dict] = []
+        with self._lock:
+            if "note" in want:
+                out += self._recall_notes(words, include_superseded)
+            for kind, table, cols, title, day in (
+                    ("decision", "decisions", ("text", "reasoning"), "text", "decided_at"),
+                    ("goal", "goals", ("text", "measure", "note"), "text", "created_at"),
+                    ("commitment", "commitments", ("action", "outcome", "result_note"), "action", "created_at"),
+                    ("checkin", "checkins", ("summary",), "summary", "created_at")):
+                if kind not in want:
+                    continue
+                for row in self.db.execute(f"SELECT * FROM {table} WHERE founder_id=? AND coach=?", (self.fid, self.coach,)):
+                    hay = " ".join(str(row[c] or "") for c in cols).lower()
+                    hit = sum(1 for w in words if w in hay)
+                    if hit:
+                        out.append({"id": row["id"], "kind": kind, "title": str(row[title])[:120],
+                                    "snippet": _snippet(hay, words), "date": str(row[day])[:10],
+                                    "score": round(hit / len(words), 3)})
+        out.sort(key=lambda r: r["date"], reverse=True)          # newest first, then the best match first
+        out.sort(key=lambda r: -r["score"])
+        return out[:limit]
+
+    def _recall_notes(self, words: list[str], include_superseded: bool) -> list[dict]:
+        sup = "" if include_superseded else " AND n.superseded_by IS NULL"
+        rows: list[sqlite3.Row] = []
+        if self.has_fts():
+            match = " OR ".join(f"{w}*" for w in words)
+            try:
+                rows = self.db.execute(
+                    "SELECT n.*, bm25(notes_fts, 0.0, 4.0, 1.0) AS rank FROM notes_fts JOIN notes n ON n.id=notes_fts.id "
+                    f"WHERE notes_fts MATCH ? AND n.founder_id=? AND n.coach=?{sup}", (match, self.fid, self.coach)).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        else:
+            rows = [r for r in self.db.execute(f"SELECT n.*, 0.0 AS rank FROM notes n WHERE n.founder_id=? AND n.coach=?{sup}",
+                                               (self.fid, self.coach,))
+                    if any(w in (r["title"] + " " + r["summary"]).lower() for w in words)]
+        out = []
+        for r in rows:
+            hay = (r["title"] + " " + r["summary"]).lower()
+            hit = sum(1 for w in words if w in hay)
+            item = {"id": r["id"], "kind": "note", "title": r["title"], "snippet": _snippet(hay, words),
+                    "date": r["created_at"][:10], "score": round(max(hit, 1) / len(words), 3), "type": r["type"],
+                    "origin": r["origin"]}
+            if r["superseded_by"]:
+                item["superseded_by"] = r["superseded_by"]
+            out.append(item)
+        return out
 
     # ------------------------------------------------------------------ Feedback
     def feedback(self, entry: dict, request_id: str | None = None, context: dict | None = None,
@@ -714,16 +973,16 @@ class FounderStore:
 
         def apply() -> dict:
             rid, now = self._new_id("feedback"), self._iso()
-            self.db.execute("INSERT INTO feedback (id, founder_id, created_at, category, question, answer, cited, "
-                            "searches, note, expected, context) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                            (rid, self.fid, now, row["category"], row["question"], row["answer"], _j(row["cited"]),
+            self.db.execute("INSERT INTO feedback (id, founder_id, coach, created_at, category, question, answer, "
+                            "cited, searches, note, expected, context) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (rid, self.fid, self.coach, now, row["category"], row["question"], row["answer"], _j(row["cited"]),
                              _j(row["searches"]), row["note"], row["expected"], _j(context)))
             self._change("feedback", rid, "create", None, {"category": cat}, source)
             return {"id": rid, "saved_at": now, "category": cat}
         return apply()
 
     def feedback_list(self) -> list[dict]:
-        rows = self._rows("SELECT * FROM feedback WHERE founder_id=? ORDER BY created_at, id")
+        rows = self._rows("SELECT * FROM feedback WHERE founder_id=? AND coach=? ORDER BY created_at, id")
         for r in rows:
             for k in ("cited", "searches", "context"):
                 if isinstance(r.get(k), str):
@@ -752,9 +1011,9 @@ class FounderStore:
             with self._lock:
                 self.db.execute(f"PRAGMA busy_timeout={USAGE_BUSY_MS}")
                 try:
-                    self.db.execute("INSERT INTO usage (founder_id, at, run, tool, outcome, duration_ms, version, detail) "
-                                    "VALUES (?,?,?,?,?,?,?,?)",
-                                    (self.fid, self._iso(), str(run)[:40], str(tool)[:60],
+                    self.db.execute("INSERT INTO usage (founder_id, coach, at, run, tool, outcome, duration_ms, version, "
+                                    "detail) VALUES (?,?,?,?,?,?,?,?,?)",
+                                    (self.fid, self.coach, self._iso(), str(run)[:40], str(tool)[:60],
                                      outcome if outcome in USAGE_OUTCOMES else "error", max(0, int(duration_ms)),
                                      version, _j(detail or {})))
                 finally:
@@ -769,11 +1028,11 @@ class FounderStore:
         """Delete usage events older than `days` days; returns how many."""
         cutoff = (self.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
         with self._lock:
-            n = self.db.execute("DELETE FROM usage WHERE founder_id=? AND at < ?", (self.fid, cutoff)).rowcount
+            n = self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=? AND at < ?", (self.fid, self.coach, cutoff)).rowcount
         return n
 
     def usage_rows(self, days: int | None = None) -> list[dict]:
-        sql, args = "SELECT * FROM usage WHERE founder_id=?", [self.fid]
+        sql, args = "SELECT * FROM usage WHERE founder_id=? AND coach=?", [self.fid, self.coach]
         if days is not None:
             sql += " AND at >= ?"
             args.append((self.now() - dt.timedelta(days=days)).isoformat(timespec="seconds"))
@@ -788,7 +1047,8 @@ class FounderStore:
         return rows
 
     def usage_summary(self, days: int = 30) -> dict:
-        """Per tool: calls, errors, empty results, Gaps, keyword-mode searches, p50/p95 duration."""
+        """Per tool: calls, errors, empty results, Gaps, keyword-mode searches, p50/p95 duration; and the newest
+        errors with their (already redacted) messages."""
         rows = self.usage_rows(days)
 
         def pct(xs: list[int], q: float) -> int | None:
@@ -808,9 +1068,12 @@ class FounderStore:
         for t in tools.values():
             ms = t.pop("_ms")
             t["p50_ms"], t["p95_ms"] = pct(ms, 0.5), pct(ms, 0.95)
+        errors = [{"at": r["at"][:19], "tool": r["tool"], "error": str(r["detail"].get("error") or "")}
+                  for r in reversed(rows) if r["outcome"] == "error"]
         return {"days": days, "calls": len(rows), "runs": len({r["run"] for r in rows}),
                 "first": rows[0]["at"] if rows else None, "last": rows[-1]["at"] if rows else None,
-                "tools": dict(sorted(tools.items(), key=lambda kv: -kv[1]["calls"]))}
+                "tools": dict(sorted(tools.items(), key=lambda kv: -kv[1]["calls"])),
+                "recent_errors": errors[:RECENT_ERRORS]}
 
     def export_usage(self, out_dir: Path | None = None) -> dict:
         """The usage log as one JSONL file to send to the maintainers (nothing else from the store)."""
@@ -823,17 +1086,23 @@ class FounderStore:
 
     def clear_usage(self) -> int:
         with self._lock:
-            return self.db.execute("DELETE FROM usage WHERE founder_id=?", (self.fid,)).rowcount
+            return self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=?", (self.fid, self.coach,)).rowcount
+
+    def _goal_visible(self, gid: str) -> bool:
+        sql, who = self._in("goals", "SELECT 1 FROM goals WHERE id=? AND founder_id=? AND coach=?")
+        return bool(self.db.execute(sql, (gid, self.fid, *who)).fetchone())
 
     def _warnings(self, week: str | None = None) -> list[str]:
         out = []
         week = week or self.this_week()
-        n = self.db.execute("SELECT COUNT(*) FROM commitments WHERE founder_id=? AND week=? AND status='open'",
-                            (self.fid, week)).fetchone()[0]
+        sql, who = self._in("commitments", "SELECT COUNT(*) FROM commitments WHERE founder_id=? AND coach=? AND week=? "
+                                           "AND status='open'")
+        n = self.db.execute(sql, (self.fid, *who, week)).fetchone()[0]
         if n > D.MAX_OPEN_COMMITMENTS_PER_WEEK:
             out.append(f"{n} open Commitments in {week}; Focus works best with at most "
                        f"{D.MAX_OPEN_COMMITMENTS_PER_WEEK}. Ask the Founder which to drop or carry.")
-        g = self.db.execute("SELECT COUNT(*) FROM goals WHERE founder_id=? AND status='active'", (self.fid,)).fetchone()[0]
+        sql, who = self._in("goals", "SELECT COUNT(*) FROM goals WHERE founder_id=? AND coach=? AND status='active'")
+        g = self.db.execute(sql, (self.fid, *who)).fetchone()[0]
         if g > D.MAX_ACTIVE_GOALS:
             out.append(f"{g} active Goals; suggest the Founder keeps at most {D.MAX_ACTIVE_GOALS}.")
         return out
@@ -842,10 +1111,22 @@ class FounderStore:
         kind = D.KIND_OF_PREFIX.get((rid or "").split("-", 1)[0])
         if not kind:
             return None
-        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins"}[kind]
+        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
+                 "note": "notes"}[kind]
         with self._lock:
-            row = self.db.execute(f"SELECT * FROM {table} WHERE id=? AND founder_id=?", (rid, self.fid)).fetchone()
-        return {"kind": kind, **_row(row)} if row else None
+            sql, who = self._in(table, f"SELECT * FROM {table} WHERE id=? AND founder_id=? AND coach=?")
+            row = self.db.execute(sql, (rid, self.fid, *who)).fetchone()
+            if row is None:
+                return None
+            out = {"kind": kind, **_row(row, self.coach)}
+            if kind == "note":
+                out["links"] = [{"to": r["dst"], "type": r["type"]} for r in self.db.execute(
+                    "SELECT dst, type FROM links WHERE founder_id=? AND coach=? AND src=? ORDER BY created_at, dst",
+                    (self.fid, self.coach, rid))]
+                out["linked_from"] = [{"from": r["src"], "type": r["type"]} for r in self.db.execute(
+                    "SELECT src, type FROM links WHERE founder_id=? AND coach=? AND dst=? ORDER BY created_at, src",
+                    (self.fid, self.coach, rid))]
+            return out
 
     def update(self, rid: str, status: str | None = None, changes: dict | None = None, note: str | None = None,
                request_id: str | None = None, source: str = "coach_update") -> dict:
@@ -871,7 +1152,10 @@ class FounderStore:
             raise StoreError(f"can't change {', '.join(bad)} on a {kind}; editable: {', '.join(D.EDITABLE[kind])}")
         if note is not None:
             if kind not in ("goal", "commitment"):
-                raise StoreError(f"a note applies to Goals and Commitments; for a {kind}, change its text instead")
+                more = (f", or save the thinking around it as a Note (coach_record kind note, linked to {rid})"
+                        if product.has("notes") and kind in ("decision", "checkin") else "")
+                raise StoreError(f"`note` applies to Goals and Commitments; a {kind} has no note: change "
+                                 f"{', '.join(D.EDITABLE[kind])} with `changes`{more}")
             changes["note" if kind == "goal" else "result_note"] = note
         clean = {}
         for k, v in changes.items():
@@ -889,7 +1173,8 @@ class FounderStore:
             raise StoreError("nothing to change: pass a status, changes or a note")
         if status == "carried" and rec["status"] != "open":
             raise StoreError(f"only an open Commitment can be carried; {rid} is {rec['status']}")
-        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins"}[kind]
+        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
+                 "note": "notes"}[kind]
 
         def apply() -> dict:
             now = self._iso()
@@ -905,9 +1190,9 @@ class FounderStore:
             if status == "carried":
                 week = max(self.this_week(), next_week(rec["week"]))
                 new = self._new_id("commitment")
-                self.db.execute("INSERT INTO commitments (id, founder_id, week, action, cue, outcome, goal_id, "
-                                "citations, status, carried_from, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                                (new, self.fid, week, rec["action"], rec["cue"], rec["outcome"], rec["goal_id"],
+                self.db.execute("INSERT INTO commitments (id, founder_id, coach, week, action, cue, outcome, goal_id, "
+                                "citations, status, carried_from, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (new, self.fid, self.coach, week, rec["action"], rec["cue"], rec["outcome"], rec["goal_id"],
                                  _j(rec["citations"]), "open", rid, now))
                 self._change("commitment", new, "create", None, {"carried_from": rid, "week": week}, source)
                 out.update(new_id=new, carried_weeks=self._carry_streak(new))
@@ -925,24 +1210,54 @@ class FounderStore:
             n, cur = n + 1, row[0]
 
     # ------------------------------------------------------------------ reads
-    def _rows(self, sql: str, *args) -> list[dict]:
+    def readers(self, kind: str) -> list[str]:
+        """The coaches whose records of `kind` (goals, commitments, decisions, profile) this coach reads: itself
+        first, then every other coach of the Project that doesn't keep that kind to itself. Everything else
+        (Notes, Check-ins, holdings, usage ...) is read only by the coach that wrote it (ADR-0019, ADR-0020)."""
+        if self.name != "founder" or kind not in SHARED_KINDS or "*" in self.owned or kind in self.owned:
+            return [self.coach]
+        return [self.coach, *sorted(p for p, o in self._peer_map().items() if "*" not in o and kind not in o
+                                    and p != self.coach)]
+
+    def _peer_map(self) -> dict[str, list[str]]:
+        """The other coaches on this machine, re-read when one registers or goes (the registry folder changed)."""
+        if self.peers_home is not None:
+            try:
+                mark = (self.peers_home / "installed").stat().st_mtime_ns
+            except OSError:
+                mark = None
+            if mark != self._peers_seen:
+                from . import installed
+                self.peers, self._peers_seen = installed.peers(self.peers_home), mark
+        return self.peers
+
+    def _in(self, kind: str, sql: str) -> tuple[str, list[str]]:
+        """`sql` with its first `coach=?` widened to the coaches that may be read for `kind`, and those coaches."""
+        who = self.readers(kind)
+        return sql.replace("coach=?", f"coach IN ({','.join('?' * len(who))})", 1), who
+
+    def _rows(self, sql: str, *args, shared: str | None = None) -> list[dict]:
+        who = [self.coach]
+        if shared:
+            sql, who = self._in(shared, sql)
         with self._lock:
-            return [_row(r) for r in self.db.execute(sql, (self.fid, *args)).fetchall()]
+            return [_row(r, self.coach) for r in self.db.execute(sql, (self.fid, *who, *args)).fetchall()]
 
     def goals(self, status: str | None = "active") -> list[dict]:
         if status:
-            return self._rows("SELECT * FROM goals WHERE founder_id=? AND status=? ORDER BY created_at", status)
-        return self._rows("SELECT * FROM goals WHERE founder_id=? ORDER BY created_at")
+            return self._rows("SELECT * FROM goals WHERE founder_id=? AND coach=? AND status=? ORDER BY created_at",
+                              status, shared="goals")
+        return self._rows("SELECT * FROM goals WHERE founder_id=? AND coach=? ORDER BY created_at", shared="goals")
 
     def commitments(self, week: str | None = None, status: str | None = None) -> list[dict]:
-        sql, args = "SELECT * FROM commitments WHERE founder_id=?", []
+        sql, args = "SELECT * FROM commitments WHERE founder_id=? AND coach=?", []
         if week:
             sql += " AND week=?"
             args.append(week)
         if status:
             sql += " AND status=?"
             args.append(status)
-        rows = self._rows(sql + " ORDER BY week, created_at", *args)
+        rows = self._rows(sql + " ORDER BY week, created_at", *args, shared="commitments")
         for r in rows:
             if r.get("carried_from"):
                 r["carried_weeks"] = self._carry_streak(r["id"])
@@ -952,22 +1267,23 @@ class FounderStore:
         return [c for c in self.commitments(status="open") if c["week"] < self.this_week()]
 
     def checkins(self, limit: int = 5) -> list[dict]:
-        return self._rows("SELECT * FROM checkins WHERE founder_id=? ORDER BY created_at DESC LIMIT ?", limit)
+        return self._rows("SELECT * FROM checkins WHERE founder_id=? AND coach=? ORDER BY created_at DESC LIMIT ?", limit)
 
     def decisions(self, limit: int = 5) -> list[dict]:
-        return self._rows("SELECT * FROM decisions WHERE founder_id=? ORDER BY decided_at DESC LIMIT ?", limit)
+        return self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? ORDER BY decided_at DESC LIMIT ?",
+                          limit, shared="decisions")
 
     def decisions_to_revisit(self) -> list[dict]:
-        return self._rows("SELECT * FROM decisions WHERE founder_id=? AND revisit_on IS NOT NULL AND revisit_on<=? "
-                          "ORDER BY revisit_on", self.today().isoformat())
+        return self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? AND revisit_on IS NOT NULL AND revisit_on<=? "
+                          "ORDER BY revisit_on", self.today().isoformat(), shared="decisions")
 
     def recent_changes(self, limit: int = 10) -> list[dict]:
-        return self._rows("SELECT seq, at, entity, entity_id, op, source FROM changes WHERE founder_id=? "
+        return self._rows("SELECT seq, at, entity, entity_id, op, source FROM changes WHERE founder_id=? AND coach=? "
                           "ORDER BY seq DESC LIMIT ?", limit)
 
     def created_at(self) -> dt.datetime | None:
         with self._lock:
-            row = self.db.execute("SELECT MIN(at) FROM changes WHERE founder_id=?", (self.fid,)).fetchone()
+            row = self.db.execute("SELECT MIN(at) FROM changes WHERE founder_id=? AND coach=?", (self.fid, self.coach,)).fetchone()
         return dt.datetime.fromisoformat(row[0]) if row and row[0] else None
 
     # ------------------------------------------------------------------ Holdings (the investor Pack)
@@ -979,13 +1295,14 @@ class FounderStore:
         def apply() -> dict:
             now, done, skipped = self._iso(), [], []
             for s in snaps:
-                if self.db.execute("SELECT 1 FROM holdings_snapshots WHERE founder_id=? AND account=? AND as_of=? "
-                                   "AND sha256=?", (self.fid, s.account, s.as_of, s.sha256)).fetchone():
+                if self.db.execute("SELECT 1 FROM holdings_snapshots WHERE founder_id=? AND coach=? AND account=? AND as_of=? "
+                                   "AND sha256=?", (self.fid, self.coach, s.account, s.as_of, s.sha256)).fetchone():
                     skipped.append({"account": s.account, "as_of": s.as_of})
                     continue
                 sid = self._new_id("holdings")
-                self.db.execute("INSERT INTO holdings_snapshots VALUES (?,?,?,?,?,?,?,?,?)",
-                                (sid, self.fid, s.account, s.as_of, now, s.broker, s.sha256, source[:200],
+                self.db.execute("INSERT INTO holdings_snapshots (id, founder_id, coach, account, as_of, imported_at, "
+                                "broker, sha256, source, total_cents) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                (sid, self.fid, self.coach, s.account, s.as_of, now, s.broker, s.sha256, source[:200],
                                  s.total_cents))
                 self.db.executemany("INSERT INTO positions VALUES (?,?,?,?,?,?)",
                                     [(sid, p.symbol, (p.description or "")[:200], p.quantity, p.value_cents,
@@ -1020,9 +1337,10 @@ class FounderStore:
         def apply() -> dict:
             now = self._iso()
             for s, c in clean.items():
-                before = self.db.execute("SELECT asset_class FROM asset_classes WHERE founder_id=? AND symbol=?",
-                                         (self.fid, s)).fetchone()
-                self.db.execute("INSERT OR REPLACE INTO asset_classes VALUES (?,?,?,?)", (self.fid, s, c, now))
+                before = self.db.execute("SELECT asset_class FROM asset_classes WHERE founder_id=? AND coach=? AND symbol=?",
+                                         (self.fid, self.coach, s)).fetchone()
+                self.db.execute("INSERT OR REPLACE INTO asset_classes (founder_id, coach, symbol, asset_class, set_at) "
+                                "VALUES (?,?,?,?,?)", (self.fid, self.coach, s, c, now))
                 self._change("asset_class", s, "update" if before else "create", before[0] if before else None, c,
                              source)
             return {"labelled": clean}
@@ -1031,15 +1349,15 @@ class FounderStore:
     def asset_labels(self) -> dict[str, str]:
         with self._lock:
             return {r[0]: r[1] for r in self.db.execute(
-                "SELECT symbol, asset_class FROM asset_classes WHERE founder_id=?", (self.fid,))}
+                "SELECT symbol, asset_class FROM asset_classes WHERE founder_id=? AND coach=?", (self.fid, self.coach,))}
 
     def holdings(self) -> tuple[list[dict], dict[str, list[dict]]]:
         """Every snapshot (oldest first) and its positions, for founder_coach.invest.review."""
-        snaps = self._rows("SELECT * FROM holdings_snapshots WHERE founder_id=? ORDER BY as_of, imported_at")
+        snaps = self._rows("SELECT * FROM holdings_snapshots WHERE founder_id=? AND coach=? ORDER BY as_of, imported_at")
         pos: dict[str, list[dict]] = {s["id"]: [] for s in snaps}
         with self._lock:
             for r in self.db.execute("SELECT p.* FROM positions p JOIN holdings_snapshots h ON h.id = p.snapshot_id "
-                                     "WHERE h.founder_id=?", (self.fid,)):
+                                     "WHERE h.founder_id=? AND h.coach=?", (self.fid, self.coach,)):
                 pos[r["snapshot_id"]].append({"symbol": r["symbol"], "description": r["description"],
                                               "value_cents": r["value_cents"], "csv_class": r["csv_class"]})
         return snaps, pos
@@ -1059,15 +1377,17 @@ class FounderStore:
                 "profile": self.profile(),
                 "profile_history": {f: self.profile_history(f) for f in D.PROFILE_FIELDS},
                 "goals": self.goals(None), "commitments": self.commitments(),
-                "decisions": self._rows("SELECT * FROM decisions WHERE founder_id=? ORDER BY decided_at"),
-                "checkins": self._rows("SELECT * FROM checkins WHERE founder_id=? ORDER BY created_at"),
+                "decisions": self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? ORDER BY decided_at"),
+                "checkins": self._rows("SELECT * FROM checkins WHERE founder_id=? AND coach=? ORDER BY created_at"),
+                "notes": self._rows("SELECT * FROM notes WHERE founder_id=? AND coach=? ORDER BY created_at"),
+                "links": self._rows("SELECT * FROM links WHERE founder_id=? AND coach=? ORDER BY created_at"),
                 "feedback": self.feedback_list(),
-                "holdings": self._rows("SELECT * FROM holdings_snapshots WHERE founder_id=? ORDER BY as_of"),
+                "holdings": self._rows("SELECT * FROM holdings_snapshots WHERE founder_id=? AND coach=? ORDER BY as_of"),
                 "positions": self._rows("SELECT p.* FROM positions p JOIN holdings_snapshots h ON h.id = "
-                                        "p.snapshot_id WHERE h.founder_id=?"),
+                                        "p.snapshot_id WHERE h.founder_id=? AND h.coach=?"),
                 "asset_classes": self.asset_labels(),
                 "usage": self.usage_rows(),
-                "changes": self._rows("SELECT * FROM changes WHERE founder_id=? ORDER BY seq")}
+                "changes": self._rows("SELECT * FROM changes WHERE founder_id=? AND coach=? ORDER BY seq")}
         j, md = out_dir / "founder-export.json", out_dir / "FOUNDER.md"
         _atomic(j, json.dumps(data, indent=1, ensure_ascii=False))
         _atomic(md, self.markdown())
@@ -1084,8 +1404,17 @@ class FounderStore:
             self.db.execute("PRAGMA secure_delete=ON")     # overwrite freed pages, don't just unlink them
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                for t in (*TABLES, "requests", "usage"):
-                    self.db.execute(f"DELETE FROM {t}")
+                # Only this coach's records: another coach may share the Project's store (ADR-0019). The
+                # idempotency cache holds no coach, so it is emptied whole; it only costs a repeated request.
+                who = (self.fid, self.coach)
+                if self.has_fts():
+                    self.db.execute("DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes "
+                                    "WHERE founder_id=? AND coach=?)", who)
+                self.db.execute("DELETE FROM positions WHERE snapshot_id IN (SELECT id FROM holdings_snapshots "
+                                "WHERE founder_id=? AND coach=?)", who)
+                for t in (*(t for t in TABLES if t != "positions"), "usage"):
+                    self.db.execute(f"DELETE FROM {t} WHERE founder_id=? AND coach=?", who)
+                self.db.execute("DELETE FROM requests")
                 self.db.execute("COMMIT")
             except BaseException:
                 _rollback(self.db)
@@ -1097,6 +1426,13 @@ class FounderStore:
                     import logging
                     logging.getLogger("founder_coach").warning("forget: %s skipped (%s)", stmt, e)
             self.md_path.unlink(missing_ok=True)
+            self._write_project_md()                   # what the other coaches left (or the file's end)
+            try:
+                from . import notes_view
+                notes_view.clear_vault(self)
+            except OSError as e:
+                import logging
+                logging.getLogger("founder_coach").warning("forget: the notes folder was not cleared (%s)", e)
             removed = 0
             if not keep_backup and self.backups.exists():
                 for p in self.backups.glob("*"):
@@ -1109,6 +1445,27 @@ class FounderStore:
     def markdown(self) -> str:
         from .nudges import render_common_markdown, render_markdown
         return render_markdown(self) if self.name == "founder" else render_common_markdown(self)
+
+    def _write_vault(self) -> None:
+        """The Notes index and files beside the store (a derived, read-only view, ADR-0020). Only a Project store whose
+        Pack keeps Notes has them, and a store with no Notes gets no folder."""
+        if self.name != "founder" or not product.has("notes"):
+            return
+        try:
+            from . import notes_view
+            with self._lock:
+                notes_view.sync_vault(self)
+        except Exception as e:                # noqa: BLE001 -- a view; never fail a write for it
+            import logging
+            logging.getLogger("founder_coach").warning("the notes folder was not updated: %s", e)
+
+    def _write_project_md(self) -> None:
+        try:
+            from . import project_md
+            project_md.sync(self)
+        except Exception as e:                # noqa: BLE001 -- a view; never fail a write for it
+            import logging
+            logging.getLogger("founder_coach").warning("PROJECT.md not updated: %s", e)
 
     def _write_markdown(self) -> None:
         try:
@@ -1128,15 +1485,26 @@ def _file_key(path: Path) -> tuple[int, int] | None:
     return st.st_dev, st.st_ino
 
 
-def _row(r: sqlite3.Row) -> dict:
+def _snippet(text: str, words: list[str], width: int = 160) -> str:
+    """The stretch of `text` around the first word of the query that it contains."""
+    at = min((i for i in (text.find(w) for w in words) if i >= 0), default=0)
+    start = max(0, at - width // 4)
+    return ("..." if start else "") + " ".join(text[start:start + width].split())
+
+
+def _row(r: sqlite3.Row, me: str | None = None) -> dict:
+    """A row as a record. The coach stamp is shown only on a record another coach made (`me` is the reader)."""
     d = dict(r)
-    for k in ("citations", "wins", "blockers"):
+    for k in ("citations", "wins", "blockers", "evidence"):
         if k in d and isinstance(d[k], str):
             try:
                 d[k] = json.loads(d[k])
             except ValueError:
                 pass
     d.pop("founder_id", None)
+    who = d.pop("coach", "")
+    if me is not None and who and who != me:
+        d["coach"] = who
     return d
 
 
@@ -1315,6 +1683,8 @@ def restore(home: str | Path | None = None, backup: str | Path | None = None) ->
     try:
         final = store.check()
         store._write_markdown()
+        store._write_vault()
+        store._write_project_md()
     finally:
         store.close()
     return {"restored_from": str(src_path), "set_aside": str(aside) if aside else None,

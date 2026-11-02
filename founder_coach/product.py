@@ -25,7 +25,7 @@ if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", ID):
 ENV_PREFIX: str = ID.upper().replace("-", "_") + "_"
 # The Pack this plugin is (ADR-0016): its Domains and the memory modules it keeps beyond the core (profile,
 # Feedback, usage). A product.json from before Packs is the founder Pack with every module.
-MODULES = ("goals", "commitments", "checkins", "decisions")     # a product.json from before Packs: the founder's
+MODULES = ("goals", "commitments", "checkins", "decisions", "notes")     # a product.json from before Packs: the founder's
 # `common_fields`: the Common profile facts it reads and offers to share (absent: all of them; [] none).
 PACK: dict = {"id": "founder", "domains": [], "modules": list(MODULES), **(_DATA.get("pack") or {})}
 
@@ -42,7 +42,7 @@ def reword(text: str) -> str:
 
 
 def has(module: str) -> bool:
-    """This Pack keeps `module` (goals, commitments, checkins, decisions)."""
+    """This Pack keeps `module` (goals, commitments, checkins, decisions, notes)."""
     return module in (PACK.get("modules") or ())
 
 

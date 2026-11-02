@@ -33,6 +33,7 @@ def register(home: Path, pack_path: Path | None, meta: dict | None) -> None:
         d.mkdir(parents=True, exist_ok=True)
         entry = {"product_id": product.ID, "display_name": product.DISPLAY_NAME, "pack": product.PACK.get("id"),
                  "domains": sorted((meta.get("domains") or {}).keys()) or list(product.PACK.get("domains") or []),
+                 "owned": list(product.PACK.get("owned") or []),
                  "pack_path": str(Path(pack_path).resolve()), "search_tool": "coach_search",
                  "updated": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
         tmp = d / f".{product.ID}.json.tmp-{os.getpid()}"
@@ -40,6 +41,25 @@ def register(home: Path, pack_path: Path | None, meta: dict | None) -> None:
         os.replace(tmp, d / f"{product.ID}.json")
     except OSError as e:
         log.warning("couldn't register this coach for the others to find: %s", e)
+
+
+def peers(home: Path | None) -> dict[str, list[str]]:
+    """The Packs of the other coaches on this machine -> what each keeps private (ADR-0019). A coach that is not
+    registered here is not listed, so a record it stamped is read by nobody else."""
+    if home is None:
+        return {}
+    out: dict[str, list[str]] = {}
+    for f in sorted((home / "installed").glob("*.json")):
+        if f.stem == product.ID:
+            continue
+        try:
+            e = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        pack = e.get("pack")
+        if isinstance(pack, str) and pack and pack != product.PACK.get("id"):
+            out[pack] = [str(x) for x in (e.get("owned") or []) if isinstance(x, str)]
+    return out
 
 
 def others(home: Path | None) -> list[dict]:

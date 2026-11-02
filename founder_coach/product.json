@@ -14,7 +14,8 @@
       "goals",
       "commitments",
       "checkins",
-      "decisions"
+      "decisions",
+      "notes"
     ],
     "common_fields": [
       "timezone",

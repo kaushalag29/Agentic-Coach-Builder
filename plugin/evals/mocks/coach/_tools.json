@@ -45,7 +45,7 @@
       "title": "Kinds"
      },
      "query": {
-      "description": "the question or one part of it",
+      "description": "the question or one part of it, written as a full question in the sources' words, never a string of keywords (search and coverage are tuned on questions)",
       "maxLength": 500,
       "minLength": 2,
       "title": "Query",
@@ -619,7 +619,7 @@
   },
   {
    "name": "coach_get_context",
-   "description": "Start here, and add coach_search in the same message when the Founder shares a plan or claim to judge (a missing\nprofile never replaces that search): today's date and ISO week, the Founder profile (stale facts flagged), active Goals,\nthis week's and overdue Commitments, the last Check-in, recent Decisions, and what's due (Nudges),\nand, when the knowledge covers several subjects (Domains), what each is about.\nRecord ids here are what coach_update takes.",
+   "description": "Start here, and add coach_search in the same message when the Founder shares a plan or claim to judge (a missing\nprofile never replaces that search): today's date and ISO week, the Founder profile (stale facts flagged), active Goals,\nthis week's and overdue Commitments, the last Check-in, recent Decisions, the newest Note titles, and what's due (Nudges),\nand, when the knowledge covers several subjects (Domains), what each is about.\nRecord ids here are what coach_update takes.",
    "inputSchema": {
     "properties": {
      "response_format": {
@@ -638,6 +638,7 @@
    "outputSchema": {
     "properties": {
      "goals": {
+      "description": "the Project's active Goals; one with a `coach` was made by another coach of this Project",
       "items": {
        "additionalProperties": true,
        "type": "object"
@@ -670,6 +671,19 @@
       "default": null,
       "description": "the Domains the knowledge pack covers (name, items, what it is about); present only when there are several",
       "title": "Library"
+     },
+     "notes_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "Notes not superseded; present when this coach keeps Notes",
+      "title": "Notes Total"
      },
      "nudges": {
       "items": {
@@ -741,11 +755,21 @@
       "title": "Projects"
      },
      "recent_decisions": {
+      "description": "the newest Decisions; one with a `coach` was made by another coach of this Project",
       "items": {
        "additionalProperties": true,
        "type": "object"
       },
       "title": "Recent Decisions",
+      "type": "array"
+     },
+     "recent_notes": {
+      "description": "the newest Notes, titles only (id, title, type, origin, created_at, revisit_on); coach_recall finds older ones",
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Recent Notes",
       "type": "array"
      },
      "shared_fields": {
@@ -935,20 +959,36 @@
   },
   {
    "name": "coach_project",
-   "description": "Projects keep separate memory: one per company or product the Founder works on with this coach. A\nsession works on one active Project; with several and none chosen, ask which one, then switch. create\nmakes a Project and switches to it (setup does this first); rename changes its name, never its memory;\nsummary shows another Project's profile and Goals, read-only, only when the Founder asks to look at or\ncompare it. Nothing is ever copied between Projects. Call create, switch or rename only when the Founder asks,\nor in setup for the one they named; never to organise memory on your own.",
+   "description": "Projects keep separate memory: one per company or product the Founder works on with this coach, shared by\ntheir coaches. The work folder the app gives chooses the Project, and a folder linked to nothing gets no\nmemory until the Founder links it (link) or makes a Project for it (create links it). Without a folder a\nsession works on one active Project; with several and none chosen, ask which one, then switch. create\nmakes a Project and switches to it (setup does this first); rename changes its name, never its memory;\nsummary shows another Project's profile and Goals, read-only, only when the Founder asks to look at or\ncompare it. Nothing is ever copied between Projects. Call create, switch, rename, link or unlink only when the Founder asks,\nor in setup for the one they named; never to organise memory on your own.",
    "inputSchema": {
     "properties": {
      "action": {
-      "description": "list; switch to `project`; create `name` and switch to it; rename `project` (default: the active one) to `name`; summary of `project`, read-only",
+      "description": "list; switch to `project`; create `name` and switch to it; rename `project` (default: the active one) to `name`; summary of `project`, read-only; link `folder` (default: the work folder the app gave) to `project` (default: the active one); unlink it",
       "enum": [
        "list",
        "switch",
        "create",
        "rename",
-       "summary"
+       "summary",
+       "link",
+       "unlink"
       ],
       "title": "Action",
       "type": "string"
+     },
+     "folder": {
+      "anyOf": [
+       {
+        "maxLength": 400,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "a work folder (default: the one the app gave, when it gave one)",
+      "title": "Folder"
      },
      "name": {
       "anyOf": [
@@ -999,6 +1039,36 @@
       ],
       "description": "the active Project {id, name}, or null when none is chosen",
       "title": "Active"
+     },
+     "folder": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "the work folder the app gave: {path, linked_to (the Project id, or null when it is linked to nothing)}",
+      "title": "Folder"
+     },
+     "folders": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "the folders the active Project is linked to",
+      "title": "Folders"
      },
      "mode": {
       "description": "single: one data folder, no Projects",
@@ -1061,7 +1131,7 @@
   },
   {
    "name": "coach_record",
-   "description": "Save one new record. kind \"commitments\" takes 1-3 if-then plans with measurable outcomes (the\nweek's Focus). Citations must be item_ids returned by coach_search or coach_read. Warnings flag\nmore than 3 open Commitments or Goals. A Decision is a choice the Founder presents as decided (\"I've decided\", \"we chose A over B\"); a dropped Commitment, a shift of priorities or finished work is not one: it goes in the Commitment's note or the Check-in summary. Call only after the Founder has approved the exact text.",
+   "description": "Save one new record. kind \"commitments\" takes 1-3 if-then plans with measurable outcomes (the\nweek's Focus). Citations must be item_ids returned by coach_search or coach_read. Warnings flag\nmore than 3 open Commitments or Goals. A Decision is a choice the Founder presents as decided (\"I've decided\", \"we chose A over B\"); a dropped Commitment, a shift of priorities or finished work is not one: it goes in the Commitment's note or the Check-in summary. A Note (kind \"note\") is a dated record of a discussion, research or an insight: a title, a summary, its type, and origin \"user\" when the Founder said it or \"coach\" when you concluded it; link it to the record it is about; give `supersedes` only after the Founder confirms the older Note no longer holds. Call only after the Founder has approved the exact text.",
    "inputSchema": {
     "$defs": {
      "CheckinIn": {
@@ -1283,6 +1353,129 @@
       ],
       "title": "GoalIn",
       "type": "object"
+     },
+     "NoteIn": {
+      "properties": {
+       "citations": {
+        "description": "item_ids from coach_search/coach_read",
+        "items": {
+         "type": "string"
+        },
+        "title": "Citations",
+        "type": "array"
+       },
+       "kind": {
+        "const": "note",
+        "title": "Kind",
+        "type": "string"
+       },
+       "links": {
+        "items": {
+         "$ref": "#/$defs/NoteLinkIn"
+        },
+        "maxItems": 8,
+        "title": "Links",
+        "type": "array"
+       },
+       "origin": {
+        "default": "coach",
+        "description": "user: the person said it; coach: you concluded it (a lead to check, not a fact about them)",
+        "enum": [
+         "user",
+         "coach"
+        ],
+        "title": "Origin",
+        "type": "string"
+       },
+       "quotes": {
+        "additionalProperties": {
+         "type": "string"
+        },
+        "description": "cited item_id -> the words that support the Note (kept with the Note, because an item can leave the library)",
+        "title": "Quotes",
+        "type": "object"
+       },
+       "revisit_on": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "YYYY-MM-DD to look at it again",
+        "title": "Revisit On"
+       },
+       "summary": {
+        "description": "what was discussed, found or concluded, with the reasons; the Founder's terms",
+        "title": "Summary",
+        "type": "string"
+       },
+       "supersedes": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "the id of an older Note this one replaces; only after the person confirms the older one no longer holds",
+        "title": "Supersedes"
+       },
+       "title": {
+        "description": "what it is about, in the words the person would search for",
+        "maxLength": 120,
+        "title": "Title",
+        "type": "string"
+       },
+       "type": {
+        "description": "discussion, research or insight",
+        "enum": [
+         "discussion",
+         "research",
+         "insight"
+        ],
+        "title": "Type",
+        "type": "string"
+       }
+      },
+      "required": [
+       "kind",
+       "title",
+       "summary",
+       "type"
+      ],
+      "title": "NoteIn",
+      "type": "object"
+     },
+     "NoteLinkIn": {
+      "properties": {
+       "to": {
+        "description": "a record id from coach_get_context or coach_recall, e.g. g-1a2b or d-3c4d",
+        "title": "To",
+        "type": "string"
+       },
+       "type": {
+        "description": "about: the record it is about; supports: it backs another record; related: any other tie",
+        "enum": [
+         "about",
+         "supports",
+         "related"
+        ],
+        "title": "Type",
+        "type": "string"
+       }
+      },
+      "required": [
+       "to",
+       "type"
+      ],
+      "title": "NoteLinkIn",
+      "type": "object"
      }
     },
     "properties": {
@@ -1292,7 +1485,8 @@
         "checkin": "#/$defs/CheckinIn",
         "commitments": "#/$defs/CommitmentsIn",
         "decision": "#/$defs/DecisionIn",
-        "goal": "#/$defs/GoalIn"
+        "goal": "#/$defs/GoalIn",
+        "note": "#/$defs/NoteIn"
        },
        "propertyName": "kind"
       },
@@ -1308,6 +1502,9 @@
        },
        {
         "$ref": "#/$defs/CheckinIn"
+       },
+       {
+        "$ref": "#/$defs/NoteIn"
        }
       ],
       "title": "Entry"
@@ -1393,7 +1590,7 @@
        }
       ],
       "default": null,
-      "description": "fields to correct, e.g. {\"outcome\": \"3 calls\"}",
+      "description": "fields to correct, e.g. {\"outcome\": \"3 calls\"}; each text field at most 1000 characters",
       "title": "Changes"
      },
      "id": {
@@ -1411,7 +1608,7 @@
        }
       ],
       "default": null,
-      "description": "the evidence, e.g. 'shipped pricing page, 3 calls booked'",
+      "description": "the evidence, e.g. 'shipped pricing page, 3 calls booked'; a record with no note field (a Decision, for one) takes `changes` instead, at most 1000 characters",
       "title": "Note"
      },
      "project": {
@@ -1530,6 +1727,117 @@
     "idempotentHint": true,
     "openWorldHint": false,
     "readOnlyHint": false
+   }
+  },
+  {
+   "name": "coach_recall",
+   "description": "Look up what this Project's memory already holds: Notes (full-text, best match first) and the\nother records this coach keeps. Use it before answering about earlier work, decisions or research, and\nbefore proposing a Note, to link or supersede rather than repeat. Pass `id` to read one record whole\n(a Note's summary, citations as saved, and its links). Results are the Founder's own words and the coach's\nearlier conclusions, dated: say when something was said, and treat an origin \"coach\" Note as a lead,\nnot a fact. Read-only.",
+   "inputSchema": {
+    "properties": {
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "instead of a search: the id of one record to read in full, with its links",
+      "title": "Id"
+     },
+     "include_superseded": {
+      "default": false,
+      "description": "also Notes a newer Note replaced",
+      "title": "Include Superseded",
+      "type": "boolean"
+     },
+     "kinds": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "note",
+          "decision",
+          "goal",
+          "commitment",
+          "checkin"
+         ],
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "only these kinds of record; default all",
+      "title": "Kinds"
+     },
+     "limit": {
+      "default": 8,
+      "description": "most hits to return",
+      "maximum": 25,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "description": "the words the earlier discussion, research or decision would contain, e.g. 'pricing experiment interviews'",
+      "maxLength": 300,
+      "minLength": 2,
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "coach_recallArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "hits": {
+      "description": "best first: id, kind, title, snippet, date, score (the share of the query's words found); a Note also type, origin and superseded_by",
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Hits",
+      "type": "array"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Note"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query",
+     "hits"
+    ],
+    "title": "RecallOut",
+    "type": "object"
+   },
+   "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true
    }
   },
   {

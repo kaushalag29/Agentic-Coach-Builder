@@ -38,6 +38,9 @@ class Adapter(Protocol):
     """What a Source type implements (ADR-0013)."""
     type: str            # the `type` in sources.yaml
     doc_type: str        # documents.doc_type in the manifest
+    # False when sync takes a Document's Series and provenance from the Document itself (a Book's title and
+    # publisher), not from its Source: `ytbrain refresh` then leaves them alone
+    series_from_source: bool = True
 
     def sync(self, manifest, sources: list[dict], args, say=print) -> dict: ...
     def clean(self, manifest, doc_id: str, doc) -> str: ...     # 'ok' | 'skipped' | 'refetch'

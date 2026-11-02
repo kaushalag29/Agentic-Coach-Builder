@@ -8,6 +8,7 @@
   forget              delete it all (typed confirmation; one final backup unless --no-backup)
   feedback            list the Founder's Feedback, or export it as one file to send
   usage               the local usage log: a summary, an export to send, or clear it
+  notes               the Notes index and files beside the store: rebuild them, or lint the Notes (report-only)
   restore             replace a damaged store with a backup; the old file is set aside, never deleted
 
 Export, forget and restore are deliberately not MCP tools, so no model can wipe or roll back
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -37,6 +39,14 @@ def _hook(args) -> int:
         from .store import open_store
         if args.home is None:                          # Projects, none chosen: say so, read nothing
             ps = args.workspace.projects.list() if args.workspace and args.workspace.projects else []
+            where = os.environ.get("CLAUDE_PROJECT_DIR")
+            if ps and where:
+                text = (f"{D.COACH_NAME}: this folder is linked to no Project ({len(ps)}: "
+                        + ", ".join(p["name"] for p in ps[:5])
+                        + product.reword("), so no memory is read or saved for it. Ask the Founder whether it belongs "
+                                         "to one of them or is a new Project (coach_project link or create)."))
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}))
+                return 0
             text = (f"{D.COACH_NAME}: {len(ps)} Projects (" + ", ".join(p["name"] for p in ps[:5])
                     + product.reword("). Before reading or saving anything about the Founder, ask which Project "
                                      "this conversation is about.") if ps else f"{D.COACH_NAME}: {D.SETUP_NUDGE}")
@@ -60,8 +70,8 @@ def _hook(args) -> int:
                 many = args.workspace and args.workspace.projects and len(args.workspace.projects.list()) > 1
                 if text and many:
                     name = args.workspace.describe(args.project_id)["name"]
-                    text = text.replace(f"{D.COACH_NAME}: ", f"{D.COACH_NAME} (Project {name}, the last one used; "
-                                                           "confirm it's the one this conversation is about): ", 1)
+                    text = text.replace(f"{D.COACH_NAME}: ", f"{D.COACH_NAME} (Project {name}, the one this folder "
+                                                           "is linked to): ", 1)
             finally:
                 store.close()
         if text:
@@ -176,6 +186,34 @@ def _open_or_explain(home):
         return None
 
 
+def _notes(args) -> int:
+    """`notes rebuild` regenerates the derived views (search index, INDEX.md, the files); `notes lint` reports what
+    needs attention and changes nothing (ADR-0020)."""
+    if not product.has("notes"):
+        print(f"{product.ID}: this coach doesn't keep Notes", file=sys.stderr)
+        return 1
+    store = _open_or_explain(args.home)
+    if store is None:
+        return 1
+    from . import notes_view
+    if args.action == "rebuild":
+        indexed = store.reindex_notes()
+        res = notes_view.sync_vault(store)
+        where = notes_view.vault_path(store)
+        print(f"{product.ID}: search index rebuilt ({indexed} Note(s)); {res['files']} file(s) in {where} "
+              f"({res['written']} written, {res['removed']} removed)")
+        return 0
+    findings = notes_view.lint(store)
+    if args.json:
+        print(json.dumps(findings, indent=1, ensure_ascii=False))
+    elif not findings:
+        print(f"{product.ID}: nothing to report on the Notes")
+    else:
+        for f in findings:
+            print(f"[{f['severity']}] {f['check']}: {f['message']}")
+    return 1 if any(f["severity"] == "warn" for f in findings) else 0
+
+
 def _export(args) -> int:
     store = _open_or_explain(args.home)
     if store is None:
@@ -205,7 +243,7 @@ def _forget_all(args) -> int:
     print(f"This deletes everything the coach remembers in {len(ps)} Project(s): "
           + (", ".join(p["name"] for p in ps) or "none")
           + (", and the Common profile your coaches share (name, role, timezone, answer style)" if common.exists() else ""))
-    print("  " + ("and all backups." if args.no_backup else "(one final backup of each is kept so this can be undone)."))
+    print("  " + ("and every backup in this folder (a backup holds all coaches' memory of the Project)." if args.no_backup else "(one final backup of each is kept so this can be undone)."))
     answer = args.confirm if args.confirm is not None else input("Type 'forget all' to confirm: ")
     if answer.strip() != "forget all":
         print(f"{product.ID}: not confirmed; nothing deleted")
@@ -250,20 +288,21 @@ def _forget(args) -> int:
         return 1
     prof = store.profile()
     word = str((prof.get(D.REQUIRED[0]) or {}).get("value") or "forget")    # the company, the system ...
-    counts = {t: store.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-              for t in ("goals", "commitments", "decisions", "checkins")}
+    counts = {t: store.db.execute(f"SELECT COUNT(*) FROM {t} WHERE founder_id=? AND coach=?",
+                                    (store.fid, store.coach)).fetchone()[0]
+              for t in ("goals", "commitments", "decisions", "checkins", "notes")}
     where = f"Project {args.workspace.describe(args.project_id)['name']} ({store.home})" \
         if args.project_id else str(store.home)
     print(f"This deletes everything the {D.COACH_NAME.lower()} remembers in {where}:")
-    print("  profile, " + ", ".join(f"{n} {t}" for t, n in counts.items()) + ", FOUNDER.md and the change log")
-    print("  " + ("and all backups." if args.no_backup else "(one final backup is kept in backups/ so this can be undone)."))
+    print("  profile, " + ", ".join(f"{n} {t}" for t, n in counts.items()) + f", {store.md_path.name} and the change log")
+    print("  " + ("and every backup in this folder (a backup holds all coaches' memory of the Project)." if args.no_backup else "(one final backup is kept in backups/ so this can be undone)."))
     answer = args.confirm if args.confirm is not None else input(f"Type {word!r} to confirm: ")
     if answer.strip() != word:
         print(f"{product.ID}: not confirmed; nothing deleted")
         store.close()
         return 1
     res = store.forget(keep_backup=not args.no_backup)
-    print(f"{product.ID}: everything the coach remembered is deleted (the store at {res['deleted']} is now empty; "
+    print(f"{product.ID}: everything the coach remembered is deleted (the store at {res['deleted']} holds none of its records now; "
           f"a running coach sees that at once)"
           + (f"; final backup at {res['backup']}" if res["backup"] else "")
           + (f"; {res['backups_removed']} backup file(s) removed" if res.get("backups_removed") else ""))
@@ -365,6 +404,10 @@ def _usage(args) -> int:
         for name, t in s["tools"].items():
             print(f"  {name:22} {t['calls']:5} {t['errors']:6} {t['empty']:5} {t['gaps']:5} {t['keyword']:7} "
                   f"{t['p50_ms']:7} {t['p95_ms']:7}")
+    if s.get("recent_errors"):
+        print(f"  newest errors ({len(s['recent_errors'])}; values you typed are shown as '…'):")
+        for e in s["recent_errors"]:
+            print(f"    {e['at']} {e['tool']}: {e['error']}")
     return 0
 
 
@@ -446,6 +489,15 @@ def _projects(args) -> int:
                 return 2
             p = ws.projects.rename(args.args[0], " ".join(args.args[1:]))
             print(f"{product.ID}: Project {p['id']} is now named {p['name']!r} (its memory is unchanged)")
+        elif args.action in ("link", "unlink"):
+            if not args.args:
+                print(f"{product.ID}: projects {args.action} <id or name> [folder]", file=sys.stderr)
+                return 2
+            where = args.args[1] if len(args.args) > 1 else os.getcwd()
+            done = (ws.projects.link if args.action == "link" else ws.projects.unlink)(args.args[0], where)
+            print(f"{product.ID}: {args.action}ed {done['folder']} "
+                  + ("to" if args.action == "link" else "from") + f" Project {done['project']['name']}"
+                  + (" (it already was)" if done.get("already") else ""))
         elif args.action == "use":
             if not args.args:
                 print(f"{product.ID}: projects use <id or name>", file=sys.stderr)
@@ -473,7 +525,11 @@ def _resolve(args) -> int | None:
     ws = Workspace.open(args.home)
     _WS["ws"] = args.workspace = ws
     try:
-        pid = ws.choose(getattr(args, "project", None), use_last=True)
+        folder = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()    # the work folder first, then the shared last Project
+        hook = getattr(args, "cmd", None) == "hook"
+        if hook:                                       # the hook never guesses: the app's folder, or the only Project
+            folder = os.environ.get("CLAUDE_PROJECT_DIR")
+        pid = ws.choose(getattr(args, "project", None), use_last=not hook, folder=folder)
     except ProjectError as e:
         print(f"{product.ID}: {e}", file=sys.stderr)
         return 2
@@ -514,6 +570,9 @@ def main(argv: list[str] | None = None) -> int:
     u.add_argument("--json", action="store_true")
     u.add_argument("--out", default=None, help=f"folder for the export (default ~/.{product.ID}/exports)")
     u.add_argument("--yes", action="store_true", help="confirm clear")
+    nt = sub.add_parser("notes", help="the Notes folder beside the store: rebuild it, or lint the Notes (report-only)")
+    nt.add_argument("action", choices=["lint", "rebuild"])
+    nt.add_argument("--json", action="store_true", help="lint: the findings as JSON")
     r = sub.add_parser("restore", help="replace a damaged store with a backup (the old file is set aside, not deleted)")
     r.add_argument("backup", nargs="?", default=None,
                    help="a backup's label or file from --list (default: the newest one that passes its check)")
@@ -523,17 +582,18 @@ def main(argv: list[str] | None = None) -> int:
     hd.add_argument("args", nargs="*", help="import <file.csv> · label SYMBOL=CLASS ...")
     hd.add_argument("--account", default=None, help="import: the account's name when the file has none")
     hd.add_argument("--as-of", default=None, help="import: YYYY-MM-DD when the file doesn't say")
-    pj = sub.add_parser("projects", help="list, create, rename, or pick the Project the command line uses")
-    pj.add_argument("action", nargs="?", default="list", choices=["list", "create", "rename", "use"])
-    pj.add_argument("args", nargs="*", help="create <name> · rename <id> <new name> · use <id or name>")
+    pj = sub.add_parser("projects", help="list, create, rename, link a folder to, or pick the Project the command line uses")
+    pj.add_argument("action", nargs="?", default="list", choices=["list", "create", "rename", "use", "link", "unlink"])
+    pj.add_argument("args", nargs="*", help="create <name> · rename <id> <new name> · use <id or name> · "
+                                            "link|unlink <id or name> [folder] (default: this folder)")
     for x in (s, w, st):
         x.add_argument("--pack", default=None, help="Knowledge pack folder or file "
                                                      f"(default ${product.ENV_PREFIX}PACK, then the plugin's pack/, the "
                                                      f"repo's data/pack, then ~/.{product.ID}/pack)")
-    for x in (s, h, w, st, e, f, fb, u, r, pj, hd):
+    for x in (s, h, w, st, e, f, fb, u, nt, r, pj, hd):
         x.add_argument("--home", default=None, help=f"one data folder, without Projects (default "
                                                     f"${product.ENV_PREFIX}HOME; unset: the Projects in ~/.ytbrain)")
-    for x in (h, st, e, f, fb, u, r, hd):
+    for x in (h, st, e, f, fb, u, nt, r, hd):
         x.add_argument("--project", default=None, help="the Project's id or name (default: the only one, else the "
                                                        f"last used, else ${product.ENV_PREFIX}PROJECT)")
     args = p.parse_args(argv)
@@ -559,7 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         if stop is not None:
             return 0 if args.cmd == "hook" else stop
     return {"hook": _hook, "warmup": _warmup, "status": _status, "export": _export, "forget": _forget,
-            "feedback": _feedback, "usage": _usage, "restore": _restore, "projects": _projects,
+            "feedback": _feedback, "usage": _usage, "notes": _notes, "restore": _restore, "projects": _projects,
             "holdings": _holdings}[args.cmd](args)
 
 

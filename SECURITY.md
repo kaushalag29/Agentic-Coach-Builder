@@ -18,7 +18,7 @@ found and where; don't include the secret itself.
 ## Coach memory
 
 - A coach keeps everything about the person it coaches on their own machine, in
-  `~/.ytbrain/<pack>/projects/<id>/` (or the folder `FOUNDER_COACH_HOME` pins): the store, FOUNDER.md, backups, Feedback, the usage log and any exports in
+  `~/.ytbrain/projects/<id>/`, one folder per Project shared by the coaches (or the folder `FOUNDER_COACH_HOME` pins): the store, FOUNDER.md, backups, Feedback, the usage log and any exports in
   `exports/`. There is no server and nothing is sent automatically; the only network call is the
   one-time download of the ONNX query models. The usage log (docs/usage-log.md) stays local, holds
   no Founder text unless `FOUNDER_COACH_USAGE_TEXT=1` (search text only), and is turned off with

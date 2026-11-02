@@ -9,7 +9,9 @@ sync   every PDF of every enabled pdf_books Source: probe, parse (cached per fil
 clean  one Chapter -> the shared transcript: its paragraphs as text units at `page * 1000 + n`,
        its headings as Sections, and the Book's given fields (series = title, speaker = authors,
        year, ISBN, `private: true`). A Chapter whose text and metadata are unchanged is not
-       cleaned again; a changed one sends its extraction back.
+       cleaned again; a changed one sends its extraction back, unless only fields the extraction
+       prompt never reads changed (year, url, publisher, ISBN: GIVEN_ONLY): those are written into
+       the Chapter's record in place, so a corrected year costs a re-index, not a re-extraction.
 
 Books are a Private Source: records carry `private: true` and the pack leaves them out (P3)."""
 from __future__ import annotations
@@ -28,6 +30,10 @@ from .parse import ParseError, parser_for
 from .probe import probe, text_warnings
 
 PLAN_FORMAT = 1
+# transcript fields no extraction prompt reads (the prompt sees the title, Series, authors and text): a change confined
+# to these never re-extracts. `book` repeats the title and authors, which `series` and `speaker` carry on their own
+GIVEN_ONLY = ("published_at", "url", "provenance", "book")
+RECORD_GIVEN = ("published_at", "url", "provenance")       # ... and the ones an extracted record carries
 
 
 def _hash(*parts) -> str:
@@ -52,14 +58,17 @@ def chapter_ids(book_id: str, titles: list[str]) -> list[str]:
 
 class BookAdapter:
     type, doc_type = "pdf_books", "book"
+    series_from_source = False       # a Book's Series is its own title (and provenance its publisher), set by sync
 
     def __init__(self, parser=None, lookup=None, say=print, root: Path | None = None,
-                 parsed_dir: Path | None = None, plans_dir: Path | None = None, transcripts: Path | None = None):
-        from ..config import BOOKS_PARSED, BOOKS_PLANS, SOURCES_BASE, TRANSCRIPTS
+                 parsed_dir: Path | None = None, plans_dir: Path | None = None, transcripts: Path | None = None,
+                 records: Path | None = None):
+        from ..config import BOOKS_PARSED, BOOKS_PLANS, METADATA, SOURCES_BASE, TRANSCRIPTS
         self._parser, self._lookup, self.say = parser, lookup, say
         self.root = root or SOURCES_BASE      # relative book paths are relative to sources.yaml
         self.parsed_dir, self.plans_dir = parsed_dir or BOOKS_PARSED, plans_dir or BOOKS_PLANS
         self.transcripts = transcripts or TRANSCRIPTS
+        self.records = records or METADATA
         self._parsers: dict[str, object] = {}
 
     # ------------------------------------------------------------------ sync
@@ -242,16 +251,42 @@ class BookAdapter:
         body = pages.canonical_json(rec)
         out_hash = hashlib.sha256(body.encode()).hexdigest()[:16]
         prev = m.stage(doc_id, "clean")
-        changed = prev is not None and prev["output_hash"] and prev["output_hash"] != out_hash
-        if changed and m.stage_status(doc_id, "extract") is not None:
+        changed = bool(prev is not None and prev["output_hash"] and prev["output_hash"] != out_hash)
+        given_only = changed and _prompt_view(self._previous(doc_id)) == _prompt_view(rec)
+        if changed and not given_only and m.stage_status(doc_id, "extract") is not None:
             m.mark(StageState(doc_id, "extract", "stale", error="chapter changed"))
         self.transcripts.mkdir(parents=True, exist_ok=True)
         pages.atomic_write_text(self.transcripts / f"{doc_id}.json", body)
+        if given_only:
+            self._update_record(doc_id, rec)
         m.mark(StageState(doc_id, "clean", "ok", input_hash=row["input_hash"], output_hash=out_hash, attempts=1))
         m.succeeded(doc_id, "clean")
+        note = " · metadata changed: record updated, no re-extract" if given_only else \
+            " · changed: re-extract queued" if changed else ""
         print(f"chapter {row['ordinal']}/{len(plan['chapters'])} · pp. {row['start_page']}-{row['end_page']} · "
-              f"{len(units)} paragraphs · {words} words" + (" · changed: re-extract queued" if changed else ""), flush=True)
+              f"{len(units)} paragraphs · {words} words" + note, flush=True)
         return "ok"
+
+    def _previous(self, doc_id: str) -> dict | None:
+        try:
+            return json.loads((self.transcripts / f"{doc_id}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None                              # unknown: treat the change as a real one
+
+    def _update_record(self, doc_id: str, rec: dict) -> None:
+        """Write the given fields no prompt reads into the Chapter's extracted record, if it has one (the index
+        notices the changed file and re-embeds it)."""
+        path = self.records / f"{doc_id}.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return                                   # not extracted yet, or damaged: its Step writes it whole
+        want = {k: rec.get(k) for k in RECORD_GIVEN if k in record}
+        if all(record.get(k) == v for k, v in want.items()):
+            return
+        record.update(want)
+        pages.atomic_write_text(path, pages.canonical_json(record))
+        pages.write_page(record)
 
     def _parsed(self, plan: dict) -> ParsedBook | None:
         path = self.parsed_dir / f"{plan['sha256'][:16]}.{plan['parser']}.json"
@@ -259,6 +294,13 @@ class BookAdapter:
             return ParsedBook.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError, TypeError, KeyError):
             return None
+
+
+def _prompt_view(rec: dict | None) -> str | None:
+    """What of a Chapter's transcript can reach an extraction prompt: everything but GIVEN_ONLY."""
+    if rec is None:
+        return None
+    return pages.canonical_json({k: v for k, v in rec.items() if k not in GIVEN_ONLY})
 
 
 def _is_title(text: str, title: str) -> bool:

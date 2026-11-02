@@ -154,7 +154,7 @@ def test_each_project_keeps_its_own_memory_and_a_session_asks_which_one():
             out, _, _ = await call("coach_project", {"action": "rename", "name": "Beta"})
             assert out["active"] == {"id": "beta-labs", "name": "Beta"}
         _serve(user, second)
-        root = user / ".ytbrain" / "founder"
+        root = user / ".ytbrain"
         assert (root / "projects" / "acme" / "founder.db").exists() and (root / "projects" / "beta-labs" / "FOUNDER.md").exists()
         assert (root / "last-project").read_text() == "beta-labs"
         assert not (user / ".founder-coach").exists(), "nothing is written to the old data folder"
@@ -246,7 +246,7 @@ def test_the_common_profile_is_shared_only_on_a_yes_and_only_for_its_fields():
         _serve(user, go)
         eng = user / ".ytbrain"
         assert (eng / "you.db").exists() and "Kay R" in (eng / "YOU.md").read_text()
-        acme = FounderStore(eng / "founder" / "projects" / "acme")
+        acme = FounderStore(eng / "projects" / "acme")
         try:
             hist = [h["value"] for h in acme.profile_history("name")]
             assert hist == ["Kay"] and "name" not in acme._own_profile(), "kept in history, no longer current"
@@ -328,16 +328,16 @@ def test_a_damaged_or_busy_old_store_is_not_moved_and_is_tried_again():
         assert ws.migration["status"] == "failed" and ws.projects.list() == []
         assert not (ws.root / ".migrated.json").exists() and not (ws.root / ".migrating").exists()
         assert Workspace.open().migration["status"] == "failed", "retried at the next start"
-        assert not list((ws.root / "projects").glob(".migrating-*")), "no half-made Project left behind"
+        assert not list(ws.projects.dir.glob(".migrating-*")), "no half-made Project left behind"
     with _machine() as user:
         s = FounderStore(user / ".founder-coach")
         s.update_profile({"company": "Acme"})
         s.close()
-        root = user / ".ytbrain" / "founder"
+        root = user / ".ytbrain" / "founder"             # the lock sits in the coach's own folder
         root.mkdir(parents=True)
         (root / ".migrating").write_text("123")              # another process is moving it right now
         assert Workspace.open().migration == {"status": "busy"}
-        assert not (root / "projects").exists()
+        assert not (user / ".ytbrain" / "projects").exists()
         os.utime(root / ".migrating", (1, 1))               # that process died long ago: take over
         assert Workspace.open().migration["status"] == "migrated"
 
@@ -379,7 +379,7 @@ def test_the_command_line_works_on_one_project_at_a_time():
         assert r.returncode == 0 and "beta-labs" in r.stdout
         r = _cli(user, "projects")
         assert "* beta-labs" in r.stdout and "  acme" in r.stdout
-        s = FounderStore(user / ".ytbrain" / "founder" / "projects" / "acme")
+        s = FounderStore(user / ".ytbrain" / "projects" / "acme")
         s.update_profile({"company": "Acme", "stage": "mvp"})
         s.close()
         st = json.loads(_cli(user, "status", "--json", "--project", "acme").stdout)
@@ -388,7 +388,8 @@ def test_the_command_line_works_on_one_project_at_a_time():
         r = _cli(user, "export", "--project", "nope")
         assert r.returncode == 2 and "no Project 'nope'" in r.stderr
         hook = json.loads(_cli(user, "hook", "session-start", input="{}").stdout)["hookSpecificOutput"]
-        assert "Project Beta Labs, the last one used" in hook["additionalContext"]
+        assert "2 Projects" in hook["additionalContext"] and "ask which Project" in hook["additionalContext"], \
+            "the hook never guesses from the last Project used"
         assert _cli(user, "projects", "use", "acme").returncode == 0
         r = _cli(user, "export")
         assert r.returncode == 0 and "projects/acme/exports" in r.stdout
@@ -404,7 +405,7 @@ def test_the_command_line_works_on_one_project_at_a_time():
 
 def test_the_hook_asks_which_project_when_several_and_none_was_used():
     with _machine() as user:
-        root = user / ".ytbrain" / "founder"
+        root = user / ".ytbrain"
         ps = Projects(root)
         ps.create("Acme")
         ps.create("Beta")
@@ -438,7 +439,7 @@ def test_a_save_proposed_for_one_project_is_never_written_to_another():
 
 def test_forgetting_one_project_leaves_the_others_byte_identical():
     with _machine() as user:
-        root = user / ".ytbrain" / "founder"
+        root = user / ".ytbrain"
         ps = Projects(root)
         homes = {}
         for name in ("Acme", "Beta"):
@@ -478,6 +479,285 @@ def test_two_coaches_write_the_common_profile_at_once():
 
 
 
+# --- ADR-0019: Projects shared by every coach; the one-time move of each coach's own Projects ---------------------
+def _old_layout_project(eng: Path, pack: str, pid: str, name: str, goal: str, created: str = "2026-01-01T00:00:00+00:00"):
+    """A Project as a coach kept it before ADR-0019: eng/<pack>/projects/<pid>/ with a schema-6 store (no stamp)."""
+    from founder_coach.store import COACH_TABLES
+    home = eng / pack / "projects" / pid
+    home.mkdir(parents=True)
+    (home / "project.json").write_text(json.dumps({"name": name, "created": created}))
+    s = FounderStore(home, coach=pack)
+    s.update_profile({"company": name})
+    s.record({"kind": "goal", "text": goal})
+    for t in COACH_TABLES:
+        s.db.execute(f"ALTER TABLE {t} DROP COLUMN coach")
+    s.db.execute("UPDATE meta SET value='6' WHERE key='schema_version'")
+    s.close()
+    return home
+
+
+def _tree(folder: Path) -> dict:
+    return {str(f.relative_to(folder)): _digest(f) for f in sorted(folder.rglob("*")) if f.is_file()}
+
+
+def test_every_coachs_projects_move_once_into_the_shared_folder_and_each_coach_reads_its_own():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        _old_layout_project(eng, "founder", "acme", "Acme", "10 design partners", "2026-01-01T00:00:00+00:00")
+        _old_layout_project(eng, "coding", "api", "Billing API", "p99 under 200ms", "2026-02-01T00:00:00+00:00")
+        _old_layout_project(eng, "investor", "savings", "Savings 2030", "reach the target mix", "2026-03-01T00:00:00+00:00")
+        (eng / "coding" / "last-project").write_text("api")
+        before = _tree(eng)
+        ws = Workspace.open()
+        info = ws.pack_migration
+        assert info["status"] == "migrated" and not info["failed"], info
+        assert sorted(m["from"] for m in info["moved"]) == ["coding/api", "founder/acme", "investor/savings"]
+        assert [p["name"] for p in ws.projects.list()] == ["Acme", "Billing API", "Savings 2030"], "every coach lists all"
+        assert ws.projects.last() == "api", "the shared default comes from the old per-coach default"
+        assert (ws.projects.dir / ".migrated-from-packs.json").exists()
+        for pid, pack, goal in (("acme", "founder", "10 design partners"), ("api", "coding", "p99 under 200ms"),
+                                ("savings", "investor", "reach the target mix")):
+            home = ws.projects.store_home(pid)
+            assert (home / "backups" / "founder-migrated.db").exists(), "a backup is kept beside the copy"
+            assert json.loads((home / "project.json").read_text())["migrated_from"] == f"{pack}/{pid}"
+            mine = FounderStore(home, coach=pack)
+            try:
+                assert [g["text"] for g in mine.goals()] == [goal] and mine.profile()["company"]["value"]
+                assert mine.check()["ok"]
+            finally:
+                mine.close()
+            other = FounderStore(home, coach="someone-else")
+            try:
+                assert other.goals() == [], "a coach reads only the records it stamped"
+            finally:
+                other.close()
+        assert {k: v for k, v in _tree(eng).items() if k in before} == before, "the old folders are untouched"
+        again = Workspace.open()
+        assert again.pack_migration is None and len(again.projects.list()) == 3, "once, however often it starts"
+        import shutil
+        shutil.rmtree(ws.projects.store_home("acme"))
+        assert [p["id"] for p in Workspace.open().projects.list()] == ["api", "savings"], "a deleted Project stays deleted"
+
+
+def test_two_coaches_with_the_same_project_name_are_kept_apart_not_merged():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        _old_layout_project(eng, "founder", "acme", "Acme", "10 design partners", "2026-01-01T00:00:00+00:00")
+        _old_layout_project(eng, "coding", "acme", "Acme", "ship the importer", "2026-02-01T00:00:00+00:00")
+        ws = Workspace.open()
+        assert ws.pack_migration["status"] == "migrated"
+        got = {p["id"]: p["name"] for p in ws.projects.list()}
+        assert got == {"acme": "Acme", "acme-coding": "Acme (coding)"}, got
+        for pid, pack, goal in (("acme", "founder", "10 design partners"), ("acme-coding", "coding", "ship the importer")):
+            s = FounderStore(ws.projects.store_home(pid), coach=pack)
+            try:
+                assert [g["text"] for g in s.goals()] == [goal]
+            finally:
+                s.close()
+
+
+def test_a_damaged_coach_project_is_reported_and_retried_without_repeating_the_others():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        _old_layout_project(eng, "founder", "acme", "Acme", "10 design partners", "2026-01-01T00:00:00+00:00")
+        bad = _old_layout_project(eng, "coding", "api", "Billing API", "p99 under 200ms", "2026-02-01T00:00:00+00:00")
+        good_db = (bad / "founder.db").read_bytes()
+        (bad / "founder.db").write_bytes(b"not a database at all" * 100)
+        ws = Workspace.open()
+        info = ws.pack_migration
+        assert info["status"] == "partial" and [f["from"] for f in info["failed"]] == ["coding/api"], info
+        assert [p["id"] for p in ws.projects.list()] == ["acme"] and not (ws.projects.dir / ".migrated-from-packs.json").exists()
+        assert not list(ws.projects.dir.glob(".migrating-*")), "no half-made Project left behind"
+        (bad / "founder.db").write_bytes(good_db)        # the person restored it
+        ws = Workspace.open()
+        assert ws.pack_migration["status"] == "migrated" and [m["from"] for m in ws.pack_migration["moved"]] == ["coding/api"]
+        assert sorted(p["id"] for p in ws.projects.list()) == ["acme", "api"], "acme was not moved twice"
+
+
+def test_a_busy_lock_and_the_off_switch_leave_the_old_projects_alone():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        _old_layout_project(eng, "founder", "acme", "Acme", "10 design partners")
+        (eng / "projects").mkdir()
+        (eng / "projects" / ".migrating-packs").write_text("123")      # another process is moving them now
+        assert Workspace.open().pack_migration == {"status": "busy"}
+        os.utime(eng / "projects" / ".migrating-packs", (1, 1))        # that process died long ago: take over
+        os.environ[product.env_name("MIGRATE")] = "0"
+        try:
+            assert Workspace.open().pack_migration is None, "the evaluation machines never move"
+        finally:
+            os.environ.pop(product.env_name("MIGRATE"), None)
+        assert Workspace.open().pack_migration["status"] == "migrated"
+
+
+def test_a_rename_keeps_what_project_json_holds_and_the_old_single_store_lands_in_the_shared_folder():
+    with _machine() as user:
+        ps = Projects(user / ".ytbrain")
+        p = ps.create("Acme")
+        meta = json.loads((ps.dir / p["id"] / "project.json").read_text())
+        (ps.dir / p["id"] / "project.json").write_text(json.dumps({**meta, "folders": ["/work/acme"]}))
+        ps.rename("acme", "Acme Labs")
+        kept = json.loads((ps.dir / "acme" / "project.json").read_text())
+        assert kept["name"] == "Acme Labs" and kept["folders"] == ["/work/acme"]
+        s = FounderStore(user / ".founder-coach")
+        s.update_profile({"company": "Acme Labs"})
+        s.close()
+        ws = Workspace.open()
+        names = [x["name"] for x in ws.projects.list()]
+        assert ws.migration["status"] == "migrated" and names == ["Acme Labs", "Acme Labs (earlier)"], names
+
+
+def test_project_md_lists_the_shared_core_with_the_coach_behind_each_and_nothing_private():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        (eng / "installed").mkdir(parents=True)
+        for pack, owned in (("founder", []), ("coding", []), ("investor", ["*"])):
+            (eng / "installed" / f"{pack}-coach.json").write_text(json.dumps({"pack": pack, "owned": owned}))
+        ps = Projects(eng)
+        pid = ps.create("Acme")["id"]
+        home = ps.store_home(pid)
+        a = FounderStore(home, coach="founder")
+        b = FounderStore(home, coach="coding")
+        inv = FounderStore(home, coach="investor")
+        inv.owned = ("*",)
+        for who in (a, b, inv):
+            who.peers_home = eng
+        a.update_profile({"company": "Acme"})
+        a.record({"kind": "goal", "text": "reach 10 customers"})
+        b.record({"kind": "decision", "text": "use Postgres", "reasoning": "team knows it"})
+        a.record({"kind": "note", "title": "Secret pricing talk", "summary": "private", "type": "discussion",
+                  "origin": "user"})
+        inv.record({"kind": "goal", "text": "reach the target mix"})
+        text = (home / "PROJECT.md").read_text()
+        assert text.startswith("# Acme") and "reach 10 customers (founder)" in text and "use Postgres (coding)" in text
+        assert "target mix" not in text and "Secret pricing" not in text, "nothing a coach keeps to itself"
+        assert "Coaches here: coding, founder" in text
+        (home / "PROJECT.md").write_text("edited by hand")
+        b.record({"kind": "goal", "text": "p99 under 200ms"})
+        assert "edited by hand" not in (home / "PROJECT.md").read_text(), "edits are overwritten"
+        assert "p99 under 200ms" in (home / "PROJECT.md").read_text()
+        a.forget(keep_backup=False)
+        left = (home / "PROJECT.md").read_text()
+        assert "reach 10 customers" not in left and "use Postgres" in left, "forget removes only that coach's records"
+        for who in (a, b, inv):
+            who.close()
+
+
+# --- ADR-0019 point 4: the work folder chooses the Project -------------------------------------------------------
+def _checkout(parent: Path, name: str, remote: str | None = None) -> Path:
+    d = parent / name
+    (d / ".git").mkdir(parents=True)
+    (d / ".git" / "config").write_text('[core]\n\tbare = false\n' + (
+        f'[remote "origin"]\n\turl = {remote}\n' if remote else ""))
+    return d
+
+
+def test_a_folder_is_linked_to_one_project_and_the_deepest_link_wins():
+    with _machine() as user:
+        ps = Projects(user / ".ytbrain")
+        mono, api = ps.create("Monorepo")["id"], ps.create("Billing API")["id"]
+        repo = user / "work" / "mono"
+        (repo / "services" / "billing").mkdir(parents=True)
+        ps.link(mono, repo)
+        ps.link(api, repo / "services" / "billing")
+        assert ps.for_folder(repo / "docs")[0]["id"] == mono and ps.for_folder(repo)[0]["id"] == mono
+        assert ps.for_folder(repo / "services" / "billing" / "src")[0]["id"] == api, "the deepest linked folder decides"
+        assert ps.for_folder(user / "elsewhere") == (None, None), "a folder linked to nothing gets no Project"
+        try:
+            ps.link(api, repo)
+            raise AssertionError("a folder in two Projects")
+        except ProjectError as e:
+            assert "already linked" in str(e)
+        assert ps.link(mono, repo)["already"] is True
+        ps.unlink(mono, repo)
+        assert ps.for_folder(repo / "docs") == (None, None) and ps.folders(mono) == []
+        ps.rename(api, "Billing")
+        assert [f["path"] for f in ps.folders(api)] == [str((repo / "services" / "billing").resolve())], "a rename keeps links"
+
+
+def test_a_moved_checkout_is_found_by_its_remote_and_relinked_with_a_note():
+    with _machine() as user:
+        ps = Projects(user / ".ytbrain")
+        pid = ps.create("Acme")["id"]
+        old = _checkout(user / "old", "acme", "https://tok@example.com/acme/app.git")
+        ps.link(pid, old)
+        assert ps.folders(pid)[0]["remote"] == "https://example.com/acme/app.git", "credentials are never stored"
+        new = _checkout(user / "new", "acme-app", "https://example.com/acme/app.git")
+        found, note = ps.for_folder(new / "src" if (new / "src").exists() else new)
+        assert found["id"] == pid and "moved" in note and str(new.resolve()) in note
+        assert [f["path"] for f in ps.folders(pid)] == [str(new.resolve())]
+        assert ps.for_folder(new) == (found, None), "found by path from then on"
+        other = _checkout(user / "other", "clone", "https://example.com/else/other.git")
+        assert ps.for_folder(other) == (None, None)
+
+
+def test_the_cli_and_workspace_choose_by_folder_without_falling_back():
+    with _machine() as user:
+        ws = Workspace.open()
+        a, b = ws.projects.create("Acme")["id"], ws.projects.create("Beta")["id"]
+        folder = user / "work" / "beta"
+        folder.mkdir(parents=True)
+        ws.projects.link(b, folder)
+        assert ws.choose(folder=folder) == b
+        assert ws.choose(folder=user / "work" / "nowhere", use_last=True) is None, "no fallback to the last or the only one"
+        assert ws.choose() is None and ws.choose(requested="acme") == a
+
+
+def test_a_session_in_a_linked_folder_works_on_its_project_and_an_unlinked_one_keeps_no_memory():
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        ps = Projects(eng)
+        a, b = ps.create("Acme")["id"], ps.create("Beta")["id"]
+        linked, loose = user / "work" / "acme", user / "work" / "loose"
+        linked.mkdir(parents=True)
+        loose.mkdir(parents=True)
+        ps.link(a, linked)
+        s = FounderStore(ps.store_home(a))
+        s.update_profile({"company": "Acme"})
+        s.close()
+        os.environ["CLAUDE_PROJECT_DIR"] = str(linked)
+        try:
+            async def in_linked(call):
+                ctx, _, err = await call("coach_get_context")
+                assert not err and ctx["project"]["id"] == a and ctx["profile"]["company"], ctx["project"]
+            if _serve(user, in_linked) is False:
+                return
+            os.environ["CLAUDE_PROJECT_DIR"] = str(loose)
+
+            async def in_loose(call):
+                ctx, _, err = await call("coach_get_context")
+                assert not err and ctx["project"] is None and ctx["nudges"][0]["kind"] == "link_folder", ctx["nudges"]
+                _, text, err = await call("coach_record", {"entry": {"kind": "goal", "text": "x"}, "request_id": _rid()})
+                assert err and "linked to no Project" in text and "nothing was read or saved" in text
+                out, _, err = await call("coach_project", {"action": "link", "project": "beta"})
+                assert not err and out["folder"]["linked_to"] == b and out["active"]["id"] == b, out
+                res, _, err = await call("coach_record", {"entry": {"kind": "goal", "text": "Ship v1"},
+                                                         "request_id": _rid(), "project": "beta"})
+                assert not err and res["ids"]
+                out, _, _ = await call("coach_project", {"action": "unlink"})
+                assert out["folder"]["linked_to"] is None and out["active"] is None
+            _serve(user, in_loose)
+        finally:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+
+
+def test_the_first_save_in_a_folder_makes_a_project_and_links_the_folder():
+    with _machine() as user:
+        folder = user / "work" / "shop"
+        folder.mkdir(parents=True)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(folder)
+        try:
+            async def go(call):
+                res, _, err = await call("coach_update_profile", {"changes": {"company": "Shop"}, "request_id": _rid()})
+                assert not err
+                out, _, _ = await call("coach_project", {"action": "list"})
+                assert out["folder"]["linked_to"] == "shop" and out["folders"] == [str(folder.resolve())]
+            _serve(user, go)
+        finally:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        assert Projects(user / ".ytbrain").for_folder(folder)[0]["id"] == "shop"
+
+
 # --- G7: the coach evaluation's grading (offline) ------------------------------------------------------------
 def test_g7_cases_are_well_formed_and_graded_on_every_projects_store():
     from ytbrain.eval import coach as C
@@ -489,7 +769,7 @@ def test_g7_cases_are_well_formed_and_graded_on_every_projects_store():
         assert len(c["sessions"]) >= 2, "isolation needs a new session"
     with _machine() as user:
         eng = user / ".ytbrain"
-        ps = Projects(eng / "founder")
+        ps = Projects(eng)
         for name, stage, goal in (("Acme Dental", "mvp", "10 paying clinics by 2026-12-15"),
                                   ("Kitebook", "idea", "50 waitlist signups by 2026-11-30")):
             s = FounderStore(ps.store_home(ps.create(name)["id"]))
@@ -520,6 +800,46 @@ def test_g7_cases_are_well_formed_and_graded_on_every_projects_store():
     assert not C.turn_check(log, {**ask, "turn": 2})["ok"], "answering from one Project without asking fails"
     assert not C.turn_check(log, {"turn": 3, "no_common_write": True})["ok"]
     assert not C.turn_check(log, {"turn": 9, "mentions": ["x"]})["ok"], "a turn that never ran fails"
+
+
+def test_g7_grades_sharing_inside_a_project_isolation_between_projects_and_owned_privacy():
+    """ADR-0019: coaches of one Project read each other's Goals; another Project's never; a Pack that owns its
+    memory is neither read nor reading. Graded with the same declarative checks as the host cases."""
+    from ytbrain.eval import coach as C
+    with _machine() as user:
+        eng = user / ".ytbrain"
+        ps = Projects(eng)
+        homes = {n: ps.store_home(ps.create(n)["id"]) for n in ("Acme Dental", "Kitebook")}
+        for n, who, goal in (("Acme Dental", "founder", "10 paying clinics by 2026-12-15"),
+                             ("Acme Dental", "coding", "p99 under 200ms for booking"),
+                             ("Acme Dental", "investor", "reach the target mix"),
+                             ("Kitebook", "founder", "50 waitlist signups by 2026-11-30")):
+            s = FounderStore(homes[n], coach=who)
+            s.update_profile({"company": n})
+            s.record({"kind": "goal", "text": goal})
+            s.close()
+
+        def goals(company, as_, peers, owned=(), **kw):
+            c = {"check": "goals", "company": company, "as": as_, "peers": peers, "owned": list(owned), **kw}
+            return C.check_projects(eng, [c], "2026-10-09T18:00:00+05:30")[0]
+        both = {"founder": [], "coding": []}
+        assert goals("Acme Dental", "coding", both, contains="clinics", absent=["waitlist"], min=2)["ok"]
+        assert goals("Acme Dental", "founder", both, contains="p99", absent=["waitlist"], min=2)["ok"]
+        # a Project is a boundary: Kitebook's Goal never reaches Acme's coaches
+        assert goals("Acme Dental", "coding", both, absent=["waitlist"])["ok"]
+        k = goals("Kitebook", "coding", both, contains="waitlist", absent=["clinic", "p99"], max=1)
+        assert k["ok"], k
+        # a coach with no peers (a pinned folder) reads only its own records
+        mine = goals("Acme Dental", "coding", {}, contains="p99", absent=["clinics"], max=1)
+        assert mine["ok"], mine
+        # an owned Pack neither reads nor is read
+        iso = goals("Acme Dental", "investor", {"founder": [], "coding": []}, owned=["*"], contains="target mix",
+                    absent=["clinics", "p99"], max=1)
+        assert iso["ok"], iso
+        hidden = goals("Acme Dental", "founder", {"investor": ["*"], "coding": []}, absent=["target mix"], min=2)
+        assert hidden["ok"], hidden
+        leak = goals("Acme Dental", "founder", {"investor": [], "coding": []}, absent=["target mix"])
+        assert not leak["ok"], "the check fails when an owned Pack's record reaches another coach"
 
 
 def test_the_persons_own_facts_are_saved_only_in_their_own_words():

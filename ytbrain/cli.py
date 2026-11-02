@@ -1457,15 +1457,26 @@ def cmd_refresh(args) -> int:
     Series and provenance are given fields, never generated, so renaming a
     Source or fixing how they are derived must not cost a re-extraction.
     """
+    from .sources import SourceConfigError, adapter_for_doc_type
     m = Manifest(MANIFEST_DB)
     by_id = {s["id"]: s for s in (_sources().get("sources") or [])}
     docs = [dict(d) for d in m.documents()]
     print(f"refresh: {len(docs)} document(s), {len(by_id)} source(s) in sources.yaml", flush=True)
-    changed_docs = changed_files = orphan = 0
+    changed_docs = changed_files = orphan = own = 0
+    from_source: dict[str | None, bool] = {}
     for d in docs:
         src = by_id.get(d["source_id"])
         if src is None:
             orphan += 1                  # its Source was removed from sources.yaml: leave as is
+            continue
+        kind = d.get("doc_type")
+        if kind not in from_source:
+            try:
+                from_source[kind] = getattr(adapter_for_doc_type(kind), "series_from_source", True)
+            except SourceConfigError:
+                from_source[kind] = True
+        if not from_source[kind]:
+            own += 1                     # a Book: its Series is its own title, and `sync` keeps it current
             continue
         info_path = RAW / f"{d['doc_id']}.info.json"
         want = {"series": _series_for(src),
@@ -1493,6 +1504,8 @@ def cmd_refresh(args) -> int:
     msg = f"refresh: {changed_docs} document(s) and {changed_files} file(s) updated"
     if orphan:
         msg += f"; {orphan} document(s) belong to Sources no longer in sources.yaml (left unchanged)"
+    if own:
+        msg += f"; {own} Book Chapter(s) keep the Series and publisher of their Book (`sync` sets them)"
     print(msg)
     return 0
 
@@ -1952,7 +1965,8 @@ def _domains_tagging(args, reg) -> int:
                 print(f"    add it: ytbrain domains add {p.name} --risk {p.risk_tier} --description \"{p.description}\" {ex}")
             elif p.verdict.startswith("alias of "):
                 print(f"    or keep it as another name: ytbrain domains alias {p.verdict.split()[-1]} \"{p.name}\"")
-        print("\n  The risk tier is your call (it decides when the coach must decline). Nothing was added.")
+        print("\n  The risk tier is your call (it decides how close the evidence must be, and whether the coach only educates). "
+              "Nothing was added.")
         return 0
     return 2
 
@@ -1964,8 +1978,61 @@ def cmd_gaps(args) -> int:
     home = Path(args.home).expanduser() if args.home else G.engine_home()
     days = args.days or None
     projects = G.load(home, pack=args.pack, days=days)
+    if args.replay or args.replay_pack:
+        if args.replay_pack and not args.pack:
+            print("gaps: --replay-pack searches one coach's pack: name that coach with --pack", file=sys.stderr)
+            return 2
+
+        def load(pack: str):
+            path = Path(args.replay_pack).expanduser() if args.replay_pack else G.installed_pack(home, pack)
+            if path is None:
+                raise RuntimeError(f"no installed {pack} coach has registered its pack under {home / 'installed'}; "
+                                   f"start it once, or pass --pack {pack} --replay-pack DIR")
+            return _load_pack(path)
+        rep = G.replay(projects, load, questions=args.questions)
+        print(json.dumps(rep, indent=1) if args.json else G.render_replay(rep), end="" if not args.json else "\n")
+        return 0
     rep = G.report(projects, home, days, questions=args.questions)
     print(json.dumps(rep, indent=1) if args.json else G.render(rep, home), end="" if not args.json else "\n")
+    return 0
+
+
+def cmd_coach(args) -> int:
+    """`coach new <id>`: draft a Pack (packs/<id>/pack.toml and its ask, coach and setup skills) from a short
+    description; templates only, no model, never overwrites (ytbrain/coach_new.py, docs/build-your-own-coach.md)."""
+    from . import coach_new as N, domains as D, packs as PK
+    try:
+        spec = N.Spec(id=args.id, person=args.person, noun=args.project_noun, subject=args.subject or "",
+                      domains=N.split(args.domains), display_name=args.display_name or "",
+                      description=args.description or "", sources=args.sources or "",
+                      modules=N.split(args.modules) or ("goals", "decisions", "notes"),
+                      fields=[N.parse_field(f) for f in args.field or []], required=N.split(args.required),
+                      owned=args.owned)
+        try:
+            known = D.load().names
+        except D.DomainConfigError:
+            known = None
+        got = N.create(PK.ROOT, spec, like=args.like, known_domains=known)
+    except (N.NewCoachError, PK.PackError) as e:
+        print(f"coach new: {e}", file=sys.stderr)
+        return 2
+    rel = lambda f: Path(f).relative_to(PK.ROOT)
+    print(f"coach new: drafted `{spec.id}` ({spec.display_name}), nothing generated by a model:")
+    for f in got["files"]:
+        print(f"  {rel(f)}")
+    for f in got["cases"]:
+        print(f"  {rel(f)}  (copied from `{args.like}`: rewrite its scenarios for {spec.subject})")
+    print("Next:")
+    n = 1
+    for d in got["missing_domains"]:
+        print(f"  {n}. declare the Domain: ytbrain domains add {d} --risk medium --description \"...\"   "
+              f"(--risk high if a wrong answer can harm)")
+        n += 1
+    print(f"  {n}. add Sources for it to sources.yaml, then `ytbrain ops` (ingest, tag, assemble every Pack)")
+    print(f"  {n + 1}. read packs/{spec.id}/pack.toml and the three skills; the coaching contract is the shared one, "
+          f"in your words to edit")
+    print(f"  {n + 2}. evaluation cases for G4-G8: ytbrain/eval/coach_cases/{spec.id}/ "
+          f"({'copied; rewrite them' if got['cases'] else 're-run with --like coding to start from an example'})")
     return 0
 
 
@@ -3475,9 +3542,36 @@ def main(argv=None) -> int:
     sp.add_argument("--questions", type=int, default=15, metavar="N",
                     help="list up to N weak questions per Project, when their text was recorded (default 15)")
     sp.add_argument("--home", metavar="DIR", help="the engine home (default ~/.ytbrain, or YTBRAIN_HOME)")
+    sp.add_argument("--replay", action="store_true",
+                    help="search the weak questions again against each coach's installed pack and show their level "
+                         "then and now (needs the recorded question text; logs and writes nothing)")
+    sp.add_argument("--replay-pack", metavar="DIR",
+                    help="with --pack: replay against this Knowledge pack instead (a build not installed yet)")
     sp.add_argument("--json", action="store_true", help="the report as JSON")
     sp.set_defaults(func=cmd_gaps)
 
+    sp = sub.add_parser("coach", help="draft a new coach (a Pack) from a short description")
+    sp.set_defaults(func=cmd_coach, limit=0, workers=0)
+    csub = sp.add_subparsers(dest="coach_cmd", required=True)
+    cn = csub.add_parser("new", help="write packs/<id>/pack.toml and its ask, coach and setup skills from templates "
+                                     "(no model; never overwrites an existing Pack)")
+    cn.add_argument("id", help="lowercase letters, digits and dashes, e.g. `legal` (the plugin is `<id>-coach`)")
+    cn.add_argument("--person", default="Learner", help="what the person is called, e.g. Engineer, Investor (default Learner)")
+    cn.add_argument("--project-noun", default="project", help="what one Project is about: company, system, goal (default project)")
+    cn.add_argument("--subject", help="the subject in plain words, e.g. 'contract law for founders' (default: the id)")
+    cn.add_argument("--domains", help="comma-separated Domains it answers from (default: the id); declare each in domains.yaml")
+    cn.add_argument("--display-name", help="the plugin's display name (default: the id as Title Case + ' Coach')")
+    cn.add_argument("--description", help="what the plugin browser shows (a default is written)")
+    cn.add_argument("--sources", help="how the sources are called in answers, e.g. 'legal books and articles'")
+    cn.add_argument("--modules", help="comma-separated memory beyond the core: goals, commitments, checkins, "
+                                      "decisions, holdings, notes (default goals,decisions,notes)")
+    cn.add_argument("--field", action="append", metavar="NAME=DESCRIPTION",
+                    help="a fact a Project remembers (repeatable); timezone, name, role and answer_style are added for you")
+    cn.add_argument("--required", help="comma-separated fields setup must fill (default: the first --field)")
+    cn.add_argument("--owned", action="store_true",
+                    help="keep every record of this coach from the other coaches of a shared Project (and read none of theirs)")
+    cn.add_argument("--like", metavar="PACK",
+                    help="copy that Pack's evaluation cases (G4-G8) as a starting point: founder, coding or investor")
     sp = sub.add_parser("domains", help="the Library's Domains (domains.yaml): list, add one, or ignore a sorting folder")
     sp.set_defaults(func=cmd_domains, limit=0, workers=0, domains_cmd="list")
     dsub = sp.add_subparsers(dest="domains_cmd")
@@ -3485,7 +3579,7 @@ def main(argv=None) -> int:
     da = dsub.add_parser("add", help="declare a Domain (a books folder of the same name then belongs to it)")
     da.add_argument("name", help="lowercase letters, digits and dashes; a folder name such as `GTM` becomes `gtm`")
     da.add_argument("--risk", required=True, choices=["low", "medium", "high"],
-                    help="how much harm a wrong answer can do: high declines below strong coverage (finance, legal, medical)")
+                    help="how much harm a wrong answer can do: high only educates below strong coverage, never advises (finance, legal, medical)")
     da.add_argument("--description", required=True, help="one line: what the Domain is about (the host chooses by it)")
     da.add_argument("--example", action="append", metavar="QUESTION", help="an example question (repeatable)")
     da.add_argument("--freshness", default="evergreen", type=lambda v: v if v == "evergreen" else int(v),

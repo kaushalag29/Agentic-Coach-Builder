@@ -248,7 +248,7 @@ def test_a_pack_definition_is_checked_and_says_where_its_builds_go():
     from ytbrain import packs as PK
     founder = PK.load("founder", ROOT, known_domains=["startup", "gtm", "leadership", "finance", "coding"])
     assert founder.product_id == PRODUCT["id"] and set(founder.prompts) <= set(founder.skills)
-    assert founder.modules == ("goals", "commitments", "checkins", "decisions")
+    assert founder.modules == ("goals", "commitments", "checkins", "decisions", "notes")
     data, dist = Path("/d"), Path("/dist")
     assert founder.pack_dir(False, data) == data / "pack" and founder.pack_dir(True, data) == data / "pack-private"
     assert founder.dist_dir(True, dist) == dist / "plugin-private", "the founder Pack keeps today's folders"
@@ -312,6 +312,117 @@ def test_another_pack_assembles_its_own_skills_identity_and_runtime_settings():
         assert "greet.md" in plays and "ask.md" not in plays, plays
         assert json.loads((out / ".claude-plugin" / "plugin.json").read_text())["name"] == "demo-coach"
         assert sorted(p.name for p in (repo / "founder_coach").rglob("*") if p.is_file()) == founder_before
+
+
+def test_coach_new_drafts_a_pack_that_loads_assembles_and_keeps_the_pinned_wording():
+    """`ytbrain coach new` (docs/build-your-own-coach.md): templates only. The Pack passes the loader, assembles into a
+    plugin with its own skills and the shared ones, and carries the wording every Pack must (search first, a person's
+    facts only in their own words, a Project only when asked)."""
+    sys.path.insert(0, str(ROOT))
+    import io
+    import shutil
+    from contextlib import redirect_stderr, redirect_stdout
+    from ytbrain import cli, coach_new as N, packs as PK
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        repo = _fake_repo(tmp)
+        shutil.copytree(ROOT / "ytbrain" / "eval" / "coach_cases", repo / "ytbrain" / "eval" / "coach_cases")
+        spec = N.Spec(id="legal", person="Founder", noun="matter", subject="contract law for founders",
+                      domains=("legal",), fields=[("matter", "the matter, in one line"),
+                                                  ("jurisdiction", "where it is governed")], owned=True)
+        before = sorted(p.relative_to(repo).as_posix() for p in repo.rglob("*") if p.is_file())
+        got = N.create(repo, spec, like="coding", known_domains=["startup"])
+        assert got["missing_domains"] == ["legal"] and len(got["cases"]) >= 3
+        pack = PK.load("legal", repo)
+        assert pack.owned == ("*",) and pack.required == ("matter",) and pack.product_id == "legal-coach"
+        assert [f["name"] for f in pack.profile] == ["matter", "jurisdiction", "timezone", "name", "role", "answer_style"]
+        assert "never delays or replaces the search" in pack.runtime["setup_nudge"]
+        assert "is created or switched only when they ask" in pack.runtime["instructions"]
+        assert "coach_update_profile `stated`" in pack.runtime["instructions"]
+        ask = (repo / "packs/legal/skills/ask/SKILL.md").read_text()
+        coach = (repo / "packs/legal/skills/coach/SKILL.md").read_text()
+        setup = (repo / "packs/legal/skills/setup/SKILL.md").read_text()
+        assert not re.search(r"@\w+@", ask + coach + setup), "all slots filled"
+        assert "Create or switch a Project only when" in coach
+        assert "never infer" in setup and "`stated`" in setup and "`matter`" in setup and "`jurisdiction`" in setup
+        out = tmp / "dist" / "legal-coach"
+        A.assemble(repo, _fake_pack(tmp), out, pack_id="legal")
+        assert sorted(p.name for p in (out / "skills").iterdir()) == sorted(pack.skills)
+        assert json.loads((out / ".claude-plugin" / "plugin.json").read_text())["name"] == "legal-coach"
+        left = [str(p.relative_to(out)) for p in (out / "skills").rglob("*.md") if "{{" in p.read_text()]
+        assert not left, left
+        pj = json.loads((out / "founder_coach" / "product.json").read_text())
+        assert pj["pack"]["owned"] == ["*"] and pj["pack"]["domains"] == ["legal"]
+        # the same input writes the same files, and it never overwrites a Pack
+        try:
+            N.create(repo, spec)
+            raise AssertionError("an existing Pack was overwritten")
+        except N.NewCoachError as e:
+            assert "already exists" in str(e)
+        # a refusal leaves nothing behind
+        for bad, why in ((N.Spec(id="Bad Id"), "lowercase"), (N.Spec(id="x", fields=[("Bad", "d")]), "field name"),
+                         (N.Spec(id="x", modules=("goals", "habits")), "unknown module"),
+                         (N.Spec(id="x", fields=[("name", "d")]), "added for you"),
+                         (N.Spec(id="x", fields=[("a", "d")], required=("b",)), "--required")):
+            try:
+                N.create(repo, bad)
+                raise AssertionError(why)
+            except N.NewCoachError as e:
+                assert why in str(e), (why, str(e))
+        after = sorted(p.relative_to(repo).as_posix() for p in repo.rglob("*") if p.is_file()
+                       and "__pycache__" not in p.parts)
+        assert not [f for f in after if f.startswith("packs/x")], "a refused draft writes nothing"
+        # the command: prints what it wrote and what to do next; exit 2 on a refusal
+        old = PK.ROOT
+        PK.ROOT = repo
+        try:
+            out_, err_ = io.StringIO(), io.StringIO()
+            with redirect_stdout(out_), redirect_stderr(err_):
+                rc = cli.main(["coach", "new", "tax", "--person", "Filer", "--project-noun", "return",
+                               "--field", "return=the tax return, in one line", "--domains", "tax"])
+                rc2 = cli.main(["coach", "new", "tax"])
+            assert rc == 0 and "drafted `tax`" in out_.getvalue(), out_.getvalue()
+            assert rc2 == 2 and "already exists" in err_.getvalue()
+            assert PK.load("tax", repo).words["person"] == "Filer"
+        finally:
+            PK.ROOT = old
+
+
+def test_a_drafted_coach_speaks_its_own_words_on_the_real_runtime():
+    """The Pack `ytbrain coach new` writes builds a plugin whose tools, hook and instructions carry no founder
+    vocabulary, and every phrase it rewrites exists in the shared runtime's text."""
+    try:
+        import numpy  # noqa: F401
+        import mcp  # noqa: F401
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_pack import HashEmbed, _build
+    except ImportError:
+        return _skipped("runtime or pipeline dependencies not installed")
+    import re
+    import shutil
+    sys.path.insert(0, str(ROOT))
+    from ytbrain import coach_new as N
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        spec = N.Spec(id="legal", person="Lawyer", noun="matter", subject="contract law for founders",
+                      domains=("coding",), fields=[("matter", "the matter, in one line"),
+                                                   ("jurisdiction", "where it is governed")], owned=True)
+        full = tmp / "full"
+        shutil.copytree(PLUGIN, full / "plugin")
+        shutil.copy2(ROOT / "product.toml", full / "product.toml")
+        shutil.copytree(ROOT / "packs", full / "packs")
+        shutil.copytree(ROOT / "founder_coach", full / "founder_coach", ignore=A.IGNORE)
+        N.create(full, spec)
+        kp = tmp / "kpack"
+        _build(kp, emb=HashEmbed())
+        built = tmp / "legal-built"
+        A.assemble(full, kp, built, pack_id="legal", check=True)
+        got = _dump_runtime(built, tmp / "home")
+        blob = json.dumps(got["tools"]) + got["instructions"] + got["hook"]
+        for word in ("Founder", "YC talk", "Commitment", "Check-in", "company", "commitments"):
+            assert word not in blob, (word, re.findall(".{60}" + word + ".{30}", blob)[:2])
+        assert got["required"] == ["matter"] and "jurisdiction" in got["fields"] and "stage" not in got["fields"]
+        assert got["prompts"] == ["ask", "setup"] and got["hook"].startswith("Legal coach: No matter profile yet")
 
 
 def test_assembler_builds_swaps_and_keeps_the_previous_build():
@@ -694,13 +805,13 @@ def test_every_module_sentence_a_pack_may_rewrite_is_in_the_runtimes_text():
     Pack (packs/*/pack.toml), each rule that applies to it must find its sentence, so a wording change in the runtime
     can't silently leave a coach mentioning a record it can't save."""
     try:
-        from founder_coach.server import MODULE_TEXT, create_server
+        from founder_coach.server import INSTRUCTIONS, MODULE_TEXT, create_server
     except ImportError:
         return _skipped("optional dependency not installed")
     sys.path.insert(0, str(ROOT))
     from ytbrain import packs as PK
     srv = create_server(pack=Path(tempfile.mkdtemp()) / "none", home=Path(tempfile.mkdtemp()), start_models=False)
-    texts = []
+    texts = [INSTRUCTIONS]
 
     def walk(o):
         if isinstance(o, dict):
@@ -716,8 +827,10 @@ def test_every_module_sentence_a_pack_may_rewrite_is_in_the_runtimes_text():
         texts.extend([t.title or "", t.description or ""])
         walk(t.parameters)
     used = set()
-    for pid in PK.all_ids():
-        modules = set(PK.load(pid, check_skills=False).modules)
+    # every Pack, plus one that keeps only the core (a rule for a module every shipped Pack keeps, like Notes, is still
+    # live text for the next Pack that doesn't)
+    kept = [(pid, set(PK.load(pid, check_skills=False).modules)) for pid in PK.all_ids()] + [("(core only)", set())]
+    for pid, modules in kept:
         blob = "\n\x00\n".join(texts)
         for i, (module, old, new) in enumerate(MODULE_TEXT):
             if module in modules:
@@ -775,7 +888,7 @@ def test_the_coding_pack_builds_a_plugin_that_speaks_its_own_words():
     sys.path.insert(0, str(ROOT))
     from ytbrain import packs as PK
     coding = PK.load("coding", ROOT)
-    assert coding.product_id == "coding-coach" and coding.modules == ("goals", "decisions")
+    assert coding.product_id == "coding-coach" and coding.modules == ("goals", "decisions", "notes")
     assert coding.builds == ("private",) and set(coding.prompts) <= set(coding.skills)
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -804,7 +917,8 @@ def test_the_coding_pack_builds_a_plugin_that_speaks_its_own_words():
         assert got["prompts"] == ["ask", "setup", "design-review", "decision-record"]
         assert got["required"] == ["system", "stack"] and "lifecycle" in got["fields"] and "stage" not in got["fields"]
         record = next(x for x in got["tools"] if x["name"] == "coach_record")
-        assert sorted(record["input_schema"]["$defs"]) == ["DecisionIn", "GoalIn"], "only the Pack's record kinds"
+        assert sorted(record["input_schema"]["$defs"]) == ["DecisionIn", "GoalIn", "NoteIn", "NoteLinkIn"], \
+            "only the Pack's record kinds"
         assert got["hook"].startswith("Coding coach: No system profile yet")
         founder = _dump_runtime(ROOT, tmp / "home-founder")            # the shared runtime as written
         text = json.dumps(founder["tools"]) + founder["instructions"] + founder["hook"]
@@ -827,7 +941,7 @@ def test_the_investor_pack_builds_a_plugin_with_holdings_tools_and_no_founder_wo
     sys.path.insert(0, str(ROOT))
     from ytbrain import packs as PK
     inv = PK.load("investor", ROOT)
-    assert inv.product_id == "investor-coach" and inv.modules == ("holdings", "decisions") and inv.common_fields == ()
+    assert inv.product_id == "investor-coach" and inv.modules == ("holdings", "decisions", "notes") and inv.common_fields == ()
     assert inv.builds == ("private",) and inv.required == ("goal", "targets")
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -904,6 +1018,24 @@ def test_every_pack_says_search_comes_first_and_a_person_is_never_filled_in_from
     assert "coach_update_profile `stated`" in INSTRUCTIONS and "or by setup for the company they named" in INSTRUCTIONS
     assert "search and answer it first" in (ROOT / "founder_coach/nudges.py").read_text()
 
+
+
+def test_every_pack_searches_with_whole_questions_and_educates_below_strong_in_a_high_risk_domain():
+    """Dogfooding gaps (2026-10-31): keyword strings came back `none` where the same question in a sentence was
+    `strong`, and the investor coach declined nearly every educational question at `partial`. Both rules are pinned
+    where the host reads them."""
+    from founder_coach.server import INSTRUCTIONS
+    for pack in ("founder", "coding", "investor"):
+        ask = (ROOT / ("plugin" if pack == "founder" else f"packs/{pack}") / "skills" / "ask" / "SKILL.md").read_text()
+        assert "a string of keywords" in ask and "rewritten question" in ask, pack
+    assert "never a string of keywords" in json.dumps(json.loads((ROOT / "tests/golden/coach_tools.json").read_text()))
+    assert "anything below strong is declined" not in INSTRUCTIONS
+    assert "below strong, give only what the hits say, as education" in INSTRUCTIONS
+    assert "no trade, purchase, valuation, rate or allocation is ever advised" in INSTRUCTIONS
+    investor = (ROOT / "packs/investor/skills/coach/SKILL.md").read_text()
+    assert "At `partial`, still answer the educational question" in investor and "decline as rule 4" not in investor
+    assert "answer the educational question from the hits only" in (ROOT / "packs/investor/pack.toml").read_text()
+    assert "answer the general question as education" in (SKILLS / "coach" / "SKILL.md").read_text()
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

@@ -15,9 +15,11 @@ answers before a coach ships. No fine-tuning and no training: change the Sources
 - **Verified knowledge only:** an LLM extracts advice and quotes; code locates every quote in the source before it
   can be cited.
 - **One engine, many coaches:** a coach is a Pack, a configuration file plus skills. Three ship as examples: a
-  startup **founder coach**, a software **coding coach** and a long-term **investor coach**.
-- **Local-first:** search and memory run in a small MCP server on your computer; your conversations and memory stay
-  there.
+  startup **founder coach**, a software **coding coach** and a long-term **investor coach**. Draft your own with
+  `ytbrain coach new`.
+- **Local-first, with memory that follows the work:** search and memory run in a small MCP server on your computer;
+  your conversations and memory stay there. A Project (a company, a codebase, a savings goal) is shared by your coaches,
+  chosen by the work folder, and holds Goals, Decisions and dated Notes you can search later.
 - **Measured:** a retrieval benchmark, coverage-honesty checks and coach gates on the real host decide when a build
   is good enough.
 
@@ -57,7 +59,7 @@ claude --plugin-dir dist/plugin                                # then, in Claude
 ```
 
 Step by step, with every LLM backend and the Cowork install: [docs/getting-started.md](docs/getting-started.md).
-To make a coach of your own: [docs/build-your-own-coach.md](docs/build-your-own-coach.md).
+To make a coach of your own: [docs/build-your-own-coach.md](docs/build-your-own-coach.md) (`ytbrain coach new` drafts the Pack and its skills).
 
 ## Requirements
 
@@ -110,8 +112,9 @@ Every Step is checkpointed per Document: stop anything with Ctrl+C and run it ag
 search over Verified quotes, so it updates the day your Sources change and every claim can be checked.
 
 **How is it different from plain RAG?** Only quotes found verbatim in the source are indexed; every hit carries a
-deep link; each search reports `coverage` so the coach names what it doesn't know; memory of your goals and decisions
-persists per Project; and quality is gated by evals, not eyeballed.
+deep link; each search reports `coverage` so the coach names what it doesn't know; memory of your goals, decisions
+and Notes persists per Project and is shared by your coaches (except the investor's, which stays private); and quality
+is gated by evals, not eyeballed.
 
 **Can I run it with local models only?** Yes for ingestion, tagging and the coaches: Ollama is the default, and
 LM Studio works through the OpenAI-compatible backend. The eval judges need an OpenAI-compatible endpoint that serves
@@ -133,7 +136,7 @@ $0.40–0.80; a local model costs nothing but time ([tested setup](docs/getting-
 | Doc | What's in it |
 |---|---|
 | [Getting started](docs/getting-started.md) | Requirements, install, LLM backends, first coach, installing it in Claude |
-| [Build your own coach](docs/build-your-own-coach.md) | Sources, Domains, a Pack, skills and eval cases for a new coach |
+| [Build your own coach](docs/build-your-own-coach.md) | Sources, Domains, a Pack (drafted by `ytbrain coach new`), skills and eval cases for a new coach |
 | [Architecture](docs/architecture.md) | Diagrams, project layout, design decisions |
 | [Configuration](docs/configuration.md) | `sources.yaml`, Domains and tagging, every environment variable |
 | [Pipeline](docs/pipeline.md) · [ops](docs/ops.md) · [commands](docs/commands.md) | Each Step, the one-command loop, every command |

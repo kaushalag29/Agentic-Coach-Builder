@@ -5,6 +5,73 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **Projects are shared by the coaches (slice A of ADR-0019):** a Project now lives in `~/.ytbrain/projects/<id>/`
+  and every coach on the machine lists it, instead of each coach keeping Projects of its own. Every record in the store
+  carries the coach that made it (store schema 7, a backup is taken first), and for now a coach reads only the
+  records it made; sharing Goals and Decisions between coaches, choosing the Project from the work folder and
+  `PROJECT.md` follow in later slices. At the first start after the update each coach's own Projects are copied once
+  into the shared folder (SQLite backup copy, integrity check, a backup beside the copy, a marker and a lock); the
+  old folders are left as they were, a Project that can't be moved is reported and retried, and two Projects with the
+  same name stay apart (`Name (coding)`). `ytbrain gaps` reads the shared folder and splits usage by coach.
+  Forget and `<coach> forget` act on that coach's records only; the generated files of a coach other than the founder
+  Pack are `CODING.md` / `notes-coding/` (named after the coach) so coaches don't overwrite each other. Update
+  every coach together: a coach still on the old build writes to its old folder.
+- **The work folder chooses the Project (slice B of ADR-0019):** a Project lists the folders it belongs to
+  (`coach_project` `link` / `unlink`, `<coach> projects link|unlink`; a checkout is stored with its git remote, never
+  with credentials, so a moved checkout is found again and re-linked with a note). When the app names the work folder
+  (`CLAUDE_PROJECT_DIR`) the deepest linked folder decides; a folder linked to nothing gets no memory and the coach
+  offers to link it or make a Project (the first save in an unlinked folder makes one and links it). The session
+  hook uses the folder and never the last Project used; the command line uses the folder, then the shared last
+  Project. Without a folder from the app the only Project is still chosen by itself, and with several the coach asks.
+  The skills and instructions tell a coach to switch to the Project another coach in the conversation already chose.
+  Reading MCP roots is not built (it needs asynchronous tools); the folder comes from `CLAUDE_PROJECT_DIR` only.
+- **Coaches read each other's shared core (slice C1 of ADR-0019):** in a Project several coaches share, each reads the
+  Goals, Commitments and Decisions the others made, and a profile field both declare is one current value; a record
+  from another coach shows `coach` in context and `coach_update` can update it. Notes, Check-ins and Holdings stay
+  with the coach that wrote them, and a Pack with `owned = ["*"]` in `pack.toml` (the investor) neither reads nor is
+  read. A coach is read only while it is registered on the machine. `PROJECT.md` in the Project's folder lists the
+  shared core with the coach behind each record and never holds anything private.
+- **Clearer refusals from `coach_update` (from the usage log):** the coach passed `note` to a Decision four times in a
+  month and once sent a Check-in summary over the 1000-character limit. The refusal now names the fields that do take
+  the change and, when the Pack keeps Notes, says to save a longer account or the thinking around a Decision as a Note
+  linked to it; a too-long text says its length. The tool's `note` and `changes` descriptions state the limit and
+  that a Decision takes `changes`.
+- **`ytbrain coach new <id>` drafts a coach:** from a short description (person, what a Project is, Domains, profile
+  fields, memory modules, `--owned`) it writes `packs/<id>/pack.toml` and the `ask`, `coach` and `setup` skills in the
+  coach's words, optionally copies another coach's evaluation cases (`--like`), and checks the result with the Pack
+  loader. Templates only, no model; it never overwrites a Pack or edits `domains.yaml`, and it prints the Domain
+  command, Sources and case rewrites that are left. The assembled plugin is tested on the real runtime.
+- **Setup and the Projects check (slice C2 of ADR-0019):** the setup skills tell a person that a Project is shared by
+  every coach of the work (the investor's is private) and the Project skill covers `link`, `unlink` and the
+  no-fallback rule. The G7 Project check can now be read `as` another coach (`peers`, `owned`), and an offline test
+  grades sharing inside a Project, isolation between Projects and the privacy of an owned Pack on stores it builds;
+  the host run of G7 still tests one coach at a time.
+- **Notes:** every coach now keeps dated, append-only Notes (a discussion, a piece of research, an insight) with a
+  title, a summary, a type, an Origin (said by the person, or concluded by the coach), the Citations it rests on
+  (their words kept with the Note) and links to the Goals and Decisions it is about, so progress and earlier
+  conclusions can be found again. A Note is saved only on a yes, is never rewritten (a newer Note supersedes it, both
+  stay on record) and may carry a `revisit_on` date that becomes a Nudge. `coach_get_context` lists the newest Note
+  titles; the new `coach_recall` tool searches Notes and the other records by their words (full-text index inside
+  the store, rebuildable); FOUNDER.md lists them. A `notes/` folder beside the store holds a generated index
+  (`INDEX.md`, also the resource `founder://notes`), a sub-index per quarter and one file per Note, all read-only
+  views of the store; `<coach> notes lint` reports what needs attention and `<coach> notes rebuild` regenerates the
+  derived files. Store schema 6 (a backup is taken first). See ADR-0020.
+- **High-risk Domains educate below strong coverage:** at `partial`, the coach now answers a general question from what
+  the sources say (every claim cited and attributed, disagreements shown), says the material is partial and that
+  applying it to the person's own situation is a qualified adviser's call. It still never advises a trade, purchase,
+  valuation, rate or allocation, and states a Gap at `none`. Before, the investor coach declined nearly every
+  educational question. G8 gains educational cases that must be answered, not declined.
+- **Searches are written as questions:** the skills and `coach_search`'s `query` now ask for a full question in the
+  sources' words, never a string of keywords. A keyword string can score low enough to be called a Gap where the same
+  question in a sentence is `strong`. New diagnostic: `ytbrain eval run --config pack-keywords --compare pack-no-rerank`
+  measures the difference, and every run now reports its closest hit's median similarity.
+- **`ytbrain gaps --replay`:** searches the recorded weak questions again against each coach's installed pack (or
+  `--pack P --replay-pack DIR`) and shows each one's level then and now; it logs and writes nothing.
+- **Tool errors say what failed:** `<coach> usage summary` and `ytbrain gaps` list the newest errors with their
+  messages (values you typed shown as '…'), instead of only counting them.
+- **A Book's corrected year no longer re-extracts it:** a change to a Book's year, ISBN, publisher or url (fields no
+  prompt reads) is written into its Chapters' records in place, then re-indexed. `ytbrain refresh` no longer
+  overwrites a Book's Series (its title) with its Source's name.
 - **Data outside the checkout:** new settings `YTBRAIN_DATA` (the `data/` folder) and `YTBRAIN_DIST` (built plugins);
   a relative path in `sources.yaml` now follows that file's folder (unchanged when it is in the repo). See
   [configuration.md](docs/configuration.md#keep-your-data-outside-the-checkout).

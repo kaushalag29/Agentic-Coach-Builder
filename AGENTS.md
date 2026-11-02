@@ -79,5 +79,5 @@ Agentic Coach Builder turns Sources (YouTube talks, website articles, PDF books)
 
 - `data/` is rebuildable pipeline output (git-ignored): safe to regenerate, never commit. `YTBRAIN_DATA` may put it outside
   the checkout (a private workspace with `sources.yaml` and the private-terms list: docs/configuration.md).
-- A coach's memory (`~/.ytbrain/<pack>/projects/<id>/`, or the folder `<ID>_HOME` pins) is private and not rebuildable: back it up before any
+- A coach's memory (`~/.ytbrain/projects/<id>/`, shared by the coaches, or the folder `<ID>_HOME` pins) is private and not rebuildable: back it up before any
   migration and never send its contents to a Judge or any service other than the host model.

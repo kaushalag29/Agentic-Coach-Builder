@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import statistics
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -55,7 +56,16 @@ CONFIGS = {
     # ever beat searching the whole Library (measured for 0.1.7, docs/architecture.md)
     "pack-oracle-domains": {"rerank": False, "stage_boost": False, "backend": "pack", "oracle": "domains"},
     "pack-oracle-topic": {"rerank": False, "stage_boost": False, "backend": "pack", "oracle": "topic"},
+    # diagnostic, never shipped: every question sent as a string of keywords, the way a host often writes a search
+    # ("retry failed job idempotent"). Compared with pack-no-rerank, it says what that phrasing costs in ranking
+    # (nDCG@10) and in closeness (`_top_similarity`, which Coverage is read from): the skills ask for whole questions
+    "pack-keywords": {"rerank": False, "stage_boost": False, "backend": "pack", "query": "keywords"},
 }
+# words a keyword-style search leaves out (`as_keywords`)
+KEYWORD_STOP = frozenset("""a an the and or but if so of to in on at by for from with without into onto about as is are was were be
+been being do does did doing have has had having i me my we our you your it its this that these those there here what which
+who whom whose when where why how can could should would will shall may might must just than then too very also not no
+any some all each every more most much many such own same other only one ever really get got make makes""".split())
 PACK_KINDS = ["advice", "takeaway", "summary", "fact", "rule"]
 # below this share of judged top-10 Moments, a comparison says more about the pool than the
 # system: grade the run's new Moments first (`ytbrain eval judge`)
@@ -110,7 +120,8 @@ def run_config(store, embed, reranker, queries: list[dict], config: str) -> dict
         stage = (q.get("stage") or [None])[0] if cfg["stage_boost"] else None
         flt = oracle_filter(cfg, q, domains_of)
         unfiltered += bool(cfg.get("oracle")) and not flt
-        res = search(store, embed, q["text"], stage=stage, top_k=RESULT_DEPTH, kinds=cfg.get("kinds"),
+        text = as_keywords(q["text"]) if cfg.get("query") == "keywords" else q["text"]
+        res = search(store, embed, text, stage=stage, top_k=RESULT_DEPTH, kinds=cfg.get("kinds"),
                      reranker=reranker if cfg["rerank"] else None, route=bool(cfg.get("route")),
                      diversity=POLICIES[cfg.get("diversity", "default")], **flt)
         moments = results_to_moments(res)
@@ -119,8 +130,10 @@ def run_config(store, embed, reranker, queries: list[dict], config: str) -> dict
             m = moment_for(r["doc_id"], r.get("start_ms")) if r.get("kind") != "summary" else None
             if m and m not in best:
                 best[m] = float(r.get("score") or 0.0)
+        sims = [r["similarity"] for r in res if isinstance(r.get("similarity"), (int, float))]
         out[q["_id"]] = {"moments": moments, "talks": results_to_talks(res),
-                         "scores": [best.get(m, 0.0) for m in moments]}
+                         "scores": [best.get(m, 0.0) for m in moments],
+                         "top_similarity": max(sims) if sims else None}
         if i % every == 0 or i == len(queries):
             per = (time.time() - started) / i
             print(f"    search: {i}/{len(queries)}, {per:.1f}s/question, "
@@ -130,6 +143,14 @@ def run_config(store, embed, reranker, queries: list[dict], config: str) -> dict
               f"Library", flush=True)
     print("eval run: scoring (bootstrap intervals, 10 000 resamples per metric) ...", flush=True)
     return out
+
+
+def as_keywords(text: str) -> str:
+    """A question as a host's keyword-style search: lower case, no punctuation, no function words, no repeats
+    ("How do I make a background job safe to retry?" -> "background job safe retry")."""
+    words = re.findall(r"[a-z0-9][a-z0-9'+#.-]*[a-z0-9+#]|[a-z0-9]", text.lower())
+    kept = [w for w in words if w not in KEYWORD_STOP and not w.endswith(("'s", "n't"))]
+    return " ".join(dict.fromkeys(kept)) or text
 
 
 def oracle_filter(cfg: dict, q: dict, domains_of: dict | None) -> dict:
@@ -184,6 +205,10 @@ def score(queries: list[dict], qrels: dict[str, dict[str, int]], runs: dict) -> 
                          "n": len(vals)}
     # Diagnostic (not compared or gated): what the top 10 is made of, by source kind
     summary["_mix@10"] = M.kind_mix([moment_run.get(q, []) for q in per["ndcg@10"]])
+    tops = sorted(r["top_similarity"] for q, r in runs.items()
+                  if q in per["ndcg@10"] and isinstance(r.get("top_similarity"), (int, float)))
+    if tops:                                           # the closest hit's cosine: what Coverage is read from
+        summary["_top_similarity"] = {"median": round(statistics.median(tops), 4), "n": len(tops)}
     summary["_ceilings"] = {"recall@10": round(M.ceiling(qrels, 10), 4),
                             "recall@10-l2": round(M.ceiling(qrels, 10, 2), 4),
                             "recall@50": round(M.ceiling(qrels, 50), 4)}
@@ -486,6 +511,9 @@ def render(result: dict) -> str:
             continue
         cap = f"   (best possible {ceilings[name]:.4f})" if name in ceilings else ""
         lines.append(f"  {name:14} {s['mean']:.4f}   95% CI [{s['ci95'][0]:.4f}, {s['ci95'][1]:.4f}]{cap}")
+    top = result["summary"].get("_top_similarity")
+    if top:
+        lines.append(f"  closest hit's similarity (what Coverage is read from): median {top['median']:.4f} (n={top['n']})")
     mix = result["summary"].get("_mix@10") or {}
     if mix:
         lines.append("  top-10 mix by source kind: " + ", ".join(f"{k} {v:.1%}" for k, v in mix.items()))

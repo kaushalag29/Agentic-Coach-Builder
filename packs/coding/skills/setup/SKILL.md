@@ -10,7 +10,7 @@ Follow the coaching contract of the coach skill: show what you'll save and save 
 
 ## Checklist
 
-1. **Context.** `coach_get_context`. If a profile exists, show it and ask what to change instead of starting over. If it lists several `projects` and none is active, ask which system to set up, or whether this is a new one (`/{{id}}:project`).
+1. **Context.** `coach_get_context`. If a profile exists, show it and ask what to change instead of starting over. If it lists several `projects` and none is active, ask which system to set up, or whether this is a new one (`/{{id}}:project`). If the Project already exists because another coach made it (its profile, or Goals and Decisions carrying a `coach`), say what it already holds and ask only for what this coach needs and the profile lacks: never ask again for a fact it shows. When the app gave a work folder that is linked to nothing, `create` links it to the new Project.
 2. **Interview,** one question at a time, short answers are fine. When the Engineer works in a repository the host can read, offer to draft the stack from it (README, manifests such as `package.json` or `pyproject.toml`): say what you read and let them correct it.
    - the system in one line (`system`). When no Project is active (`project` is null), or this is another system, call `coach_project` with action `create` and the system's name as soon as you have it, so everything after is saved to that Project;
    - the stack (`stack`): languages, frameworks, datastores, infrastructure;

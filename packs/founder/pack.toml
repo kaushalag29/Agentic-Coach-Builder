@@ -7,7 +7,7 @@ id = "founder"
 # What it answers from: items whose Domains include any of these (ytbrain pack build --for founder)
 domains = ["startup", "gtm", "leadership", "finance"]
 # Memory beyond the core (profile, Feedback, usage): the accountability loop
-modules = ["goals", "commitments", "checkins", "decisions"]
+modules = ["goals", "commitments", "checkins", "decisions", "notes"]
 # Facts about the person (not a Project) it reads from the Common profile ~/.ytbrain/you.db, and offers to save
 # there on a yes, so the person's other coaches know them too (ADR-0016). Leave out to share nothing.
 common_fields = ["timezone", "name", "role", "answer_style"]
@@ -28,7 +28,7 @@ keywords = ["startup", "founder", "ai-coach", "y-combinator", "fundraising", "an
 [words]
 person = "Founder"
 project_noun = "company"            # what one Project is about, in skills shared by every Pack
-memory = "profile, Goals, Commitments, Check-ins and Decisions"   # what a Project keeps (its modules)
+memory = "profile, Goals, Commitments, Check-ins, Decisions and Notes"   # what a Project keeps (its modules)
 
 # What one Project (a Company) remembers about itself: the coach reads each description, and
 # coach_update_profile validates each value by its kind (text, int, enum, stage, metrics, places, tz, weekday).

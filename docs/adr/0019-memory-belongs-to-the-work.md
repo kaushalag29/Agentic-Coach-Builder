@@ -78,7 +78,7 @@ savings goal. It is long-lived: tasks inside it are its Goals and Commitments, n
 - **Migration.** Existing per-coach Projects move once into `projects/<id>/`. The steps are the ones used for the
   earlier move: a copy with SQLite's backup API, an integrity check, a backup kept beside it, a marker that makes a
   re-run a no-op, and a lock for processes that start together. Each record takes its old Pack as its coach stamp.
-  The old folders are left as they were. Store schema version 6 adds the stamp.
+  The old folders are left as they were. Store schema version 7 adds the stamp (version 6 is Notes, ADR-0020).
 - **Several coach processes write one store.** WAL and the busy timeout already allow this. Request ids keep a
   retried save from being written twice.
 - **Versions must match.** An older coach still writes to the old per-coach folder, so every coach of a build is
@@ -93,3 +93,62 @@ savings goal. It is long-lived: tasks inside it are its Goals and Commitments, n
 - **Open fact.** Whether a host runs one coach process per conversation or shares one across conversations is not
   documented. The first build carrying this change reports it. If processes are shared, the active Project needs a
   per-conversation key, and this ADR is revised before Project choice is built.
+
+## Slice A as built
+
+The layout, the stamp and the move are built; choosing the Project from the work folder, the setup skills and the
+G7 rewrite follow. The read rules and `PROJECT.md` are built too (below).
+
+- **Reads:** see "Read rules as built".
+- **Generated files:** until `PROJECT.md` replaces them, the founder Pack keeps `FOUNDER.md` and `notes/`; any
+  other coach writes `<COACH>.md` and `notes-<coach>/` in the same folder, so coaches never overwrite each other.
+- **Forget** deletes the stamped records of the coach that runs it, its usage rows and the idempotency cache. With
+  `--no-backup` it also removes every backup in the Project folder, because a backup holds all coaches' memory
+  and cannot be scrubbed; the other coaches' records stay in the store.
+- **The move** reads `~/.ytbrain/<pack>/projects/<id>/` for every Pack found, oldest first. A Project whose name is
+  already taken becomes `Name (pack)`: two Projects are never merged by name. `project.json` records
+  `migrated_from` (`<pack>/<id>`), which is how a retry skips a Project that already moved. The marker
+  `projects/.migrated-from-packs.json` is written only when every Project moved, so a Project the person deletes
+  afterwards stays deleted. The shared `last-project` is taken from this coach's old default, else any coach's.
+- **`ytbrain gaps`** reads the shared stores and splits their usage rows by coach stamp; an old-layout store that
+  was moved is not counted twice.
+
+## Read rules as built
+
+- **Shared core:** profile facts, Goals, Commitments and Decisions. A coach reads its own records and those of every
+  other coach of the Project that is registered on this machine (`~/.ytbrain/installed/`) and does not keep that kind
+  to itself. A record from another coach carries `coach` in tool output; one the reader made has none.
+- **Kept with the coach that wrote them:** Notes (ADR-0020), Check-ins, holdings, Feedback and usage.
+- **`owned` in `pack.toml`:** `["*"]` keeps everything (the investor); a list of modules (`goals`, `commitments`,
+  `decisions`, `profile`) or profile fields keeps those. The list is published in the coach's registry entry, so a
+  peer's rule is read without opening its Pack. A coach that is not registered, and a pinned folder, have no peers:
+  each coach reads only its own records.
+- **Profile fields:** another coach's fact is read only for a field the reader declares and does not own, and a
+  write supersedes every current value of the field, so there is one current value and both coaches stay in history.
+- **Updates** reach a record another coach made (the stamp stays that of its maker); the change log records who.
+- **`PROJECT.md`** is written by every coach that keeps anything shareable and never by an isolated one.
+
+## Work folders as built (slice B)
+
+- `project.json` lists `folders` as `{path, remote}`: the absolute path and, for a git checkout, the `origin` URL read
+  from `.git/config` without credentials. A folder belongs to one Project; the deepest linked folder that contains the
+  work folder decides. A checkout whose remote is linked to exactly one Project at another path is re-linked and the
+  coach tells the person (`folder_note`).
+- **What the app gives:** only `CLAUDE_PROJECT_DIR`. MCP roots are not read: the tools are synchronous and listing roots
+  is a request to the client. If the app gives no folder, the previous rule stands (the only Project is chosen; with
+  several the coach asks); that convenience deviates from point 4's "never a fallback to the only Project" and is the
+  one place this build is looser than the ADR. A folder the app did give, linked to nothing, has no fallback at all.
+- **Hook and command line:** the hook uses the app's folder, never the last Project used, and says when a folder is
+  linked to nothing. The command line uses the folder it runs in, then the shared last Project.
+- **F4 stays open:** the active Project is per server process. If the app shares one process between conversations
+  (`coach_corpus_status` `host.sessions_seen` rising), the active Project needs a per-conversation key.
+
+## Setup text and the Projects check as built (slice C2)
+
+- The setup skills of the founder and coding Packs say the Project is shared by every coach of the work; the
+  investor's says its Project is private. The Project skill covers `link`, `unlink` and the folder rules.
+- **G7:** `check_projects` goals checks accept `as` (the reading coach), `peers` and `owned`, so sharing inside a
+  Project, isolation between Projects and an owned Pack's privacy are graded the same declarative way. The host
+  runs one coach per case, so those checks run offline on stores a test builds (`test_g7_grades_sharing...`); a
+  two-coach host case needs both coaches installed in the host and is not built.
+

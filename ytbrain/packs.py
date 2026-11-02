@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKS_DIR = ROOT / "packs"
 DEFAULT_PACK = "founder"
 # memory beyond the core (profile, feedback, usage); holdings: positions snapshots for the investor Pack (M6g)
-MODULES = ("goals", "commitments", "checkins", "decisions", "holdings")
+MODULES = ("goals", "commitments", "checkins", "decisions", "holdings", "notes")
 # Facts about the person a Pack may read from, and offer to save to, the Common profile (ADR-0016). Equal to
 # founder_coach.domain.COMMON_FIELDS (tests/test_plugin.py checks): this module stays standard-library only.
 COMMON_FIELDS = ("timezone", "name", "role", "answer_style")
@@ -49,6 +49,7 @@ class Pack:
     profile: tuple[dict, ...] = ()           # [[profile]]: the facts a Project keeps (name, kind, description, ...)
     required: tuple[str, ...] = ()           # the profile fields setup must fill before the coach stops offering it
     runtime: dict = field(default_factory=dict)   # [runtime]: instructions, setup_nudge, coach_name, replace
+    owned: tuple[str, ...] = ()              # kept private to this coach in a shared Project (ADR-0019): "*", or modules and fields
 
     @property
     def product_id(self) -> str:
@@ -150,6 +151,7 @@ def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, che
     if bad := [f for f in common if f not in COMMON_FIELDS]:
         raise PackError(f"{where}: common_fields are {', '.join(COMMON_FIELDS)}, not {', '.join(bad)}")
     builds = _strs(p.get("builds", ["private"]), f"{where}: builds")
+    owned = _strs(p["owned"], f"{where}: owned") if p.get("owned") else ()
     if bad := [b for b in builds if b not in BUILDS]:
         raise PackError(f"{where}: builds are {', '.join(BUILDS)}, not {', '.join(bad)}")
     skills = _strs(p.get("skills"), f"{where}: skills")
@@ -171,8 +173,10 @@ def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, che
     if bad := [f for f in required if f not in names]:
         raise PackError(f"{where}: required field(s) not in [[profile]]: {', '.join(bad)}")
     runtime = _runtime(data.get("runtime"), where)
+    if bad := [o for o in owned if o != "*" and o not in (*MODULES, "profile", *names)]:
+        raise PackError(f"{where}: owned names a module or profile field, or is \"*\"; not {', '.join(bad)}")
     pack = Pack(pack_id, domains, modules, skills, prompts, builds, prod, words, pdir, common, profile, required,
-                runtime)
+                runtime, owned)
     if check_skills and (gone := [s for s in skills if not pack.skill_file(s, root).exists()]):
         raise PackError(f"{where}: no source for skill(s) {', '.join(gone)} (packs/{pack_id}/skills/<name>/SKILL.md "
                         f"or plugin/skills/<name>/SKILL.md)")
@@ -187,6 +191,8 @@ def runtime_config(pack: Pack) -> dict:
     """What the plugin's runtime reads about its Pack (written into founder_coach/product.json)."""
     out = {"id": pack.id, "domains": list(pack.domains), "modules": list(pack.modules),
            "common_fields": list(pack.common_fields), "prompts": list(pack.prompts)}
+    if pack.owned:
+        out["owned"] = list(pack.owned)
     if pack.profile:
         out["profile"] = [dict(f) for f in pack.profile]
     if pack.required:

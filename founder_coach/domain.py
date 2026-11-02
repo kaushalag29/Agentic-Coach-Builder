@@ -80,10 +80,22 @@ EDITABLE = {
     "commitment": ("action", "cue", "outcome", "goal_id", "result_note"),
     "decision": ("text", "reasoning", "revisit_on"),
     "checkin": ("summary", "wins", "blockers"),
+    "note": ("revisit_on",),         # a Note is append-only: a changed view is a new Note that supersedes it
 }
 
-ID_PREFIX = {"goal": "g", "commitment": "c", "decision": "d", "checkin": "k", "feedback": "f", "holdings": "h"}
+ID_PREFIX = {"goal": "g", "commitment": "c", "decision": "d", "checkin": "k", "feedback": "f", "holdings": "h",
+             "note": "n"}
 KIND_OF_PREFIX = {v: k for k, v in ID_PREFIX.items() if k not in ("feedback", "holdings")}   # records coach_update may touch
+
+# Notes (ADR-0020): dated, append-only memory of a discussion, a piece of research or an insight, linked to the
+# Goals and Decisions it is about. `origin` says who the content comes from: the person said it, or the coach
+# concluded it (a coach-concluded Note is a lead to check, never a fact about the person).
+NOTE_TYPES = ("discussion", "research", "insight")
+NOTE_ORIGINS = ("user", "coach")
+LINK_TYPES = ("about", "supports", "related")      # a Note's own links; "supersedes" is made only by superseding
+NOTE_TITLE_MAX, NOTE_SUMMARY_MAX, NOTE_QUOTE_MAX = 120, 4000, 300
+MAX_NOTE_LINKS = 8
+RECENT_NOTES = 5                                   # titles in the context digest
 
 MAX_OPEN_COMMITMENTS_PER_WEEK = 3      # Focus is 1-3 Commitments (CONTEXT.md)
 MAX_ACTIVE_GOALS = 3

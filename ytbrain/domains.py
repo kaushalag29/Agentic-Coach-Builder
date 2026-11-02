@@ -318,7 +318,7 @@ def add_domain(name: str, *, risk_tier: str, description: str, examples: list[st
                freshness: int | str = "evergreen", web_policy: str = "when_gap", path: Path | None = None) -> Registry:
     """Append one Domain to domains.yaml, keeping every comment and the order of the others. The risk tier and a
     one-line description are required: the tier decides how much evidence a confident answer needs (a `high`
-    Domain declines below strong coverage), and the description is what the host reads to choose Domains."""
+    Domain only educates below strong coverage and never advises a personal call), and the description is what the host reads to choose Domains."""
     path = Path(path) if path else DOMAINS_FILE
     name = folder_key(name)
     if not _NAME.match(name):

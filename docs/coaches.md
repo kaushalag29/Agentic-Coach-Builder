@@ -102,29 +102,36 @@ founder-coach export                         # everything remembered, as JSON + 
 founder-coach forget                         # delete it all (type the company name; one backup is kept)
 founder-coach forget --confirm "Acme"        # the same without a prompt (required when there's no terminal)
 founder-coach forget --all                   # every Project and the Common profile (type 'forget all')
+founder-coach notes lint [--json]               # report-only: Notes past their revisit date, broken links, duplicates, drift of the derived files
+founder-coach notes rebuild                      # regenerate the search index and the notes/ folder (INDEX.md, one file per Note) from the store
 founder-coach restore --list                 # backups, newest first, each with its integrity check
 founder-coach restore [LABEL]                # restore a backup (default: newest good one); old file set aside
 founder-coach feedback list|export [--out D] # the Founder's Feedback; export writes only that, to send
 founder-coach usage summary|export|clear     # the local usage log (docs/usage-log.md); clear needs --yes
 founder-coach usage summary --days 30 --json # a window, as JSON; forget --no-backup also deletes the backups
 ytbrain gaps [--pack founder|coding|investor] [--days 30] [--json]   # strong/partial/none searches per coach and Domain, from the usage logs
+ytbrain gaps --replay                                                # the weak ones searched again against what is installed now: did it get better?
 ```
 
-- **9 MCP tools, in this order:**
+- **10 MCP tools, in this order:**
   - `coach_search`: cited advice; keyword-only while the models load (a search waits up to 20 s
     first); flags likely Gaps;
   - `coach_read`: a whole talk's items;
-  - `coach_get_context`: profile, Goals, Commitments, last Check-in, Decisions, Nudges;
+  - `coach_get_context`: profile, Goals, Commitments, last Check-in, Decisions, the newest Note titles, Nudges;
   - `coach_update_profile`, `coach_project`, `coach_record`, `coach_update`: every write needs a `request_id`
     and is logged, and names the Project it was proposed for (another Project's save is refused);
     `coach_project` lists, switches, creates and renames Projects, or summarises one on request;
+  - `coach_recall`: keyword search over the Project's own Notes, Decisions, Goals, Commitments and Check-ins (read-only;
+    `id` reads one record whole, with its links); a Pack that keeps `notes` has it (ADR-0020);
   - `coach_corpus_status`: what the pack covers, the search models, where memory lives, and `host`: the coach's
     process id and start time, the folder the app started it in or named (`CLAUDE_PROJECT_DIR`), the app's name and
     whether it offers workspace roots;
   - `coach_feedback`: a Founder's report of a wrong answer, saved only after they approve it.
 - **Also served:** 4 prompts (`ask`, `weekly-focus`, `check-in`, `setup`) and the resources
-  `founder://profile`, `founder://this-week`, `corpus://status` and `corpus://item/{id}`.
-- **Founder data** lives in one folder per Project, `~/.ytbrain/founder/projects/<id>/` (ADR-0016;
+  `founder://profile`, `founder://this-week`, `founder://notes` (the Notes index), `corpus://status` and
+  `corpus://item/{id}`.
+- **Founder data** lives in one folder per Project, `~/.ytbrain/projects/<id>/`, shared by every coach with each record
+  stamped by the coach that made it (ADR-0016, ADR-0019; every coach reads the shared core, Goals, Commitments, Decisions and the profile fields they both declare, each record showing the coach behind it; Notes, Check-ins and Holdings stay with their coach, and the investor reads and is read by nobody; `PROJECT.md` in the folder lists the shared core;
   `YTBRAIN_HOME` moves `~/.ytbrain`, and `FOUNDER_COACH_HOME` pins one folder with no Projects, as before them).
   A session works on one Project: with one it is chosen by itself, with several the coach asks. Facts true in
   every Project (name, role, timezone, answer style) go to the Common profile `~/.ytbrain/you.db` only on a yes.

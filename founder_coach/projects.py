@@ -6,19 +6,23 @@ has its own memory store, in its own folder, so nothing said about one ever show
     ~/.ytbrain/                       the engine home (YTBRAIN_HOME moves it)
       you.db, YOU.md                  the Common profile: name, role, timezone, answer style (only on a yes)
       installed/                      which coaches are on this machine (installed.py)
-      <pack>/                         one folder per Pack, e.g. founder/
-        last-project                  the Project the command line and the hook use by default
-        projects/<id>/                founder.db, FOUNDER.md, backups/, exports/   (one Project)
-          project.json                its display name and when it was made
+      last-project                    the Project the command line uses when nothing else says which
+      projects/<id>/                  one Project, shared by every coach (ADR-0019)
+        founder.db                    its store: every record carries the coach that made it
+        FOUNDER.md, backups/, exports/
+        project.json                  its display name and when it was made (more keys are kept as they are)
+      <pack>/                         what is left of the layout before ADR-0019 (read once by the move, never written)
 
 A session works on one active Project (R1). With one Project it is chosen by itself; with several the coach
 asks which one before reading or saving memory. Setting <PREFIX>HOME (or --home) keeps the single-folder
 layout from before Projects: that folder is the store, and there is no Common profile (tests, evals and
 people who pinned their data folder see no change).
 
-The first start after an update moves the old single store (~/.<product id>/founder.db) into a Project, once:
-the old folder is left as it was (it is the backup), the copy is checked, and its timezone moves to the
-Common profile. A marker file makes the move happen once even when several processes start together.
+Two one-time moves run at the first start after an update, each leaving the old folders as they were (they are the
+backup), checking the copy, and writing a marker so that it happens once even when several processes start together:
+the old single store (~/.<product id>/founder.db) becomes a Project (its timezone moves to the Common profile), and
+the Projects each coach kept in <pack>/projects/<id>/ move into projects/<id>/ with that coach as the stamp of
+their records.
 """
 from __future__ import annotations
 
@@ -44,12 +48,61 @@ log = logging.getLogger("founder_coach")
 NAME_MAX = 80
 _SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 MIGRATED = ".migrated.json"
+PACKS_MIGRATED = ".migrated-from-packs.json"
 LOCK = ".migrating"
 LOCK_STALE_S = 120
 
 
 class ProjectError(ValueError):
     pass
+
+
+def git_root(folder: Path) -> Path | None:
+    """The folder holding `.git` at or above `folder`, or None."""
+    for d in (folder, *folder.parents):
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+def git_remote(folder: Path) -> str | None:
+    """The `origin` URL (or the first remote) of the repository `folder` is in, read from .git/config without running git;
+    credentials in the URL are dropped. None: not a repository, or no remote."""
+    root = git_root(folder)
+    cfg = root / ".git" / "config" if root else None
+    if cfg is None or not cfg.is_file():
+        return None
+    try:
+        text = cfg.read_text(errors="replace")
+    except OSError:
+        return None
+    urls, name = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.fullmatch(r'\[remote "(.+)"\]', line)
+        if m:
+            name = m.group(1)
+        elif line.startswith("["):
+            name = None
+        elif name and re.match(r"url\s*=", line):
+            urls.setdefault(name, line.split("=", 1)[1].strip())
+    url = urls.get("origin") or next(iter(urls.values()), None)
+    return re.sub(r"//[^/@]+@", "//", url) if url else None
+
+
+def _norm_path(folder: str | Path) -> Path:
+    return Path(folder).expanduser().resolve()
+
+
+def _folders(meta: dict) -> list[dict]:
+    """The folders a Project is linked to, as [{path, remote}]; a bare path string is accepted."""
+    out = []
+    for f in meta.get("folders") or []:
+        if isinstance(f, str) and f:
+            out.append({"path": f, "remote": None})
+        elif isinstance(f, dict) and isinstance(f.get("path"), str) and f["path"]:
+            out.append({"path": f["path"], "remote": f.get("remote") if isinstance(f.get("remote"), str) else None})
+    return out
 
 
 def slug(name: str) -> str:
@@ -77,10 +130,10 @@ def _now() -> str:
 
 
 class Projects:
-    """The Projects of one Pack, under its folder in the engine home."""
+    """The Projects on this machine, shared by every coach, under the engine home (ADR-0019)."""
 
     def __init__(self, root: Path):
-        self.root = Path(root)
+        self.root = Path(root)                      # the engine home: holds last-project
         self.dir = self.root / "projects"
 
     def list(self) -> list[dict]:
@@ -153,9 +206,84 @@ class Projects:
             raise ProjectError(f"a Project name is 1-{NAME_MAX} characters")
         if any(_norm(x["name"]) == _norm(name) and x["id"] != p["id"] for x in self.list()):
             raise ProjectError(f"there is already a Project named {name!r}")
-        meta = {"name": name, "created": p["created"] or _now()}
+        meta = {**self._meta(p["id"]), "name": name, "created": p["created"] or _now()}
         _atomic_json(self.dir / p["id"] / "project.json", meta)
         return {"id": p["id"], **meta}
+
+    def _meta(self, pid: str) -> dict:
+        """The whole project.json, so a rewrite keeps keys this version does not know (folders, where it came from)."""
+        try:
+            data = json.loads((self.dir / pid / "project.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    # -- folders (ADR-0019 point 4) -------------------------------------------------------------
+    def folders(self, pid: str) -> list[dict]:
+        return _folders(self._meta(pid))
+
+    def link(self, ref: str, folder: str | Path) -> dict:
+        """Link a work folder to a Project: its path, and the git remote when it is a checkout, so a moved checkout is
+        still recognised. A folder belongs to one Project."""
+        p = self.need(ref)
+        path = _norm_path(folder)
+        if not path.is_dir():
+            raise ProjectError(f"{str(path)!r} is not a folder")
+        for q in self.list():
+            if any(f["path"] == str(path) for f in self.folders(q["id"])):
+                if q["id"] == p["id"]:
+                    return {"project": p, "folder": str(path), "already": True}
+                raise ProjectError(f"{str(path)!r} is already linked to Project {q['name']} ({q['id']}); unlink it there first")
+        meta = self._meta(p["id"])
+        meta["folders"] = [*_folders(meta), {"path": str(path), "remote": git_remote(path)}]
+        _atomic_json(self.dir / p["id"] / "project.json", {"name": p["name"], "created": p["created"] or _now(), **{
+            k: v for k, v in meta.items() if k not in ("name", "created")}})
+        return {"project": p, "folder": str(path), "already": False}
+
+    def unlink(self, ref: str, folder: str | Path) -> dict:
+        p = self.need(ref)
+        path = str(_norm_path(folder))
+        meta = self._meta(p["id"])
+        have = _folders(meta)
+        keep = [f for f in have if f["path"] != path]
+        if len(keep) == len(have):
+            raise ProjectError(f"{path!r} is not linked to Project {p['name']} ({p['id']})")
+        meta["folders"] = keep
+        _atomic_json(self.dir / p["id"] / "project.json", {"name": p["name"], "created": p["created"] or _now(), **{
+            k: v for k, v in meta.items() if k not in ("name", "created")}})
+        return {"project": p, "folder": path}
+
+    def for_folder(self, folder: str | Path) -> tuple[dict | None, str | None]:
+        """(Project, note) for a work folder: the Project with the deepest linked folder that contains it. A checkout
+        that moved (its git remote is linked to exactly one Project, at another path) is re-linked and the note says so.
+        (None, None): the folder is linked to nothing, and the coach keeps no memory for it."""
+        path = _norm_path(folder)
+        best: tuple[int, dict] | None = None
+        listed = self.list()
+        for q in listed:
+            for f in self.folders(q["id"]):
+                base = Path(f["path"])
+                try:
+                    inside = path == base or path.is_relative_to(base)
+                except ValueError:
+                    inside = False
+                if inside and (best is None or len(base.parts) > best[0]):
+                    best = (len(base.parts), q)
+        if best:
+            return best[1], None
+        remote = git_remote(path)
+        if remote:
+            hits = [(q, f) for q in listed for f in self.folders(q["id"]) if f["remote"] == remote]
+            if len({q["id"] for q, _ in hits}) == 1:
+                q, old = hits[0]
+                root = git_root(path) or path
+                meta = self._meta(q["id"])
+                meta["folders"] = [{"path": str(root), "remote": remote} if f["path"] == old["path"] else f
+                                   for f in _folders(meta)]
+                _atomic_json(self.dir / q["id"] / "project.json", {"name": q["name"], "created": q["created"] or _now(), **{
+                    k: v for k, v in meta.items() if k not in ("name", "created")}})
+                return q, f"this checkout moved from {old['path']} to {root}; its link to Project {q['name']} was updated"
+        return None, None
 
     def last(self) -> str | None:
         try:
@@ -178,11 +306,13 @@ class Projects:
 class Workspace:
     """Where this coach's memory lives: one folder (single mode) or the Projects of its Pack."""
     single: bool
-    root: Path                       # single: the store folder; Projects: <engine home>/<pack id>
+    root: Path                       # single: the store folder; Projects: <engine home>/<pack id> (the old layout)
     engine: Path | None = None
     projects: Projects | None = None
     common_fields: tuple[str, ...] = ()
-    migration: dict | None = None    # what the first-start move did, once
+    migration: dict | None = None    # what the first-start move of the old single store did, once
+    pack_migration: dict | None = None   # what the move of the coaches' own Projects did, once
+    folder_note: str | None = None   # what choosing by work folder did that the person should hear (a moved checkout)
 
     @classmethod
     def open(cls, home: str | Path | None = None, engine: Path | None = None, migrate: bool = True) -> Workspace:
@@ -193,8 +323,13 @@ class Workspace:
         root = eng / str(product.PACK.get("id") or "founder")
         fields = product.PACK.get("common_fields")
         fields = tuple(D.COMMON_FIELDS if fields is None else (f for f in fields if f in D.COMMON_FIELDS))
-        ws = cls(single=False, root=root, engine=eng, projects=Projects(root), common_fields=fields)
+        ws = cls(single=False, root=root, engine=eng, projects=Projects(eng), common_fields=fields)
         if migrate:
+            try:
+                ws.pack_migration = migrate_packs(ws)
+            except Exception as e:                     # noqa: BLE001 -- the coach runs without the move
+                log.warning("couldn't move the coaches' Projects into the shared folder: %s", e)
+                ws.pack_migration = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
             try:
                 ws.migration = migrate_legacy(ws)
             except Exception as e:                     # noqa: BLE001 -- the coach runs without the move
@@ -210,7 +345,7 @@ class Workspace:
         return {"id": pid, "name": p["name"] if p else pid}
 
     # -- choosing ---------------------------------------------------------------------------
-    def choose(self, requested: str | None = None, use_last: bool = False) -> str | None:
+    def choose(self, requested: str | None = None, use_last: bool = False, folder: str | Path | None = None) -> str | None:
         """The Project to work on: the one asked for (by id or name), else the only one, else (for the command
         line and the hook) the last one used, else <PREFIX>PROJECT. None: there are several and nothing says
         which, or none yet. Single mode has no Projects (None)."""
@@ -222,6 +357,12 @@ class Workspace:
         assert self.projects is not None
         if requested:
             return self.projects.need(requested)["id"]
+        if folder:                                     # the work folder decides
+            found, self.folder_note = self.projects.for_folder(folder)
+            if found:
+                return found["id"]
+            if not use_last:                           # a session: a folder linked to nothing gets no memory, no fallback
+                return None
         ps = self.projects.list()
         if len(ps) == 1:
             return ps[0]["id"]
@@ -261,13 +402,15 @@ class Workspace:
         store, err = open_store(self.store_home(pid), clock)
         if store is not None and common is not None:
             store.common, store.common_fields = common, self.common_fields
+        if store is not None and not self.single:
+            store.peers_home = self.engine                 # the other coaches whose records this one may read
         return store, err
 
 
 # ---------------------------------------------------------------------------------------------- migration
-def _lock(root: Path) -> Path | None:
+def _lock(root: Path, name: str = LOCK) -> Path | None:
     root.mkdir(parents=True, exist_ok=True)
-    path = root / LOCK
+    path = root / name
     for _ in range(2):
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -346,7 +489,8 @@ def migrate_legacy(ws: Workspace, legacy: Path | None = None) -> dict | None:
             store.backup("migrated")
         finally:
             store.close()
-        meta = {"name": str(company or "My company")[:NAME_MAX], "created": _now(), "migrated_from": str(src)}
+        meta = {"name": _free_name(ws.projects, str(company or "My company")[:NAME_MAX], "earlier"), "created": _now(),
+                "migrated_from": str(src)}
         _atomic_json(tmp / "project.json", meta)
         pid = None
         base = slug(meta["name"])
@@ -380,4 +524,157 @@ def migrate_legacy(ws: Workspace, legacy: Path | None = None) -> dict | None:
     finally:
         if tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)
+        lock.unlink(missing_ok=True)
+
+
+def _free_name(projects: Projects, name: str, tag: str) -> str:
+    """`name`, or `name (tag)`, `name (tag 2)` ... when a Project already has it: a move never merges two Projects."""
+    taken = {_norm(p["name"]) for p in projects.list()}
+    if _norm(name) not in taken:
+        return name
+    for n in range(1, 1000):
+        suffix = f" ({tag})" if n == 1 else f" ({tag} {n})"
+        cand = name[:NAME_MAX - len(suffix)] + suffix
+        if _norm(cand) not in taken:
+            return cand
+    raise ProjectError("too many Projects with that name")
+
+
+def _old_projects(eng: Path) -> list[dict]:
+    """The Projects each coach kept under <engine>/<pack>/projects/<id>/ before ADR-0019, oldest first."""
+    out = []
+    try:
+        packs = sorted(d for d in eng.iterdir() if d.is_dir() and not d.name.startswith(".")
+                       and d.name not in ("projects", "installed") and (d / "projects").is_dir())
+    except OSError:
+        return out
+    for pack in packs:
+        for d in sorted((pack / "projects").iterdir()):
+            try:
+                if not (d.is_dir() and not d.name.startswith(".") and _SLUG.fullmatch(d.name)
+                        and (d / "founder.db").is_file() and (d / "founder.db").stat().st_size > 0):
+                    continue
+            except OSError:
+                continue
+            try:
+                meta = json.loads((d / "project.json").read_text())
+            except (OSError, ValueError):
+                meta = {}
+            meta = meta if isinstance(meta, dict) else {}
+            out.append({"pack": pack.name, "id": d.name, "dir": d, "meta": meta,
+                        "name": " ".join(str(meta.get("name") or d.name).split())[:NAME_MAX],
+                        "created": str(meta.get("created") or "")})
+    return sorted(out, key=lambda o: (o["created"], o["pack"], o["id"]))
+
+
+def migrate_packs(ws: Workspace) -> dict | None:
+    """Move the Projects each coach kept for itself into the shared folder, once (ADR-0019). Each is copied with
+    SQLite's backup API, checked, upgraded with its old Pack as the stamp of its records, and given a backup; the old
+    folders are left as they were. A Project that can't be moved is reported and retried at the next start; the marker
+    is written only when every Project moved, so a re-run never repeats one that did (project.json says where each came
+    from). Never raises."""
+    if ws.single or ws.projects is None or ws.engine is None or product.env("MIGRATE") == "0":
+        return None
+    projects = ws.projects
+    if (projects.dir / PACKS_MIGRATED).exists():
+        return None
+    old = _old_projects(ws.engine)
+    if not old:
+        return None
+    lock = _lock(projects.dir, ".migrating-packs")
+    if lock is None:
+        return {"status": "busy"}
+    moved: list[dict] = []
+    failed: list[dict] = []
+    try:
+        if (projects.dir / PACKS_MIGRATED).exists():        # finished by another process while we waited
+            return None
+        from .store import SCHEMA_VERSION, FounderStore, _check_file, _integrity
+        done = {}                                           # "pack/id" -> the Project it became
+        for p in projects.list():
+            origin = projects._meta(p["id"]).get("migrated_from")
+            if isinstance(origin, str):
+                done[origin] = p["id"]
+        for o in old:
+            key = f"{o['pack']}/{o['id']}"
+            if key in done:
+                continue
+            src, tmp = o["dir"] / "founder.db", projects.dir / f".migrating-{os.getpid()}-{secrets.token_hex(2)}"
+            try:
+                chk = _check_file(src)
+                if not chk["ok"]:
+                    why = ("it is newer than this coach: update it" if "newer than this coach" in chk["detail"]
+                           else f"it fails its check ({chk['detail']})")
+                    failed.append({"from": key, "error": f"not moved: {why}"})
+                    continue
+                tmp.mkdir(parents=True)
+                live = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=10.0)
+                try:
+                    out = sqlite3.connect(tmp / "founder.db")
+                    try:
+                        live.backup(out)
+                        res = _integrity(out)
+                    finally:
+                        out.close()
+                finally:
+                    live.close()
+                if not res["ok"]:
+                    failed.append({"from": key, "error": f"the copy fails its check ({res['detail']})"})
+                    continue
+                store = FounderStore(tmp, coach=o["pack"])     # upgrades the schema and stamps every row with the Pack
+                try:
+                    store.backup("migrated")
+                finally:
+                    store.close()
+                name = _free_name(projects, o["name"], o["pack"])
+                _atomic_json(tmp / "project.json", {**o["meta"], "name": name, "created": o["created"] or _now(),
+                                                   "migrated_from": key})
+                pid = None
+                for cand in dict.fromkeys((o["id"], slug(name), *(f"{slug(name)}-{n}" for n in range(2, 1000)))):
+                    try:
+                        os.rename(tmp, projects.dir / cand)    # fails if the folder exists: never merges into one
+                        pid = cand
+                        break
+                    except OSError:
+                        if not (projects.dir / cand).exists():
+                            raise
+                if pid is None:
+                    raise OSError("no free Project folder name")
+                s2 = FounderStore(projects.store_home(pid), coach=o["pack"])
+                try:
+                    s2.peers_home = ws.engine
+                    s2._write_markdown()                       # the derived files at their new place
+                    s2._write_vault()
+                    s2._write_project_md()
+                finally:
+                    s2.close()
+                done[key] = pid
+                moved.append({"from": key, "project": pid, "name": name})
+                log.info("moved Project %s of coach %s into the shared Projects as %s", o["id"], o["pack"], pid)
+            except (OSError, sqlite3.Error, ValueError) as e:
+                log.warning("couldn't move Project %s (%s); the old folder is unchanged and the move is retried at the "
+                            "next start", key, e)
+                failed.append({"from": key, "error": f"{type(e).__name__}: {e}"})
+            finally:
+                if tmp.exists():
+                    shutil.rmtree(tmp, ignore_errors=True)
+        if projects.last() is None:                            # one shared default: this coach's, else any coach's
+            order = [ws.root.name] + sorted({o["pack"] for o in old} - {ws.root.name})
+            for pack in order:
+                try:
+                    was = (ws.engine / pack / "last-project").read_text().strip()
+                except OSError:
+                    continue
+                if f"{pack}/{was}" in done:
+                    projects.set_last(done[f"{pack}/{was}"])
+                    break
+        info = {"status": "partial" if failed else "migrated", "moved": moved, "failed": failed,
+                "schema_version": SCHEMA_VERSION, "at": _now()}
+        if not failed:
+            _atomic_json(projects.dir / PACKS_MIGRATED, info)
+        return info
+    except (OSError, sqlite3.Error, ValueError) as e:
+        log.warning("couldn't move the coaches' Projects (%s); the old folders are unchanged", e)
+        return {"status": "failed", "error": f"{type(e).__name__}: {e}", "moved": moved, "failed": failed}
+    finally:
         lock.unlink(missing_ok=True)

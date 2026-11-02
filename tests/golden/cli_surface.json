@@ -50,6 +50,16 @@
      "event"
     ]
    },
+   "notes": {
+    "options": [
+     "--home",
+     "--json",
+     "--project"
+    ],
+    "positionals": [
+     "action"
+    ]
+   },
    "projects": {
     "options": [
      "--home"
@@ -147,6 +157,32 @@
      "--limit",
      "--retry-failed"
     ],
+    "positionals": []
+   },
+   "coach": {
+    "commands": {
+     "new": {
+      "options": [
+       "--description",
+       "--display-name",
+       "--domains",
+       "--field",
+       "--like",
+       "--modules",
+       "--owned",
+       "--person",
+       "--project-noun",
+       "--required",
+       "--sources",
+       "--subject"
+      ],
+      "positionals": [
+       "id"
+      ]
+     }
+    },
+    "handler": "cmd_coach",
+    "options": [],
     "positionals": []
    },
    "discover": {
@@ -391,7 +427,9 @@
      "--home",
      "--json",
      "--pack",
-     "--questions"
+     "--questions",
+     "--replay",
+     "--replay-pack"
     ],
     "positionals": []
    },

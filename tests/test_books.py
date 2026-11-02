@@ -823,6 +823,24 @@ def test_book_clean_writes_the_shared_transcript_and_reacts_to_changes():
             assert m.stage_status(IDS[0], "clean") == "stale", "new metadata: clean again"
             ad.clean(m, IDS[0], m.get_document(IDS[0]))
         assert m.stage_status(IDS[0], "extract") == "stale", "a changed transcript sends extraction back"
+        # a corrected year reaches no prompt: the record takes it in place, and nothing is extracted again
+        m.mark(__import__("ytbrain.manifest", fromlist=["StageState"]).StageState(IDS[0], "extract", "ok"))
+        (t / "records").mkdir()
+        (t / "records" / f"{IDS[0]}.json").write_text(json.dumps(
+            {"doc_id": IDS[0], "title_raw": "Start with the Customer", "series": "A Small Test Book",
+             "published_at": "2026", "private": True, "source_kind": "chapter", "advice_atoms": []}))
+        ad.records = t / "records"
+        src3 = S.normalize({"path": "books", "books": {"book.pdf": {"authors": ["Ada Example", "Bo Example"],
+                                                                     "year": 2019}}})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ad.sync(m, [src3], None)
+            assert m.stage_status(IDS[0], "clean") == "stale"
+            ad.clean(m, IDS[0], m.get_document(IDS[0]))
+        assert m.stage_status(IDS[0], "extract") == "ok", "a year-only change never re-extracts"
+        assert "record updated, no re-extract" in out.getvalue()
+        assert json.loads((t / "records" / f"{IDS[0]}.json").read_text())["published_at"] == "2019"
+        assert json.loads((t / "transcripts" / f"{IDS[0]}.json").read_text())["book"]["year"] == 2019
         for f in (t / "plans").glob("*.json"):
             f.unlink()
         with contextlib.redirect_stdout(io.StringIO()):

@@ -36,6 +36,24 @@ def _project(home: Path, pack: str, pid: str, name: str, searches: list[dict], e
     return d / "founder.db"
 
 
+def _shared_project(home: Path, pid: str, name: str, by_coach: dict[str, list[dict]],
+                    migrated_from: str | None = None) -> Path:
+    """One Project store in the shared folder (ADR-0019): each coach logs its searches into the same usage table."""
+    d = home / "projects" / pid
+    d.mkdir(parents=True)
+    meta = {"name": name, **({"migrated_from": migrated_from} if migrated_from else {})}
+    (d / "project.json").write_text(json.dumps(meta))
+    for coach, searches in by_coach.items():
+        s = FounderStore(d, clock=Clock("2026-10-10T09:00:00+00:00"), coach=coach)
+        try:
+            for det in searches:
+                s.log_usage("coach_search", "gap" if det.get("coverage") == "none" else "ok", 20, run="r1",
+                            version="0.1.5", detail=det)
+        finally:
+            s.close()
+    return d / "founder.db"
+
+
 def _search(cov, sim, doms, by=None, query=None):
     det = {"mode": "semantic", "hits": 5, "top_similarity": sim, "coverage": cov, "domains_searched": doms}
     if by:
@@ -63,7 +81,8 @@ def test_g1_rates_searches_per_level_and_domain_and_ignores_other_tools():
     s = G.summarize(p)
     assert (s["pack"], s["project"], s["searches"], s["calls"]) == ("founder", "Acme", 6, 8)
     assert s["levels"] == {"strong": 1, "partial": 2, "none": 1, "empty": 1, "unrated": 1}
-    assert s["errors"] == 1
+    assert s["errors"] == 1 and s["error_list"][0]["tool"] == "coach_update"
+    assert "coach_update: ToolError: x" in G.render(G.report([p], home, None), home), "the report lists them itself"
     assert s["domains"]["gtm"] == {"strong": 0, "partial": 1, "none": 0}
     assert s["domains"]["startup"] == {"strong": 2, "partial": 1, "none": 0}      # explicit + the overall fallback
     assert s["domains"]["finance"]["none"] == 1
@@ -213,6 +232,95 @@ def test_g9_a_search_that_named_no_domain_is_attributed_to_its_hits_domain_from_
     (home / "installed" / "founder-coach.json").unlink()
     (s2,) = G.report(G.load(home, days=None, now=NOW), home, None)["projects"]
     assert s2["domains_from_hits"] == 0 and "finance" not in s2["domains"]
+
+
+
+def test_g10_replay_searches_each_weak_question_again_once_and_says_what_changed():
+    """--replay: a rating is frozen when the search ran; replaying the recorded weak questions against the pack the
+    coach has now says whether new content closed them. One search per distinct question, nothing written."""
+    home = _home()
+    db = _project(home, "investor", "goal", "Goal", [
+        _search("partial", 0.70, [], query="lump sum versus dollar-cost averaging"),
+        _search("partial", 0.69, [], query="lump sum versus dollar-cost averaging"),       # the same ask, twice
+        _search("none", 0.58, [], query="retry failed job idempotent"),
+        _search("partial", 0.66, [], query="rebalancing band"),
+        _search("strong", 0.80, [], query="index funds"),                                  # not weak: not replayed
+        _search("partial", 0.66, []),                                                      # no text: cannot replay
+    ])
+    before = db.read_bytes()
+    loads, asked = [], []
+
+    def load(pack):
+        loads.append(pack)
+        return "store", "embed", None
+
+    def run(store, embed, reranker, ask):
+        asked.append(ask["query"])
+        return {"lump sum versus dollar-cost averaging": {"level": "strong", "top_similarity": 0.78},
+                "retry failed job idempotent": {"level": "none", "top_similarity": 0.587},
+                "rebalancing band": {"level": "empty", "top_similarity": None}}[ask["query"]]
+    rep = G.replay(G.load(home, days=None, now=NOW), load, run=run)
+    (e,) = rep["projects"]
+    assert loads == ["investor"] and sorted(asked) == sorted(set(asked)) and len(asked) == 3
+    assert e["now"] == {"strong": 1, "partial": 0, "none": 1, "empty": 1} and (e["better"], e["worse"]) == (1, 1)
+    text = G.render_replay(rep)
+    assert "better 1, same 1, worse 1" in text and "partial 0.69 -> strong 0.78" in text, "the newest of a repeated ask"
+    assert text.index("strong 0.78") < text.index("none 0.587") < text.index("-> empty"), "improved first, worse last"
+    assert db.read_bytes() == before, "replaying never writes to the store"
+    # a coach with no pack is said, not fatal; a Project with no text says why nothing was replayed
+    _project(home, "coding", "sys", "Sys", [_search("none", 0.58, [])])
+    rep = G.replay(G.load(home, days=None, now=NOW), lambda pack: (_ for _ in ()).throw(RuntimeError("no pack")), run=run)
+    notes = {e["pack"]: e["note"] for e in rep["projects"]}
+    assert "cannot search its pack now: RuntimeError: no pack" in notes["investor"]
+    assert "no weak search with its question text recorded" in notes["coding"]
+
+
+def test_g11_replay_runs_the_servers_search_and_coverage_on_a_real_pack_and_the_command_needs_a_pack_to_replay():
+    from test_pack import HashEmbed, _build
+    from founder_coach.pack import PackStore
+    out = Path(tempfile.mkdtemp(prefix="ytbrain-gaps-pack-"))
+    _build(out, emb=HashEmbed())
+    store = PackStore(out, verify=True)
+    try:
+        hit = G.search_now(store, HashEmbed(), None, {"query": "set your price high and raise pricing every quarter",
+                                                      "domains": [], "stage": None, "top_k": 10})
+        named = G.search_now(store, HashEmbed(), None, {"query": "how to price", "domains": ["not-a-domain"],
+                                                        "stage": None, "top_k": 10})
+    finally:
+        store.close()
+    assert hit["level"] == "partial" and hit["top_similarity"] > 0.85, "one close hit: partial (strong needs two)"
+    assert named["level"] in ("strong", "partial", "none"), "a Domain the pack lacks is ignored, as the server does"
+    from ytbrain import cli
+    home = _home()
+    _project(home, "founder", "acme", "Acme", [_search("none", 0.5, [], query="what is a SAFE")])
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        assert cli.main(["gaps", "--home", str(home), "--replay-pack", str(out)]) == 2
+    assert "--pack" in err.getvalue()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cli.main(["gaps", "--home", str(home), "--days", "0", "--replay"]) == 0
+    assert "cannot search its pack now" in buf.getvalue() and "installed" in buf.getvalue()
+
+
+def test_g10_a_shared_project_is_read_per_coach_and_a_moved_store_is_not_counted_twice():
+    home = _home()
+    _shared_project(home, "acme", "Acme", {"founder": [_search("strong", 0.8, ["startup"]), _search("none", 0.4, [])],
+                                           "coding": [_search("partial", 0.6, ["coding"])]})
+    got = {(p.pack, p.project_id): len(p.rows) for p in G.load(home, days=None, now=NOW)}
+    assert got == {("founder", "acme"): 2, ("coding", "acme"): 1}, got
+    assert [(p.pack, len(p.rows)) for p in G.load(home, pack="coding", days=None, now=NOW)] == [("coding", 1)]
+    assert all("coach" not in r for p in G.load(home, days=None, now=NOW) for r in p.rows)
+    rep = G.report(G.load(home, days=None, now=NOW), home, None)
+    assert sorted((x["pack"], x["project_id"]) for x in rep["projects"]) == [("coding", "acme"), ("founder", "acme")]
+    # the same Project still sits in the coach's old folder after the move: only the shared copy counts
+    _project(home, "founder", "acme", "Acme", [_search("strong", 0.8, ["startup"]), _search("none", 0.4, [])])
+    assert len(G.load(home, pack="founder", days=None, now=NOW)) == 2, "the old folder and the shared one both count"
+    home2 = _home()
+    _shared_project(home2, "acme", "Acme", {"founder": [_search("strong", 0.8, ["startup"])]}, migrated_from="founder/acme")
+    _project(home2, "founder", "acme", "Acme", [_search("strong", 0.8, ["startup"])])
+    (p,) = G.load(home2, days=None, now=NOW)
+    assert (p.pack, p.project_id, p.shared, len(p.rows)) == ("founder", "acme", True, 1)
 
 
 if __name__ == "__main__":

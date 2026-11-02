@@ -14,8 +14,19 @@ flowchart LR
     F --> G["7 · Install<br/>Claude Code / Cowork"]
 ```
 
-Today these steps are manual, about a day of work for a new subject. A generator that drafts steps 2–5 from your
-Sources and a short description, with a review at each step, is planned.
+`ytbrain coach new` drafts steps 3 and 4 for you (below); the Sources, Domains and evaluation cases are still yours,
+because they are what makes the coach about your subject.
+
+```bash
+ytbrain coach new legal --person Founder --project-noun matter --subject "contract law for founders" \
+  --domains legal --field "matter=the matter, in one line" --field "jurisdiction=where it is governed" --like coding
+```
+
+It writes `packs/<id>/pack.toml` (identity, words, Domains, memory modules, profile fields, the coaching contract) and
+`packs/<id>/skills/<name>/SKILL.md` for `ask`, `coach` and `setup` in the coach's words, copies the cases of `--like` as a start, loads the
+result with the same checks as any Pack, and prints what is left: declare any missing Domain, add Sources, rewrite
+the copied cases. It uses templates only (no model, so the same input writes the same files), never overwrites a Pack,
+and never edits `domains.yaml`. `--owned` keeps this coach's records from the other coaches of a shared Project.
 
 ## 1. Add the Sources
 
@@ -35,15 +46,16 @@ ytbrain domains propose           # groups content no Domain fits into proposed 
 ```
 
 Write the description and examples the way a person would ask: they are what content is scored against. The risk
-tier decides how strong the evidence must be before the coach answers (`high`: below `strong` coverage it declines).
+tier decides how strong the evidence must be before the coach answers (`high`: it never advises a personal call, such as a trade or a dose, and below `strong` coverage it answers
+only as education, from the hits, saying the evidence is partial).
 
 ## 3. Write the Pack
 
-Copy the closest example to `packs/<id>/pack.toml` and edit it. Every key is checked when the Pack loads.
+`ytbrain coach new` drafts it; or copy the closest example to `packs/<id>/pack.toml` and edit it. Every key is checked when the Pack loads.
 
 | Section | What it sets |
 |---|---|
-| `[pack]` | `id`; `domains` it answers from; memory `modules` (from `goals`, `commitments`, `checkins`, `decisions`, `holdings`); `common_fields` it shares across coaches; `required` setup fields; `skills` and `prompts`; `builds` (`private`, `release`) |
+| `[pack]` | `id`; `domains` it answers from; memory `modules` (from `goals`, `commitments`, `checkins`, `decisions`, `holdings`, `notes`); `common_fields` it shares across coaches; `owned` (`["*"]`, or modules and profile fields) it keeps from the other coaches of a shared Project; `required` setup fields; `skills` and `prompts`; `builds` (`private`, `release`) |
 | `[product]` | the plugin's `id`, `display_name`, `description` and `keywords` |
 | `[words]` | what the person and a Project are called (`Engineer`, `system`) |
 | `[runtime]` | the coach's name, its setup nudge and its coaching contract (`instructions`) |

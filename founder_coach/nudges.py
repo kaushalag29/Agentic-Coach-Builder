@@ -56,6 +56,12 @@ def nudges(store: FounderStore) -> list[dict]:
     if rev:
         out.append({"kind": "decision_revisit", "ids": [d["id"] for d in rev],
                     "message": f"{len(rev)} Decision(s) due for a revisit"})
+    if _p.has("notes"):
+        due = store.notes_to_revisit()
+        if due:
+            out.append({"kind": "note_revisit", "ids": [n["id"] for n in due],
+                        "message": f"{len(due)} Note(s) due for a revisit: "
+                                   + "; ".join(f"{n['title'][:60]} (by {n['revisit_on']})" for n in due[:3])})
     return out
 
 
@@ -83,7 +89,7 @@ def _holdings_nudges(store: FounderStore, prof: dict, today: dt.date) -> list[di
 # A Nudge about a memory module the Pack doesn't keep is never shown (ADR-0016: modules per Pack)
 NUDGE_MODULE = {"checkin_overdue": "checkins", "open_past_commitments": "commitments",
                 "goal_past_target": "goals", "decision_revisit": "decisions", "holdings_stale": "holdings",
-                "holdings_missing": "holdings"}
+                "holdings_missing": "holdings", "note_revisit": "notes"}
 
 
 def context(store: FounderStore, detailed: bool = False) -> dict:
@@ -104,6 +110,7 @@ def context(store: FounderStore, detailed: bool = False) -> dict:
            "overdue": store.overdue_commitments() if has("commitments") else [],
            "last_checkin": (store.checkins(1) or [None])[0] if has("checkins") else None,
            "recent_decisions": store.decisions(5) if has("decisions") else [],
+           **({"recent_notes": store.notes(D.RECENT_NOTES), "notes_total": store.note_count()} if has("notes") else {}),
            "nudges": [x for x in nudges(store) if x["kind"] not in NUDGE_MODULE or has(NUDGE_MODULE[x["kind"]])]}
     if not detailed:
         for c in ctx["this_week"] + ctx["overdue"]:
@@ -194,6 +201,15 @@ def render_markdown(store: FounderStore) -> str:
     if not ds:
         lines.append("_None yet._")
     from . import product as _p
+    if _p.has("notes"):
+        lines += ["", f"## Notes ({store.note_count()})", ""]
+        ns = store.notes(10)
+        for n in ns:
+            lines.append(f"- `{n['id']}` {n['created_at'][:10]} {n['type']}: {n['title']}"
+                         + (f" (revisit {n['revisit_on']})" if n.get("revisit_on") else "")
+                         + ("  _(coach's conclusion)_" if n["origin"] == "coach" else ""))
+        if not ns:
+            lines.append("_None yet._")
     if _p.has("holdings"):
         snaps, _ = store.holdings()
         lines += ["", "## Holdings", ""]

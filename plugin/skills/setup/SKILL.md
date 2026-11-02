@@ -10,7 +10,7 @@ Follow the coaching contract of the coach skill: show what you'll save and save 
 
 ## Checklist
 
-1. **Context.** `coach_get_context`. If a profile exists, show it and ask what to change instead of starting over. If it lists several `projects` and none is active, ask which one to set up, or whether this is a new company (`/{{id}}:project`).
+1. **Context.** `coach_get_context`. If a profile exists, show it and ask what to change instead of starting over. If it lists several `projects` and none is active, ask which one to set up, or whether this is a new company (`/{{id}}:project`). If the Project already exists because another coach made it (its profile, or Goals and Decisions carrying a `coach`), say what it already holds and ask only for what this coach needs and the profile lacks: never ask again for a fact it shows. When the app gave a work folder that is linked to nothing, `create` links it to the new Project.
 2. **Interview,** one question at a time, short answers are fine:
    - company name and a one-line description (`company`, `one_liner`). When no Project is active (`project` is null), or the Founder says this is another company, call `coach_project` with action `create` and the company name as soon as you have it, so everything after is saved to that Project;
    - who the customer is (`customer`);

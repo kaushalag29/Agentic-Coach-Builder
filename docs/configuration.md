@@ -135,7 +135,11 @@ wrong, per file: `title`, `subtitle`, `authors`, `year`, `isbn`, `url`, or a `ch
 - **Metadata** (never from the LLM): `sources.yaml`, then the copyright page (the ebook ISBN, the year of the
   book's own copyright line), then the PDF's metadata (title and subtitle, authors), then Open Library by ISBN
   if the Source says `lookup: openlibrary`. Missing or suspect fields are flagged, e.g. a person on the
-  copyright line who isn't among the authors.
+  copyright line who isn't among the authors. A PDF with no copyright page has no year until you give one
+  (`year:` under `books:`); without it the coach can't date the Book's advice. A corrected year, ISBN, publisher or
+  url reaches no extraction prompt, so `ytbrain sync` then `ytbrain clean` write it into the Chapters' records in
+  place and the next `ytbrain index` re-embeds them: nothing is extracted again. A corrected title or author list
+  does re-extract, since the prompt names them.
 - **Chapters:** the first plausible of a `chapters_only` list, the bookmarks (Parts opened into their chapters),
   the printed contents page, headings, then 15-page windows; front and back matter skipped.
 - **One file per Book:** two PDFs with the same id (two editions, a copy, two untitled books) would overwrite each other's
@@ -282,7 +286,7 @@ All settings are environment variables (`.env` or shell). Defaults in parenthese
 | `YTBRAIN_EMBED_MODEL` (`BAAI/bge-m3`) | Local embedding model for the Knowledge index; changing it rebuilds the index |
 | `YTBRAIN_RERANK_MODEL` (`BAAI/bge-reranker-v2-m3`) | Cross-encoder reranker for `search`; `none` disables |
 | `YTBRAIN_PACK_EMBED_MODEL` (`BAAI/bge-base-en-v1.5`) · `YTBRAIN_PACK_RERANK_MODEL` (`none`) | ONNX models for `pack build` (fastembed names); the pack records them, so its searches always use the same ones |
-| `YTBRAIN_HOME` (`~/.ytbrain`) | The engine home: every coach's Projects (`<pack>/projects/<id>/`), the Common profile `you.db` and the downloaded ONNX models |
+| `YTBRAIN_HOME` (`~/.ytbrain`) | The engine home: every coach's Projects (`projects/<id>/`, shared by the coaches), the Common profile `you.db` and the downloaded ONNX models |
 | `FOUNDER_COACH_HOME` (unset) · `FOUNDER_COACH_MODELS` (`~/.ytbrain/models`) | Pin one coach's data to a single folder with no Projects; where its ONNX models go. The other `FOUNDER_COACH_*` settings are in [coaches.md](coaches.md#the-runtime-founder-coach) |
 | `YTBRAIN_COACH_MODEL` (`claude-haiku-5-5`) | Default host model for `eval coach` and `ytbrain claude` |
 | `YTBRAIN_COACH_HOST_KEY` (none) | OpenRouter key for `--host openrouter` / `--openrouter`; falls back to `YTBRAIN_LLM_API_KEY` when `YTBRAIN_LLM_BASE_URL` is OpenRouter |

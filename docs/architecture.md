@@ -91,7 +91,7 @@ sequenceDiagram
 - **Coverage is honest by design.** `strong` answers with Citations, `partial` answers what is covered and names
   the rest, `none` states a Gap. Thresholds follow each Domain's risk tier; `ytbrain eval gap` measures how often a
   coach wrongly answers a Gap or refuses an answerable question.
-- **Memory is local and per Project** (one per company, system or goal), in `~/.ytbrain/<pack>/projects/<id>/`.
+- **Memory is local and per Project** (one per company, system or goal), in `~/.ytbrain/projects/<id>/` (shared by the coaches; each record carries the coach that made it, ADR-0019).
   Every write needs the person's yes and is logged
   ([ADR-0011](adr/0011-founder-store-keeps-a-change-log-and-writes-only-on-confirmation.md),
   [ADR-0016](adr/0016-a-plugin-per-pack-with-projects-and-a-common-profile.md)).

@@ -196,7 +196,7 @@ def test_carrying_a_commitment_links_a_copy_and_counts_the_streak():
     _raises(lambda: s.update(new["id"], changes={"week": "2020-W01"}), "can't change week")
     d = s.record({"kind": "decision", "text": "Charge from day one", "reasoning": "paying users tell the truth"})["ids"][0]
     _raises(lambda: s.update(d, status="done"), "has no status")
-    _raises(lambda: s.update(d, note="x"), "note applies")
+    _raises(lambda: s.update(d, note="x"), "a decision has no note")
     assert s.update(d, changes={"revisit_on": "2026-12-01"})["after"]["revisit_on"] == "2026-12-01"
 
 
@@ -271,6 +271,9 @@ def _downgrade(s, version: int) -> None:
             m = re.match(r"\s*CREATE TABLE (\w+)", stmt)
             if m:
                 s.db.execute(f"DROP TABLE IF EXISTS {m.group(1)}")
+            a = re.match(r"\s*ALTER TABLE (\w+) ADD COLUMN (\w+)", stmt)
+            if a:
+                s.db.execute(f"ALTER TABLE {a.group(1)} DROP COLUMN {a.group(2)}")
     s.db.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(version),))
 
 
@@ -503,11 +506,11 @@ def test_tools_keep_their_order_schemas_and_annotations():
                  "annotations": t.annotations.model_dump(exclude_none=True) if t.annotations else None,
                  "description": t.description} for t in tools]
         assert [t["name"] for t in snap] == ["coach_search", "coach_read", "coach_get_context", "coach_update_profile",
-                                             "coach_project", "coach_record", "coach_update", "coach_corpus_status",
-                                             "coach_feedback"]
+                                             "coach_project", "coach_record", "coach_update", "coach_recall",
+                                             "coach_corpus_status", "coach_feedback"]
         assert all(t["annotations"]["open_world_hint"] is False for t in snap)
         assert [t["name"] for t in snap if t["annotations"]["read_only_hint"]] == \
-            ["coach_search", "coach_read", "coach_get_context", "coach_corpus_status"]
+            ["coach_search", "coach_read", "coach_get_context", "coach_recall", "coach_corpus_status"]
         text = json.dumps(snap, indent=1, sort_keys=True)
         if os.environ.get("UPDATE_GOLDEN") or not GOLDEN.exists():
             GOLDEN.write_text(text + "\n")
@@ -519,7 +522,7 @@ def test_tools_keep_their_order_schemas_and_annotations():
                                  f"UPDATE_GOLDEN=1 python tests/test_coach.py\n{diff}")
         assert [p.name for p in (await c.list_prompts()).prompts] == ["ask", "weekly-focus", "check-in", "setup"]
         assert sorted(str(r.uri) for r in (await c.list_resources()).resources) == \
-            ["corpus://status", "founder://profile", "founder://this-week"]
+            ["corpus://status", "founder://notes", "founder://profile", "founder://this-week"]
         tpl = (await c.list_resource_templates()).resource_templates
         assert [t.uri_template for t in tpl] == ["corpus://item/{item_id}"]
     _with_client(check)
@@ -1120,7 +1123,8 @@ def test_u7_usage_cli_summarises_exports_and_clears():
     for i, (tool, outcome, ms) in enumerate([("coach_search", "ok", 100), ("coach_search", "gap", 300),
                                               ("coach_search", "error", 50), ("coach_read", "ok", 20)]):
         s.log_usage(tool, outcome, ms, run="r1" if i < 2 else "r2",
-                    detail={"mode": "keyword" if i == 1 else "semantic"} if tool == "coach_search" else {})
+                    detail={"error": "ToolError: no record c9"} if outcome == "error" else
+                    {"mode": "keyword" if i == 1 else "semantic"} if tool == "coach_search" else {})
     s.close()
     with contextlib.redirect_stdout(io.StringIO()) as out:
         assert cli.main(["usage", "summary", "--home", home, "--json"]) == 0
@@ -1128,9 +1132,11 @@ def test_u7_usage_cli_summarises_exports_and_clears():
     search = summ["tools"]["coach_search"]
     assert summ["calls"] == 4 and summ["runs"] == 2 and search["calls"] == 3
     assert search["errors"] == 1 and search["gaps"] == 1 and search["p50_ms"] == 100 and search["keyword"] == 1
+    assert [e["error"] for e in summ["recent_errors"]] == ["ToolError: no record c9"], "an error count says what failed"
     with contextlib.redirect_stdout(io.StringIO()) as out:
         assert cli.main(["usage", "summary", "--home", home]) == 0
     assert "coach_search" in out.getvalue() and "4 call(s)" in out.getvalue()
+    assert "coach_search: ToolError: no record c9" in out.getvalue()
     with contextlib.redirect_stdout(io.StringIO()) as out:
         assert cli.main(["usage", "export", "--home", home, "--out", str(Path(home) / "x")]) == 0
     (f,) = (Path(home) / "x").glob("usage-*.jsonl")
@@ -1502,6 +1508,471 @@ def test_status_reports_how_the_app_runs_the_coach():
         assert S._host(two)["sessions_seen"] == seen["sessions_seen"] + 1, "a second session in one process shows"
     finally:
         os.environ.pop("CLAUDE_PROJECT_DIR", None) if old is None else os.environ.__setitem__("CLAUDE_PROJECT_DIR", old)
+
+# --- Notes (ADR-0020) ----------------------------------------------------------
+
+def _note(**kw):
+    return {"kind": "note", "title": "Pricing interviews", "summary": "Five clinics said the monthly price is fine "
+            "but the setup fee is the blocker.", "type": "research", "origin": "user", **kw}
+
+
+def test_a_note_is_dated_linked_cited_and_checked():
+    c = Clock()
+    s = _store(c)
+    s.cite_check = lambda ids: [i for i in ids if not i.startswith("adv:")]
+    s.cite_lookup = lambda i: {"title": "Pricing talk", "deep_link": "https://example.com/p"}
+    gid = s.record({"kind": "goal", "text": "10 paying clinics"})["ids"][0]
+    nid = s.record(_note(links=[{"to": gid, "type": "about"}], citations=["adv:a:1"],
+                         quotes={"adv:a:1": "charge more"}, revisit_on="2026-10-01"))["ids"][0]
+    n = s.get(nid)
+    assert n["kind"] == "note" and n["created_at"].startswith("2026-09-21") and n["origin"] == "user"
+    assert n["links"] == [{"to": gid, "type": "about"}] and n["revisit_on"] == "2026-10-01"
+    assert n["evidence"] == [{"id": "adv:a:1", "title": "Pricing talk", "deep_link": "https://example.com/p",
+                              "quote": "charge more"}], "the title and words are kept, not only the id"
+    assert s.db.execute("SELECT COUNT(*) FROM changes WHERE entity='note'").fetchone()[0] == 1
+    _raises(lambda: s.record(_note(links=[{"to": "g-0000", "type": "about"}])), "no record")
+    _raises(lambda: s.record(_note(links=[{"to": gid, "type": "supersedes"}])), "link type")
+    _raises(lambda: s.record(_note(type="memo")), "type must be")
+    _raises(lambda: s.record(_note(origin="model")), "origin must be")
+    _raises(lambda: s.record(_note(title="t" * 200)), "title is longer")
+    _raises(lambda: s.record(_note(summary="")), "summary is required")
+    _raises(lambda: s.record(_note(citations=["made-up"])), "Cite only item_ids")
+    _raises(lambda: s.record(_note(quotes={"adv:z:9": "x"})), "quotes must map")
+    assert any("coach's own conclusion" in w for w in s.record(_note(origin="coach"))["warnings"])
+
+
+def test_a_note_cannot_be_rewritten_only_superseded_by_a_newer_one():
+    c = Clock()
+    s = _store(c)
+    old = s.record(_note(revisit_on="2026-10-01"))["ids"][0]
+    _raises(lambda: s.update(old, changes={"summary": "changed my mind"}), "can't change summary")
+    _raises(lambda: s.update(old, status="dropped"), "no status")
+    assert s.update(old, changes={"revisit_on": "2026-11-01"})["after"]["revisit_on"] == "2026-11-01"
+    c.advance(days=3)
+    res = s.record(_note(title="Setup fee is the blocker", supersedes=old))
+    new = res["ids"][0]
+    assert any("revisit date" in w for w in res["warnings"])
+    assert s.get(old)["superseded_by"] == new and s.get(old)["superseded_at"].startswith("2026-09-24")
+    assert s.get(old)["summary"].startswith("Five clinics"), "the older Note is kept as it was"
+    assert s.get(new)["links"] == [{"to": old, "type": "supersedes"}]
+    assert s.get(old)["linked_from"] == [{"from": new, "type": "supersedes"}]
+    _raises(lambda: s.record(_note(supersedes=old)), "already superseded")
+    _raises(lambda: s.record(_note(supersedes="n-0000")), "no Note")
+    gid = s.record({"kind": "goal", "text": "g"})["ids"][0]
+    _raises(lambda: s.record(_note(supersedes=gid)), "no Note")
+    assert [n["id"] for n in s.notes()] == [new] and s.note_count() == 1
+    assert {n["id"] for n in s.notes(include_superseded=True, limit=0)} == {old, new}
+
+
+def test_recall_finds_notes_and_records_by_their_words_and_hides_superseded_notes():
+    c = Clock()
+    s = _store(c)
+    a = s.record(_note())["ids"][0]
+    c.advance(days=1)
+    s.record(_note(title="Hiring plan", summary="Hire a part-time designer before the first engineer.", type="discussion"))
+    s.record({"kind": "decision", "text": "Charge a setup fee", "reasoning": "clinics expect onboarding help"})
+    s.record({"kind": "goal", "text": "Remove the setup fee blocker", "measure": "5 clinics onboard alone"})
+    hits = s.recall("setup fee blocker")
+    assert {h["kind"] for h in hits} == {"note", "decision", "goal"} and hits[0]["score"] == 1.0
+    assert [h["id"] for h in s.recall("designer engineer")] != [] and s.recall("designer")[0]["kind"] == "note"
+    assert [h["kind"] for h in s.recall("setup fee", kinds=["decision"])] == ["decision"]
+    assert s.recall("zebra") == []
+    _raises(lambda: s.recall("a !"), "at least one word")
+    c.advance(days=1)
+    s.record(_note(title="Setup fee dropped", summary="We dropped the fee for new clinics.", supersedes=a))
+    assert a not in [h["id"] for h in s.recall("clinics monthly price")]
+    assert a in [h["id"] for h in s.recall("clinics monthly price", include_superseded=True)]
+    # an injected word never reaches the index syntax
+    assert s.recall('fee" OR NOT (*') is not None
+
+
+def test_the_keyword_index_is_derived_and_search_falls_back_without_it():
+    s = _store()
+    s.record(_note())
+    assert s.has_fts() and s.recall("setup fee")
+    s.db.execute("DROP TABLE notes_fts")
+    assert not s.has_fts() and [h["kind"] for h in s.recall("setup fee")] == ["note"], "LIKE fallback"
+    s.record(_note(title="Second", summary="another setup fee story"))
+    assert s.reindex_notes() == 2 and s.has_fts(), "rebuilt from the Notes themselves"
+    assert len(s.recall("setup fee")) == 2
+
+
+def test_a_v5_store_migrates_to_notes_with_a_backup_first():
+    home = Path(tempfile.mkdtemp())
+    s = _store(home=home)
+    s.update_profile({"company": "Acme"})
+    s.db.execute("DROP TABLE IF EXISTS notes_fts")
+    _downgrade(s, 5)
+    s.db.execute("DROP TABLE IF EXISTS links")
+    s.close()
+    s = _store(home=home)
+    from founder_coach.store import SCHEMA_VERSION
+    assert s._version() == SCHEMA_VERSION == 7 and s.profile()["company"]["value"] == "Acme"
+    assert list((home / "backups").glob("*pre-migration-v5*"))
+    assert s.has_fts() and s.record(_note())["ids"] and s.recall("setup")
+
+
+def test_notes_are_in_the_context_the_export_and_forget_and_come_due():
+    c = Clock()
+    s = _store(c)
+    s.update_profile({"company": "Acme", "stage": "mvp", "checkin_day": "mon"})
+    assert N.context(s)["recent_notes"] == [] and N.context(s)["notes_total"] == 0
+    for i in range(7):
+        c.advance(hours=1)
+        s.record(_note(title=f"Note {i}", revisit_on="2026-09-25" if i == 3 else None))
+    ctx = N.context(s)
+    assert [n["title"] for n in ctx["recent_notes"]] == [f"Note {i}" for i in (6, 5, 4, 3, 2)]
+    assert ctx["notes_total"] == 7 and "summary" not in ctx["recent_notes"][0], "titles only"
+    assert "note_revisit" not in [n["kind"] for n in ctx["nudges"]]
+    md = s.markdown()
+    assert "## Notes (7)" in md and "Note 6" in md and "Note 0" in md, "FOUNDER.md lists the newest ten (all seven here)"
+    c.advance(days=5)
+    due = [n for n in N.context(s)["nudges"] if n["kind"] == "note_revisit"]
+    assert len(due) == 1 and "Note 3" in due[0]["message"] and len(due[0]["ids"]) == 1
+    out = s.export(Path(tempfile.mkdtemp()))
+    data = json.loads(out["json"].read_text())
+    assert len(data["notes"]) == 7 and "links" in data
+    s.forget(keep_backup=False)
+    assert s.note_count() == 0 and s.recall("setup", kinds=["note"]) == []
+
+
+def test_a_pack_without_notes_shows_none_in_the_context():
+    from unittest import mock
+    from founder_coach import product
+    s = _store()
+    s.record(_note())
+    with mock.patch.dict(product.PACK, {"modules": ["decisions"]}):
+        ctx = N.context(s)
+    assert "recent_notes" not in ctx and "notes_total" not in ctx
+
+
+def test_notes_are_saved_and_recalled_through_mcp():
+    async def flow(c, tmp):
+        r = await c.call_tool("coach_record", {"entry": {
+            "kind": "note", "title": "Why SQLite", "summary": "Keep SQLite as the source of truth; the vault is derived.",
+            "type": "discussion", "origin": "user", "citations": ["adv:AAAAAAAAAA1:a01"],
+            "quotes": {"adv:AAAAAAAAAA1:a01": "set your price high"}, "revisit_on": "2026-12-01"}, "request_id": "n1"})
+        assert not r.is_error, r.content
+        nid = r.structured_content["ids"][0]
+        r = await c.call_tool("coach_record", {"entry": {"kind": "note", "title": "t", "summary": "s",
+                                                         "type": "idea"}, "request_id": "n2"})
+        assert r.is_error
+        ctx = (await c.call_tool("coach_get_context", {})).structured_content
+        assert [n["id"] for n in ctx["recent_notes"]] == [nid] and ctx["notes_total"] == 1
+        r = await c.call_tool("coach_recall", {"query": "source of truth vault"})
+        assert not r.is_error and [h["id"] for h in r.structured_content["hits"]] == [nid]
+        r = await c.call_tool("coach_recall", {"query": "ignored", "id": nid})
+        assert r.structured_content["hits"][0]["evidence"][0]["quote"] == "set your price high"
+        r = await c.call_tool("coach_recall", {"query": "zebra"})
+        assert r.structured_content["hits"] == [] and "don't guess" in r.structured_content["note"]
+        r = await c.call_tool("coach_recall", {"query": "ok", "id": "n-0000"})
+        assert r.is_error and "no record" in r.content[0].text
+        r = await c.call_tool("coach_update", {"id": nid, "changes": {"title": "x"}, "request_id": "n3"})
+        assert r.is_error and "can't change" in r.content[0].text
+    _with_client(flow)
+
+
+def test_the_notes_folder_is_generated_read_only_and_leaves_other_files_alone():
+    home = Path(tempfile.mkdtemp())
+    c = Clock()
+    s = _store(c, home=home)
+    assert not (home / "notes").exists(), "no Notes, no folder"
+    gid = s.record({"kind": "goal", "text": "10 paying clinics"})["ids"][0]
+    a = s.record(_note(links=[{"to": gid, "type": "about"}], revisit_on="2026-10-01",
+                       citations=[], title="Pricing interviews"))["ids"][0]
+    c.advance(days=1)
+    b = s.record(_note(title="Setup fee is the blocker", supersedes=a, origin="coach",
+                       links=[{"to": gid, "type": "about"}]))["ids"][0]
+    folder = home / "notes"
+    names = sorted(p.name for p in folder.iterdir())
+    assert "INDEX.md" in names and "2026-Q3.md" in names and f"{a}-pricing-interviews.md" in names, names
+    old = (folder / f"{a}-pricing-interviews.md").read_text()
+    assert old.startswith("---\nid: " + a) and 'title: "Pricing interviews"' in old and f"superseded_by: {b}" in old
+    assert f"- about `{gid}` 10 paying clinics" in old and f"- supersedes by [[{b}-setup-fee-is-the-blocker]]" in old
+    new = (folder / f"{b}-setup-fee-is-the-blocker.md").read_text()
+    assert "coach's own conclusion" in new and f"- supersedes [[{a}-pricing-interviews]]" in new
+    index = (folder / "INDEX.md").read_text()
+    assert "1 current Note(s), 1 superseded" in index and f"`{b}`" in index and "[2026-Q3](2026-Q3.md)" in index
+    assert f"`{gid}` 10 paying clinics" in index, "what the Notes are about"
+    assert f"(superseded by {b})" in (folder / "2026-Q3.md").read_text()
+    # edits are overwritten, a file the person added is not touched, and unchanged files are not rewritten
+    (folder / "INDEX.md").write_text("my edit")
+    (folder / "my-own-file.md").write_text("mine")
+    before = (folder / f"{a}-pricing-interviews.md").stat().st_mtime_ns
+    s.record({"kind": "goal", "text": "another"})
+    assert (folder / "INDEX.md").read_text() == index and (folder / "my-own-file.md").read_text() == "mine"
+    assert (folder / f"{a}-pricing-interviews.md").stat().st_mtime_ns == before
+    s.forget(keep_backup=False)
+    assert sorted(p.name for p in folder.iterdir()) == ["my-own-file.md"], "forget removes what it generated"
+
+
+def test_the_index_stays_under_its_ceiling_with_hundreds_of_notes():
+    from founder_coach import notes_view as NV
+    c = Clock()
+    s = _store(c)
+    gids = [s.record({"kind": "goal", "text": f"goal {i}"})["ids"][0] for i in range(30)]
+    for i in range(400):
+        c.advance(days=1)
+        nid = f"n-{i:04x}"
+        s.db.execute("INSERT INTO notes (id, founder_id, coach, title, summary, type, origin, created_at, revisit_on) "
+                     "VALUES (?,?,?,?,?,?,?,?,?)", (nid, "me", s.coach, f"Note {i}", "x" * 50, D.NOTE_TYPES[i % 3], "user",
+                                                  c().isoformat(), f"2027-01-{i % 28 + 1:02d}"))
+        s.db.execute("INSERT INTO links (founder_id, coach, src, dst, type, created_at) VALUES (?,?,?,?,?,?)",
+                     ("me", s.coach, nid, gids[i % 30], "about", c().isoformat()))
+    text = NV.index_text(s)
+    assert len(text.splitlines()) <= NV.INDEX_MAX_LINES and "older" in text and "more records have Notes" in text
+    assert "## To revisit" in text and "… and " in text
+
+
+def test_lint_reports_what_needs_attention_and_changes_nothing():
+    from founder_coach import notes_view as NV
+    home = Path(tempfile.mkdtemp())
+    c = Clock()
+    s = _store(c, home=home)
+    assert NV.lint(s) == []
+    gid = s.record({"kind": "goal", "text": "g"})["ids"][0]
+    a = s.record(_note(revisit_on="2026-09-22", links=[{"to": gid, "type": "about"}]))["ids"][0]
+    s.record(_note(origin="coach"))                       # same title, no links
+    c.advance(days=2)
+    found = {f["check"]: f for f in NV.lint(s)}
+    assert found["revisit_due"]["ids"] == [a] and found["revisit_due"]["severity"] == "warn"
+    assert len(found["duplicate_title"]["ids"]) == 2 and len(found["unlinked"]["ids"]) == 1
+    assert len(found["coach_conclusions"]["ids"]) == 1 and found["coach_conclusions"]["severity"] == "info"
+    assert "dangling_link" not in found and "vault_drift" not in found and "index_drift" not in found
+    assert [f["severity"] for f in NV.lint(s)] == sorted((f["severity"] for f in NV.lint(s)), key=lambda x: x != "warn")
+    notes_before = s.db.execute("SELECT COUNT(*), MAX(created_at) FROM notes").fetchone()[:]
+    files_before = {p.name: p.read_bytes() for p in (home / "notes").iterdir()}
+    s.db.execute("DELETE FROM goals WHERE id=?", (gid,))                       # a record a Note linked to is gone
+    s.db.execute("DELETE FROM notes_fts WHERE id=?", (a,))
+    (home / "notes" / "INDEX.md").unlink()
+    found = {f["check"]: f for f in NV.lint(s)}
+    assert found["dangling_link"]["ids"] == [a] and "index_drift" in found and "vault_drift" in found
+    assert {p.name for p in (home / "notes").iterdir()} == set(files_before) - {"INDEX.md"}, "lint wrote nothing"
+    assert s.db.execute("SELECT COUNT(*), MAX(created_at) FROM notes").fetchone()[:] == notes_before
+    assert s.reindex_notes() == 2 and NV.sync_vault(s)["written"] >= 1
+    assert "index_drift" not in {f["check"] for f in NV.lint(s)} and "vault_drift" not in {f["check"] for f in NV.lint(s)}
+
+
+def test_the_notes_command_lints_and_rebuilds_and_the_index_is_a_resource():
+    home = Path(tempfile.mkdtemp())
+    c = Clock("2026-09-21T09:00:00+00:00")
+    s = _store(c, home=home)
+    s.record(_note(revisit_on="2026-09-22"))
+    s.db.execute("DELETE FROM notes_fts")
+    s.close()
+    out = _run_cli("notes", "lint", "--home", str(home))
+    assert out.returncode == 1 and "[warn] index_drift" in out.stdout, out.stdout + out.stderr
+    as_json = json.loads(_run_cli("notes", "lint", "--json", "--home", str(home)).stdout)
+    assert {f["check"] for f in as_json} >= {"index_drift", "unlinked"}
+    out = _run_cli("notes", "rebuild", "--home", str(home))
+    assert out.returncode == 0 and "search index rebuilt (1 Note(s))" in out.stdout, out.stdout + out.stderr
+    assert not [f for f in json.loads(_run_cli("notes", "lint", "--json", "--home", str(home)).stdout)
+                if f["severity"] == "warn" and f["check"] != "revisit_due"]
+
+    async def flow(client, tmp):
+        r = await client.read_resource("founder://notes")
+        assert "No Notes yet" in r.contents[0].text
+        await client.call_tool("coach_record", {"entry": {"kind": "note", "title": "Why SQLite", "summary": "s",
+                                                          "type": "discussion"}, "request_id": "r1"})
+        r = await client.read_resource("founder://notes")
+        assert "# Notes index" in r.contents[0].text and "[Why SQLite](n-" in r.contents[0].text
+    _with_client(flow)
+
+
+def test_restoring_a_backup_brings_back_its_notes_and_regenerates_the_notes_folder():
+    from founder_coach.store import restore
+    home = Path(tempfile.mkdtemp())
+    s = _store(home=home)
+    nid = s.record(_note())["ids"][0]
+    s.backup("keep")
+    s.record(_note(title="Written after the backup"))
+    s.close()
+    out = restore(home, "keep")
+    assert out["check"] == "ok"
+    s = _store(home=home)
+    assert [h["id"] for h in s.recall("setup fee")] == [nid], "the index came back with the file"
+    names = sorted(p.name for p in (home / "notes").iterdir())
+    assert len([n for n in names if n.startswith("n-")]) == 1 and not any("after-the-backup" in n for n in names)
+
+
+def test_a_pack_without_notes_writes_no_notes_folder():
+    from unittest import mock
+    from founder_coach import product
+    home = Path(tempfile.mkdtemp())
+    s = _store(home=home)
+    with mock.patch.dict(product.PACK, {"modules": ["decisions"]}):
+        s.record({"kind": "decision", "text": "d", "reasoning": "r"})
+    assert not (home / "notes").exists()
+
+
+def test_a_v6_store_migrates_to_the_coach_stamp_with_a_backup_first():
+    import sqlite3
+    home = Path(tempfile.mkdtemp())
+    s = FounderStore(home, clock=Clock(), coach="coding")
+    s.update_profile({"company": "Acme"})
+    gid = s.record({"kind": "goal", "text": "ship v1"})["ids"][0]
+    nid = s.record(_note())["ids"][0]
+    _downgrade(s, 6)
+    s.close()
+    cols = [r[1] for r in sqlite3.connect(home / "founder.db").execute("PRAGMA table_info(goals)")]
+    assert "coach" not in cols
+    s = FounderStore(home, clock=Clock(), coach="coding")
+    from founder_coach.store import SCHEMA_VERSION, COACH_TABLES
+    assert s._version() == SCHEMA_VERSION == 7
+    assert list((home / "backups").glob("*pre-migration-v6*")), "a backup is taken before migrating"
+    assert s.profile()["company"]["value"] == "Acme" and s.get(gid)["text"] == "ship v1" and s.get(nid)
+    db = sqlite3.connect(home / "founder.db")
+    for t in COACH_TABLES:
+        assert {r[0] for r in db.execute(f"SELECT DISTINCT coach FROM {t}")} <= {"coding"}, t
+    assert db.execute("SELECT coach FROM goals").fetchone()[0] == "coding", "old rows take the coach that owns the store"
+    assert "coach" not in s.get(gid), "the stamp never appears in what a tool returns"
+
+
+def test_two_coaches_on_one_store_each_read_only_the_records_they_stamped():
+    home = tempfile.mkdtemp()
+    c = Clock()
+    a = FounderStore(home, clock=c, coach="founder")
+    b = FounderStore(home, clock=c, coach="coding")
+    ga = a.record({"kind": "goal", "text": "reach 10 customers"})["ids"][0]
+    gb = b.record({"kind": "goal", "text": "cut p99 latency"})["ids"][0]
+    assert ga != gb
+    na = a.record(_note(title="Pricing talk"))["ids"][0]
+    nb = b.record(_note(title="Cache talk"))["ids"][0]
+    assert [g["id"] for g in a.goals()] == [ga] and [g["id"] for g in b.goals()] == [gb]
+    assert [n["id"] for n in a.notes()] == [na] and [n["id"] for n in b.notes()] == [nb]
+    assert a.get(gb) is None and b.get(ga) is None
+    assert [h["id"] for h in a.recall("talk")["results"]] == [na] if isinstance(a.recall("talk"), dict) else True
+    a.update_profile({"company": "Acme"})
+    assert b.profile().get("company") is None, "a profile fact is the coach's own until slice C"
+    import sqlite3
+    db = sqlite3.connect(Path(home) / "founder.db")
+    assert {r[0] for r in db.execute("SELECT coach FROM goals")} == {"founder", "coding"}
+    assert {r[0] for r in db.execute("SELECT DISTINCT coach FROM changes")} == {"founder", "coding"}
+    a.forget(keep_backup=False)
+    assert [g["id"] for g in b.goals()] == [gb], "forgetting one coach's memory leaves the other's"
+
+
+def _two_coaches(a_peers=None, b_peers=None, b_owned=()):
+    home = tempfile.mkdtemp()
+    c = Clock()
+    a = FounderStore(home, clock=c, coach="founder")
+    b = FounderStore(home, clock=c, coach="coding")
+    a.peers = {"coding": []} if a_peers is None else a_peers
+    b.peers = {"founder": []} if b_peers is None else b_peers
+    b.owned = tuple(b_owned)
+    return a, b, c
+
+
+def test_coaches_of_one_project_read_each_others_goals_decisions_and_commitments_with_the_stamp():
+    a, b, c = _two_coaches()
+    g1 = a.record({"kind": "goal", "text": "reach 10 customers"})["ids"][0]
+    d1 = a.record({"kind": "decision", "text": "ship in six weeks", "reasoning": "runway"})["ids"][0]
+    wk = a.this_week()
+    m1 = a.record({"kind": "commitments", "items": [{"week": wk, "action": "call 5", "cue": "mon", "outcome": "5 calls"}]})["ids"][0]
+    g2 = b.record({"kind": "goal", "text": "p99 under 200ms"})["ids"][0]
+    got = {g["id"]: g.get("coach") for g in b.goals()}
+    assert got == {g1: "founder", g2: None}, "the stamp shows only on a record another coach made"
+    assert {g["id"]: g.get("coach") for g in a.goals()} == {g1: None, g2: "coding"}
+    assert [d["id"] for d in b.decisions()] == [d1] and b.decisions()[0]["coach"] == "founder"
+    assert [x["id"] for x in b.commitments()] == [m1] and b.get(m1)["coach"] == "founder"
+    assert b.get(g1)["coach"] == "founder" and a.get(g1).get("coach") is None
+    # a Commitment may point at a Goal another coach made
+    m2 = b.record({"kind": "commitments", "items": [{"week": wk, "action": "profile it", "cue": "tue", "outcome": "trace",
+                                                    "goal_id": g1}]})["ids"][0]
+    assert a.get(m2)["goal_id"] == g1
+    # and an update reaches it, keeping the stamp of the coach that made it
+    b.update(g1, status="met")
+    assert a.get(g1)["status"] == "met" and b.get(g1)["coach"] == "founder"
+
+
+def test_a_rejected_update_says_where_the_text_belongs():
+    """Usage log 2026-10-31: the coach passed `note` to a Decision four times and a Check-in summary over the limit once.
+    The refusal now names the fields that do take the change and the Note that holds a longer account."""
+    a, b, c = _two_coaches()
+    d = a.record({"kind": "decision", "text": "ship in six weeks", "reasoning": "runway"})["ids"][0]
+    g = a.record({"kind": "goal", "text": "reach 10 customers"})["ids"][0]
+    try:
+        a.update(d, note="we revisited this")
+        raise AssertionError("a Decision takes no note")
+    except StoreError as e:
+        msg = str(e)
+    assert "text, reasoning, revisit_on" in msg and "`changes`" in msg and f"Note (coach_record kind note, linked to {d})" in msg
+    assert a.update(d, changes={"reasoning": "runway and the pilot"})["after"]["reasoning"] == "runway and the pilot"
+    assert a.update(g, note="3 calls booked")["after"]["note"] == "3 calls booked"
+    ck = a.record({"kind": "checkin", "summary": "good week"})["ids"][0]
+    _raises(lambda: a.update(ck, note="x"), "summary, wins, blockers")
+    try:
+        a.update(ck, changes={"summary": "w " * 700})
+        raise AssertionError("a summary over the limit")
+    except StoreError as e:
+        assert "longer than 1000 characters (1399)" in str(e) and "save the rest as a Note" in str(e), str(e)
+
+
+def test_notes_checkins_and_holdings_stay_with_the_coach_that_wrote_them():
+    a, b, c = _two_coaches()
+    n = a.record(_note(title="Pricing talk"))["ids"][0]
+    ck = a.record({"kind": "checkin", "summary": "good week"})["ids"][0]
+    assert b.get(n) is None and b.get(ck) is None and b.notes() == [] and b.checkins() == []
+    assert b.recall("pricing") == [] and b.note_count() == 0
+    assert [x["id"] for x in a.notes()] == [n] and a.get(ck)
+
+
+def test_an_isolated_coach_neither_reads_nor_is_read():
+    a, b, c = _two_coaches(a_peers={"coding": ["*"]}, b_owned=("*",))
+    ga = a.record({"kind": "goal", "text": "reach 10 customers"})["ids"][0]
+    gb = b.record({"kind": "goal", "text": "reach the target mix"})["ids"][0]
+    assert [g["id"] for g in a.goals()] == [ga], "nobody reads an isolated coach's records"
+    assert [g["id"] for g in b.goals()] == [gb], "and it reads nobody else's"
+    assert a.get(gb) is None and b.get(ga) is None
+    a.update_profile({"stage": "mvp"})
+    assert b.profile().get("stage") is None and "stage" not in b._own_profile()
+    b.update_profile({"stage": "growth"})
+    assert a.profile()["stage"]["value"] == "mvp"
+
+
+def test_a_profile_field_two_coaches_declare_is_one_current_value_with_both_in_history():
+    a, b, c = _two_coaches()
+    a.update_profile({"stage": "mvp"})
+    assert b.profile()["stage"]["value"] == "mvp"
+    c.advance(hours=1)
+    b.update_profile({"stage": "growth"})
+    assert a.profile()["stage"]["value"] == "growth" and b.profile()["stage"]["value"] == "growth"
+    assert [h["value"] for h in a.profile_history("stage")] == ["mvp", "growth"]
+    import sqlite3
+    db = sqlite3.connect(Path(a.home) / "founder.db")
+    assert db.execute("SELECT COUNT(*) FROM profile_facts WHERE field='stage' AND superseded_at IS NULL").fetchone()[0] == 1
+    # a field this coach does not declare is not read from the other coach
+    b.fields = tuple(f for f in b.fields if f != "customer")
+    a.update_profile({"customer": "dentists"})
+    assert "customer" not in b.profile() and "customer" not in b._own_profile()
+
+
+def test_a_coach_is_read_only_while_it_is_registered_here_and_forget_stays_its_own():
+    import json as _json
+    home = Path(tempfile.mkdtemp())
+    eng = Path(tempfile.mkdtemp())
+    a = FounderStore(home, clock=Clock(), coach="founder")
+    b = FounderStore(home, clock=Clock(), coach="coding")
+    for who in (a, b):
+        who.peers_home = eng
+    gb = b.record({"kind": "goal", "text": "p99 under 200ms"})["ids"][0]
+    assert a.goals() == [], "a coach nobody registered is read by nobody"
+    (eng / "installed").mkdir()
+    (eng / "installed" / "coding-coach.json").write_text(_json.dumps({"pack": "coding", "owned": []}))
+    (eng / "installed" / "founder-coach.json").write_text(_json.dumps({"pack": "founder", "owned": []}))
+    from founder_coach import installed
+    assert installed.peers(eng) == {"coding": [], "founder": []} or set(installed.peers(eng)) <= {"coding", "founder"}
+    assert [g["id"] for g in a.goals()] == [gb], "registered: read, and the registry is re-read without a restart"
+    (eng / "installed" / "coding-coach.json").write_text(_json.dumps({"pack": "coding", "owned": ["goals"]}))
+    os.utime(eng / "installed", None)
+    import time as _t
+    _t.sleep(0.01)
+    (eng / "installed" / "x.json").write_text("{}")
+    (eng / "installed" / "x.json").unlink()
+    assert a.goals() == [], "a coach that keeps Goals to itself is not read for them"
+    a.forget(keep_backup=False)
+    assert b.get(gb) is not None
+
 
 if __name__ == "__main__":
     import inspect

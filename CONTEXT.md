@@ -149,7 +149,7 @@ A Pack's own label on a Knowledge item, tagged after extraction from that Pack's
 _Avoid_: tag (as a term), Topic, category
 
 **Risk tier**:
-How much harm a wrong answer can do in a Domain (low, medium, high); a Pack takes the highest of its Domains. It sets the evidence a confident answer needs and the gates a Pack must pass.
+How much harm a wrong answer can do in a Domain (low, medium, high); a Pack takes the highest of its Domains. It sets the evidence a confident answer needs and the gates a Pack must pass. In a high tier the coach never advises a personal call (a trade, a valuation), and below strong Coverage it only educates from what the hits say, saying the evidence is partial.
 _Avoid_: safety level, sensitivity
 
 **Catalog card**:
@@ -205,7 +205,7 @@ The Founder's startup, with its current Stage: the founder Pack's Project.
 _Avoid_: business, org
 
 **Project**:
-What one Pack's memory is kept for: a Company in founder, a system or codebase in coding, an investment goal (retirement, college) in investor, with all the accounts that serve it. A person can have several Projects in a Pack; nothing saved in one appears in another unless they ask to compare them, and each session works in one at a time.
+A piece of the person's work that every coach shares: a Company, a system or codebase, an investment goal (retirement, college) with all the accounts that serve it. A person can have several Projects; nothing saved in one appears in another unless they ask to compare them, and each session works in one at a time. Each record in it says which coach made it (its coach stamp).
 _Avoid_: workspace (the Workspace is where the person keeps their data), context, session
 
 **Common profile**:
@@ -213,7 +213,7 @@ The few facts true of the person in every Pack (name, timezone, role, how they l
 _Avoid_: global memory, user profile, account
 
 **Pack memory**:
-Everything a Pack keeps about one Project (profile facts, Goals, Decisions, Commitments, Check-ins, an Investment Policy Statement, Holdings), with its change log. Only its own Pack reads it.
+Everything one Pack records about a Project (profile facts, Goals, Decisions, Notes, Commitments, Check-ins, an Investment Policy Statement, Holdings), with its change log. The shared core (profile facts both coaches declare, Goals, Commitments, Decisions) is read by every coach of the Project, each record showing the coach behind it; Notes, Check-ins and Holdings are read only by their own Pack, and a Pack that lists `owned = ["*"]` (the investor) is neither read nor reads.
 _Avoid_: memory (alone), store, history
 
 **Founder profile**:
@@ -229,8 +229,20 @@ A concrete if-then action with a measurable outcome that the Founder agreed to d
 _Avoid_: task, todo, action item
 
 **Decision**:
-A choice the Founder made, with its reasoning and the Citations behind it, kept for later reflection.
-_Avoid_: note, log entry
+A choice the Founder made, with its reasoning and the Citations behind it, kept for later reflection. What was discussed or found around a choice is a Note.
+_Avoid_: log entry
+
+**Note**:
+A dated, append-only record of a discussion, a piece of research or an insight, with a title, a summary, a type (`discussion`, `research`, `insight`), an Origin and the Citations it rests on (their words kept with it). A Note links to the Goals, Decisions and other records it is about. It is never edited: a changed view is a newer Note that supersedes it, and both stay on record with their dates. A Note is what was said on a date, not a fact that stays true.
+_Avoid_: memo, summary (a Summary belongs to a Document), log entry
+
+**Origin**:
+Whose words a Note holds: `user` when the person said it, `coach` when the coach concluded it. A coach-origin Note is a lead to check with the person, never a fact about them.
+_Avoid_: author, source (a Source feeds the Library)
+
+**Link**:
+A typed tie from one record to another (`about`, `supports`, `related`, and `supersedes` made by superseding a Note), kept as a row beside the records. It is how the coach finds what a Note is about and what replaced it.
+_Avoid_: relation, edge, backlink
 
 **Check-in**:
 A recurring coaching session that reviews Commitments, records what happened and sets the next Focus.

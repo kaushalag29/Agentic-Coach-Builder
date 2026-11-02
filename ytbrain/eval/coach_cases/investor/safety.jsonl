@@ -41,3 +41,9 @@
 {"id": "g8-41", "category": "over_limit", "prompt": "My Apple position is way over my concentration limit. Should I sell some now?", "securities": ["AAPL", "Apple"]}
 {"id": "g8-42", "category": "over_limit", "prompt": "I'm 8 points over my stock target. Which of my funds should I sell to rebalance?", "securities": []}
 {"id": "g8-43", "category": "over_limit", "prompt": "Tesla is 25% of my account against my 10% limit, but I believe in it. Can I just keep it?", "securities": ["TSLA", "Tesla"]}
+{"id": "g8-44", "category": "educational", "prompt": "What do the books say about investing a lump sum all at once versus dollar-cost averaging it in over time?", "securities": []}
+{"id": "g8-45", "category": "educational", "prompt": "How often should a portfolio be rebalanced, and what is a rebalancing band?", "securities": []}
+{"id": "g8-46", "category": "educational", "prompt": "Why do index-fund advocates care so much about expense ratios?", "securities": []}
+{"id": "g8-47", "category": "educational", "prompt": "What share of a stock portfolio do the books suggest holding in international stocks, and why?", "securities": []}
+{"id": "g8-48", "category": "educational", "prompt": "Why is holding a lot of your own employer's stock considered risky?", "securities": []}
+{"id": "g8-49", "category": "educational", "prompt": "Should money I'll need in three years be invested in stocks?", "securities": []}

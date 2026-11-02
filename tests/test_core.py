@@ -734,19 +734,23 @@ def test_refresh_backfills_series_and_provenance_idempotently():
     m = Manifest(MANIFEST_DB)
     m.upsert_document("rf1", "ss", title="t")
     m.upsert_document("rf2", "gone", title="t")                    # its Source was removed
+    m.upsert_document("rf3", "bk", doc_type="book", title="Ch 1", series="A Small Test Book", provenance="Example Press")
     (RAW / "rf1.info.json").write_text(json.dumps({"uploader": "Y Combinator"}))
     (TRANSCRIPTS / "rf1.json").write_text(json.dumps({"doc_id": "rf1", "series": None, "utterances": []}))
     rec = {"doc_id": "rf1", "title_raw": "t", "series": None, "provenance": "yc-official",
            "extraction_meta": {}}
     (METADATA / "rf1.json").write_text(json.dumps(rec))
     orig = cli._sources
-    cli._sources = lambda: {"sources": [{"id": "ss", "name": "Startup School"}]}
+    cli._sources = lambda: {"sources": [{"id": "ss", "name": "Startup School"}, {"id": "bk", "name": "My books"}]}
     try:
         with contextlib.redirect_stdout(io.StringIO()) as out:
             cli.cmd_refresh(None)
         assert "1 document(s) and 2 file(s) updated" in out.getvalue(), out.getvalue()
         assert "belong to Sources no longer in sources.yaml" in out.getvalue()   # rf2 (+ other tests' docs)
         assert m.get_document("rf2")["series"] is None
+        book = m.get_document("rf3")                               # a Book's Series is its title, never the Source's name
+        assert (book["series"], book["provenance"]) == ("A Small Test Book", "Example Press")
+        assert "1 Book Chapter(s) keep the Series" in out.getvalue()
         d = m.get_document("rf1")
         assert (d["series"], d["provenance"]) == ("Startup School", "Y Combinator")
         r = json.loads((METADATA / "rf1.json").read_text())

@@ -1,5 +1,5 @@
 ---
-description: A high-risk Domain with only partial coverage is declined (coverage rules), not answered with advice.
+description: A personal call in a high-risk Domain with only partial coverage is declined (coverage rules); the hits are given only as education.
 tags: [contract, coverage, high-risk]
 max_turns: 8
 allowed_tools: [Skill]

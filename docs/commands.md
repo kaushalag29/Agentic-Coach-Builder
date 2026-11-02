@@ -28,7 +28,7 @@ Every command is resumable: Ctrl+C keeps finished work, and re-running continues
 | `eval rescore` | Score a saved run again against the current labels, without searching (seconds); only the questions the run was asked | `--config`, `--set`, `--compare`, `--save-baseline`, `--refresh-baseline`, `--run FILE --as NAME` |
 | `eval status` | Progress and LLM spend per split | |
 | `pages` | Re-render all markdown pages from the JSON records | |
-| `refresh` | Re-apply Series and provenance from `sources.yaml` and yt-dlp metadata to documents, records and pages (no network, no LLM) | |
+| `refresh` | Re-apply Series and provenance from `sources.yaml` and yt-dlp metadata to documents, records and pages (no network, no LLM); a Book keeps its own title and publisher | |
 | `run` | sync → clean → extract → verify → index: the scheduled job (launchd), ingest only; `ops ingest` runs the same steps with checkpoints, and `ops` adds eval and plugin | `--limit` (per playlist for sync, per Step after), `--workers`, `--device`, `--force`, `--reconcile`, `--source ID`, `--type website\|youtube\|book` |
 | `report` | Acceptance numbers + last three runs | |
 | `sample` | Stratified review sheet in `data/reports/` | `--n`, `--seed`, `--doc PREFIX` |
@@ -82,8 +82,12 @@ ytbrain tag                           # apply (ops runs `tag --gated`: every run
 ytbrain domains why <doc>             # where a Document's Domains came from
 ytbrain domains review                # high-tier tags awaiting your yes (--accept SOURCE:DOMAIN)
 ytbrain domains propose               # content no Domain fits, grouped, checked against the list
+ytbrain coach new <id> --person Engineer --project-noun system --domains coding --field "system=the system, in one line" [--modules goals,decisions,notes] [--owned] [--like coding]   # draft a Pack and its ask, coach and setup skills from templates (no model; never overwrites)
 ytbrain gaps [--pack P] [--days 30] [--json]  # what the dogfooded coaches could not answer well (their usage logs)
+ytbrain gaps --replay [--pack P]              # those weak questions searched again against each installed pack: level then and now
+ytbrain gaps --pack P --replay-pack DIR       # ... against a pack built but not installed yet
 ytbrain eval run --config pack-oracle-domains|pack-oracle-topic --compare pack-no-rerank   # a perfect hard filter vs the whole Library
+ytbrain eval run --config pack-keywords --compare pack-no-rerank   # what keyword-style searches cost against whole questions
 ytbrain upgrade --dry-run             # records a new extraction would make differently: how many, at what cost
                                       #   (coding and system-design chapters move to the subject-neutral prompt)
 ytbrain eval parity                   # the neutral prompt vs the startup one on ~30 startup talks (shadow, ~$0.10)
@@ -163,7 +167,8 @@ founder-coach export [--out DIR]
 founder-coach restore --list ; founder-coach restore            # put back the newest good backup
 founder-coach forget [--confirm "<company>"] [--no-backup]
 founder-coach forget --all [--confirm "forget all"]   # every Project and the Common profile
-founder-coach projects                            # list (* = the one the CLI and the hook use)
+founder-coach projects                            # list (* = the last one used, the CLI default after the work folder)
+founder-coach projects link acme [DIR] ; founder-coach projects unlink acme [DIR]   # the work folder chooses the Project (default: this folder)
 investor-coach holdings import positions.csv [--account NAME] [--as-of YYYY-MM-DD]   # the investor Pack only
 investor-coach holdings label VTI=us_equity BND=bonds ; investor-coach holdings ; investor-coach holdings review
 founder-coach projects create "Kitebook" ; founder-coach projects rename kitebook "Kitebook Inc" ; founder-coach projects use acme

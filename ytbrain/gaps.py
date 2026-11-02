@@ -1,11 +1,17 @@
 """`ytbrain gaps`: what the dogfooded coaches could not answer well, from their local usage logs.
 
-Every coach tool call leaves one row in the `usage` table of its Project's store
-(`~/.ytbrain/<pack>/projects/<id>/founder.db`; docs/usage-log.md). This reads those tables and nothing else:
+Every coach tool call leaves one row in the `usage` table of its Project's store, stamped with the coach that made it
+(`~/.ytbrain/projects/<id>/founder.db`, shared by the coaches: ADR-0019; docs/usage-log.md). A store a coach still keeps in
+the layout before that (`~/.ytbrain/<pack>/projects/<id>/`) is read too, until the move has copied it. This reads the
+usage tables and nothing else:
 no goals, decisions or profile, and it never opens a store through the coach's own code (no migration, no
 backup, no write). A search is rated `strong`, `partial` or `none` (its coverage); the report counts them per
 coach and Domain, shows where the border between strong and partial sits in similarity, and, when the question
 text was recorded (`<PREFIX>USAGE_TEXT=1`, your own machine only), lists the questions behind the weak ones.
+
+A search's level is fixed when it ran. `--replay` searches those weak questions again, the way the coach's server
+does, against the Knowledge pack each coach has installed now, and shows each one's level then and now: whether
+new Sources or a new build closed the gap. It logs nothing and writes nothing.
 """
 from __future__ import annotations
 
@@ -16,6 +22,7 @@ import sqlite3
 import statistics
 import tempfile
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +43,7 @@ class Project:
     project_id: str
     name: str
     db: Path
+    shared: bool = False          # a store in the shared Projects folder: its rows say which coach made each
     rows: list[dict] = field(default_factory=list)
     note: str = ""                # why it has no rows (no usage table, unreadable)
 
@@ -58,28 +66,46 @@ def env_prefix(home: Path, pack: str) -> str:
 
 
 def discover(home: Path | None = None, pack: str | None = None) -> list[Project]:
-    """Every Project store under the engine home: `<home>/<pack>/projects/<id>/founder.db`."""
+    """Every Project store under the engine home: `<home>/projects/<id>/founder.db` (one for all coaches), and the
+    per-coach `<home>/<pack>/projects/<id>/founder.db` of the layout before ADR-0019 that the move has not copied (a
+    moved one is skipped: its rows are in the shared store). `pack` keeps one coach's own legacy stores here; the shared
+    stores are split by coach, and filtered, in `load`."""
     home = home or engine_home()
     out: list[Project] = []
     if not home.is_dir():
         return out
-    for pdir in sorted(p for p in home.iterdir() if (p / "projects").is_dir()):
+    moved: set[str] = set()
+    shared = home / "projects"
+    if shared.is_dir():
+        for d in sorted(x for x in shared.iterdir() if not x.name.startswith(".") and (x / DB_NAME).is_file()):
+            meta = _meta(d)
+            if isinstance(meta.get("migrated_from"), str):
+                moved.add(meta["migrated_from"])
+            out.append(Project(pack="", project_id=d.name, name=str(meta.get("name") or d.name), db=d / DB_NAME,
+                               shared=True))
+    for pdir in sorted(p for p in home.iterdir() if p.name != "projects" and (p / "projects").is_dir()):
         if pack and pdir.name != pack:
             continue
         for d in sorted(x for x in (pdir / "projects").iterdir() if (x / DB_NAME).is_file()):
-            name = d.name
-            try:
-                name = json.loads((d / "project.json").read_text()).get("name") or d.name
-            except (OSError, ValueError):
-                pass
-            out.append(Project(pack=pdir.name, project_id=d.name, name=str(name), db=d / DB_NAME))
+            if f"{pdir.name}/{d.name}" in moved:
+                continue
+            out.append(Project(pack=pdir.name, project_id=d.name, name=str(_meta(d).get("name") or d.name),
+                               db=d / DB_NAME))
     return out
 
 
+def _meta(folder: Path) -> dict:
+    try:
+        data = json.loads((folder / "project.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _read_usage(db: Path) -> tuple[list[dict], str]:
-    """The usage rows of one store. The store is in WAL mode and a running coach keeps its newest rows in the
-    -wal file, so the file and its -wal are copied to a temporary folder and read there: the original is never
-    opened, so nothing (not even a -shm file) appears next to it."""
+    """The usage rows of one store (each with its `coach`, '' when the store predates the stamp). The store is in WAL
+    mode and a running coach keeps its newest rows in the -wal file, so the file and its -wal are copied to a temporary
+    folder and read there: the original is never opened, so nothing (not even a -shm file) appears next to it."""
     tmp = tempfile.mkdtemp(prefix="ytbrain-gaps-")
     try:
         for suffix in ("", "-wal"):
@@ -89,8 +115,10 @@ def _read_usage(db: Path) -> tuple[list[dict], str]:
         c = sqlite3.connect(Path(tmp) / DB_NAME, timeout=1)
         try:
             c.row_factory = sqlite3.Row
-            rows = [dict(r) for r in c.execute("SELECT at, run, tool, outcome, duration_ms, version, detail "
-                                               "FROM usage ORDER BY at, id")]
+            stamped = any(r[1] == "coach" for r in c.execute("PRAGMA table_info(usage)"))
+            who = "coach" if stamped else "'' AS coach"
+            rows = [dict(r) for r in c.execute(
+                f"SELECT {who}, at, run, tool, outcome, duration_ms, version, detail FROM usage ORDER BY at, id")]
             return rows, ""
         finally:
             c.close()
@@ -106,19 +134,34 @@ def _read_usage(db: Path) -> tuple[list[dict], str]:
 
 def load(home: Path | None = None, pack: str | None = None, days: int | None = 30,
          now: dt.datetime | None = None) -> list[Project]:
-    projects = discover(home, pack)
     cutoff = None
     if days is not None:
         cutoff = ((now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(days=days)).isoformat(timespec="seconds")
-    for p in projects:
+    out: list[Project] = []
+    for p in discover(home, pack):
         rows, p.note = _read_usage(p.db)
         for r in rows:
             try:
                 r["detail"] = json.loads(r.get("detail") or "{}")
             except ValueError:
                 r["detail"] = {}
-        p.rows = [r for r in rows if cutoff is None or r["at"] >= cutoff]
-    return projects
+        if not p.shared:
+            for r in rows:
+                r.pop("coach", None)                  # the folder says which coach it is
+            p.rows = [r for r in rows if cutoff is None or r["at"] >= cutoff]
+            out.append(p)
+            continue
+        by_coach: dict[str, list[dict]] = {}          # a shared store holds every coach's rows: one entry per coach
+        for r in rows:
+            by_coach.setdefault(r.pop("coach") or "unknown", []).append(r)
+        if not by_coach and p.note and not pack:
+            out.append(p)
+        for coach, mine in sorted(by_coach.items()):
+            if pack and coach != pack:
+                continue
+            out.append(Project(pack=coach, project_id=p.project_id, name=p.name, db=p.db, shared=True, note=p.note,
+                               rows=[r for r in mine if cutoff is None or r["at"] >= cutoff]))
+    return out
 
 
 def level_of(row: dict) -> str:
@@ -142,14 +185,8 @@ class HitDomains:
 
     @classmethod
     def for_pack(cls, home: Path, pack: str) -> "HitDomains":
-        try:
-            for f in (home / "installed").glob("*.json"):
-                d = json.loads(f.read_text())
-                if d.get("pack") == pack and d.get("pack_path"):
-                    return cls(Path(d["pack_path"]) / "knowledge.sqlite")
-        except (OSError, ValueError):
-            pass
-        return cls(None)
+        path = installed_pack(home, pack)
+        return cls(path / "knowledge.sqlite" if path else None)
 
     def domains(self, item_ids: list[str]) -> list[list[str]]:
         want = [i for i in item_ids if i not in self._cache]
@@ -165,6 +202,19 @@ class HitDomains:
             except (sqlite3.Error, ValueError):
                 self.path = None                     # unreadable: stop trying, the report says how many were unknown
         return [self._cache[i] for i in item_ids if i in self._cache]
+
+
+def installed_pack(home: Path, pack: str) -> Path | None:
+    """The Knowledge pack folder the coach of this Pack folder registered under <home>/installed/ (what it searches
+    now), or None."""
+    try:
+        for f in (home / "installed").glob("*.json"):
+            d = json.loads(f.read_text())
+            if d.get("pack") == pack and d.get("pack_path"):
+                return Path(d["pack_path"])
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def domain_levels(row: dict, hits: HitDomains | None = None) -> dict[str, str]:
@@ -253,6 +303,8 @@ def summarize(p: Project, questions: int = 15, hits: HitDomains | None = None) -
                  "rounds_max": max(rounds, default=None), "at_guard": sum(n >= SEARCH_GUARD for n in per_ask)},
         "explicit_domains": {"n": sum(x == "explicit" for x in routed), "of": len(routed)},
         "errors": sum(r["outcome"] == "error" for r in p.rows),
+        "error_list": [{"at": r["at"][:19], "tool": r["tool"], "error": str(r["detail"].get("error") or "")}
+                       for r in reversed(p.rows) if r["outcome"] == "error"][:questions],
         "searches_with_text": len(with_text),
         "weak_questions": [{"at": r["at"][:19], "level": level_of(r), "top_similarity": r["detail"].get("top_similarity"),
                             "domains": sorted(domain_levels(r, hits)) or r["detail"].get("domains_searched") or [],
@@ -309,7 +361,9 @@ def render(rep: dict, home: Path | None = None) -> str:
             for dom, c in s["domains"].items():
                 lines.append(f"    {dom:14} {c['strong']:3} / {c['partial']:3} / {c['none']:3}")
         if s["errors"]:
-            lines.append(f"  {s['errors']} tool error(s): `founder-coach usage summary` lists them")
+            lines.append(f"  {s['errors']} tool error(s), newest first (values typed in are shown as '…'):")
+            for e in s.get("error_list") or []:
+                lines.append(f"    {e['at']} {e['tool']}: {e['error'] or '(no message)'}")
         weak = lv["partial"] + lv["none"] + lv["empty"]
         if weak and not s["searches_with_text"]:
             lines.append(f"  {weak} weak search(es) but no question text was recorded, so what was missing is unknown. "
@@ -320,5 +374,111 @@ def render(rep: dict, home: Path | None = None) -> str:
             for q in s["weak_questions"]:
                 sim_s = "" if q["top_similarity"] is None else f" sim {q['top_similarity']}"
                 lines.append(f"    {q['at']} {q['level']:7}{sim_s} [{', '.join(q['domains'])}] {q['query']}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# ------------------------------------------------------------------------------------------ --replay
+RANK = {"empty": 0, "none": 1, "partial": 2, "strong": 3}
+# (store, embed, reranker) for one Pack folder's coach, or an exception saying why there is none
+Loader = Callable[[str], tuple]
+
+
+def weak_asks(p: Project) -> list[dict]:
+    """The weak searches of one Project whose question text was recorded, newest first, one per distinct search
+    (same text, Domains named and Stage)."""
+    seen, out = set(), []
+    for r in reversed([r for r in p.rows if r["tool"] == "coach_search"]):
+        d = r["detail"]
+        q = str(d.get("query") or "").strip()
+        if not q or level_of(r) not in ("partial", "none", "empty"):
+            continue
+        named = sorted(d.get("domains_searched") or []) if d.get("routing") == "explicit" else []
+        key = (q.lower(), tuple(named), d.get("stage"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"at": r["at"][:19], "query": q, "domains": named, "stage": d.get("stage"),
+                    "top_k": d.get("top_k") or 10, "level": level_of(r), "top_similarity": d.get("top_similarity")})
+    return out
+
+
+def search_now(store, embed, reranker, ask: dict) -> dict:
+    """One search exactly as the coach's server runs it (`founder_coach.search.search` and
+    `founder_coach.coverage.for_search`, routing and calibration from the pack's manifest): {level, top_similarity}."""
+    from founder_coach.coverage import Calibration, for_search
+    from founder_coach.search import search
+    meta = getattr(store, "meta", None) or {}
+    gap = meta.get("gap_similarity")
+    cal = Calibration.from_meta(meta, float(gap) if isinstance(gap, (int, float)) else None)
+    router = meta.get("router") or {}
+    route = {k: router[k] for k in ("margin", "max_domains", "top_n") if k in router} if router.get("enabled") else False
+    named = [d for d in ask["domains"] if d in set(meta.get("domains") or ())]
+    info: dict = {}
+    rows = search(store, embed, ask["query"], stage=ask.get("stage"), domains=named or None,
+                  route=route if not named else False, top_k=int(ask.get("top_k") or 10), reranker=reranker, info=info)
+    cov = for_search(rows, info, meta=meta, calibration=cal, domains=tuple(named), semantic=True)
+    sim = info.get("top_similarity")
+    return {"level": cov.level if rows else "empty", "top_similarity": None if sim is None else round(sim, 4)}
+
+
+def replay(projects: list[Project], load: Loader, questions: int = 15,
+           run: Callable[..., dict] = search_now) -> dict:
+    """Every Project's weak searches with recorded text, searched again against what its coach has installed now.
+    One pack per Pack folder, loaded once."""
+    loaded: dict[str, tuple] = {}
+    out = []
+    for p in projects:
+        asks = weak_asks(p)
+        entry = {"pack": p.pack, "project": p.name, "project_id": p.project_id, "asks": len(asks), "results": [],
+                 "note": p.note}
+        if not asks:
+            entry["note"] = entry["note"] or "no weak search with its question text recorded in this window"
+            out.append(entry)
+            continue
+        if p.pack not in loaded:
+            try:
+                loaded[p.pack] = ("ok", load(p.pack))
+            except Exception as e:                  # noqa: BLE001 -- one coach's missing pack must not stop the rest
+                loaded[p.pack] = ("error", f"{type(e).__name__}: {str(e)[:200]}")
+        state, got = loaded[p.pack]
+        if state == "error":
+            entry["note"] = f"cannot search its pack now: {got}"
+            out.append(entry)
+            continue
+        store, embed, reranker = got
+        entry["pack_built"] = (getattr(store, "meta", None) or {}).get("built_at")
+        for a in asks:
+            now = run(store, embed, reranker, a)
+            entry["results"].append({**a, "now": now["level"], "now_similarity": now["top_similarity"]})
+        res = entry["results"]
+        entry["now"] = {lv: sum(r["now"] == lv for r in res) for lv in ("strong", "partial", "none", "empty")}
+        entry["better"] = sum(RANK[r["now"]] > RANK[r["level"]] for r in res)
+        entry["worse"] = sum(RANK[r["now"]] < RANK[r["level"]] for r in res)
+        entry["shown"] = questions
+        out.append(entry)
+    return {"projects": out}
+
+
+def render_replay(rep: dict) -> str:
+    lines: list[str] = []
+    if not rep["projects"]:
+        return "gaps --replay: no coach Projects found\n"
+    for e in rep["projects"]:
+        lines.append(f"{e['pack']} coach · Project {e['project']} ({e['project_id']}) · weak searches replayed now")
+        if not e["results"]:
+            lines.append(f"  {e['note']}")
+            lines.append("")
+            continue
+        n, now = len(e["results"]), e["now"]
+        built = f" (pack built {e['pack_built'][:10]})" if e.get("pack_built") else ""
+        lines.append(f"  {n} weak search(es) against the installed pack{built}: now strong {now['strong']} · "
+                     f"partial {now['partial']} · none {now['none']} · empty {now['empty']}; "
+                     f"better {e['better']}, same {n - e['better'] - e['worse']}, worse {e['worse']}")
+        order = sorted(e["results"], key=lambda r: (RANK[r["level"]] - RANK[r["now"]], r["at"]), reverse=False)
+        for r in order[:e.get("shown", 15)]:
+            then = f"{r['level']}" + ("" if r["top_similarity"] is None else f" {r['top_similarity']}")
+            now_s = f"{r['now']}" + ("" if r["now_similarity"] is None else f" {r['now_similarity']}")
+            lines.append(f"    {r['at'][:10]} {then:>14} -> {now_s:<14} {r['query']}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

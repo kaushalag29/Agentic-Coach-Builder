@@ -5,7 +5,8 @@
 # the same subject: a folder, alias or proposal spelled any of these ways means this Domain. New Domains
 # come from `ytbrain domains propose` or `ytbrain domains add`, never by themselves.
 #
-#   risk_tier   low | medium | high: how bad a wrong answer is; high tiers answer only from strong evidence
+#   risk_tier   low | medium | high: how bad a wrong answer is; high tiers never advise a personal call, and below
+#               strong evidence they only educate from the hits, saying the evidence is partial
 #   freshness   evergreen | <days>: the half-life of a Document's relevance (markets decay, principles don't)
 #   web_policy  never | when_gap | always_latest: when the host may search the web beside the Library
 #   not_about   what the Domain is NOT about (read by the tie-break model and the host, never embedded:

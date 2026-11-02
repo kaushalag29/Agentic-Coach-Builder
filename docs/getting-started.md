@@ -320,7 +320,7 @@ by hand, `assemble_plugin.py --version`), remove the old plugin and upload the n
 
 - `/founder-coach:setup` is a short interview: company, customer, Stage, one Goal, Check-in day. The search models
   (about 0.2 GB, once) download in the background, so there is nothing to run; search uses keywords until they finish.
-  It saves to a Project named after the company, in `~/.ytbrain/founder/projects/<id>/` (`FOUNDER.md` is readable),
+  It saves to a Project named after the company, in `~/.ytbrain/projects/<id>/` (`FOUNDER.md` is readable),
   and nothing leaves the machine. A second company is a second Project (`/founder-coach:project`), with its own memory.
 - After that, just talk. `coach`, `ask`, `weekly-focus`, `check-in` and `project` load on their own for startup questions, plans
   and weekly reviews; a multi-part question is split and each part searched, with cited talks. Only `setup`, `status`,
