@@ -16,7 +16,9 @@ Follow the coaching contract of the coach skill, rules 5 and 6 above all.
 2. **Import, if a file was given.** `coach_holdings` action `import` with its path (and `account` or `as_of` if the tool asks for them). If it is refused, tell them exactly what it needs. Symbols it reports without an asset class: ask them for each, then save their answers with action `label`. Never guess a class.
 3. **Review.** `coach_review`. If `missing_policy` lists fields, say which and offer `/{{id}}:setup` for them; review what can be reviewed.
 4. **Report** with the template. Numbers exactly as the tool returned them, always with the "as of" date. A holding over their limit is stated with its amount over the limit; the action is theirs, and what their policy says about it is quoted.
-5. **Their decision.** If they decide something ("I'll rebalance by new contributions, not sales"), offer to save it as a Decision with `coach_record` kind `decision`, on a yes.
+5. **Their decision.** If they decide something ("I'll rebalance by new contributions, not sales"), offer to save it as a Decision with `coach_record` kind `decision`, on a yes. A rebalance they choose to make is a Decision too: what they will do, by which route (new contributions, sales) and by when, in their words.
+6. **Keep the review.** Offer one Note for the review itself, saved with `coach_record` kind `note` only on a yes: title "Review <as-of date>: <goal>", type `discussion` (or `insight` when the review changed how they see the portfolio), origin `coach`, a summary of a few sentences with the figures exactly as `coach_review` returned them (allocation, classes outside the band, the holding over the limit, what was not counted), what they said about it, and links to the goal and to the Decision from step 5 if one was saved. Set `revisit_on` to the as-of date plus their `review_days`, so the next review comes back as a Nudge. Never put a recommendation in the Note: it holds what was found and what the person decided.
+7. **Earlier reviews.** Before reporting drift, call `coach_recall` for earlier review Notes on this goal and add one line comparing with the last one ("outside the band last time too"), only from what the Note says.
 
 ## Template
 
@@ -31,11 +33,12 @@ Follow the coaching contract of the coach skill, rules 5 and 6 above all.
 **Over your <limit> % limit:** <holding>: <value>, <percent> %; <amount> over it. Or none.
 **Not counted:** unlabelled holdings (<percent> %), if any.
 **What your policy says:** the rebalancing rule and limit, quoted.
-This is not advice on any security.
+<`limits.warning`, only when you gave an opinion beyond the facts above>
 ```
 
 ## Gotchas
 
 - Never turn a number into an instruction: "VTI is 49 % of the goal" is a fact; "sell some VTI" is not yours to say.
 - `stale: true` means the holdings are older than their review interval: say so before any number.
+- A rebalance is the Investor's call: the facts and what their policy says are yours; "which fund to buy with new money" is an Opinion (rank by named criteria, with `limits.warning`), never a size or a timing call beyond their policy (`coach_split`).
 - Taxes on rebalancing (selling in a taxable account) are a tax professional's question: say so in one sentence if they ask.

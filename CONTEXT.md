@@ -252,6 +252,14 @@ _Avoid_: standup, retro, review meeting
 The one to three Commitments that matter most this week, each justified with Citations.
 _Avoid_: priorities list, plan
 
+**Limits**:
+What a Pack declares in `[limits]`: `never` (the part of a question the coach will not answer), `refer_to` (who the person goes to for it) and `warning` (the one line that ends an opinion). Everything else in a question gets the coach's best opinion (ADR-0021).
+_Avoid_: guardrails, refusals, disclaimer
+
+**Opinion**:
+A recommendation or ranking the coach gives from cited library knowledge and the person's own context, with the criteria it ranked by, what would change it and the Pack's warning. Candidates found on the web are cited "web, unverified".
+_Avoid_: advice (Advice is what a Document says), pick
+
 **Nudge**:
 A reminder the coach surfaces when something is due, such as an overdue Check-in, a Goal past its target date or a Founder profile fact that needs confirming. A Nudge asks; it never changes a record by itself.
 _Avoid_: notification, alert, ping

@@ -25,6 +25,12 @@ display_name = "Founder Coach"
 description = "An AI startup coach personalized to your company: cited advice from Y Combinator talks for your Stage, a weekly Focus of up to three Commitments, and Check-ins that remember what you decided. Runs locally; your data stays on this machine."
 keywords = ["startup", "founder", "ai-coach", "y-combinator", "fundraising", "angel-investors", "mcp", "claude-code-plugin"]
 
+# What this coach never does (declined alone), who makes that call, and the one line after an opinion or ranking.
+[limits]
+never = ["give legal, tax, immigration or securities-law advice on their specific case", "give medical advice"]
+refer_to = "a qualified lawyer, accountant or other professional"
+warning = "This is my opinion from the talks in my library and what you have told me, not a guarantee: test it against your own customers before you commit."
+
 [words]
 person = "Founder"
 project_noun = "company"            # what one Project is about, in skills shared by every Pack

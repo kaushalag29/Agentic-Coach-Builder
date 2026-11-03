@@ -3258,6 +3258,25 @@ def test_private_terms_block_a_push_and_are_skipped_without_a_list():
 
 
 
+def test_domains_stats_reports_per_source_how_many_items_are_tagged_from_content_alone():
+    """Phase 4: read-only per-Domain/Source report; `unhinted` counts items whose Document's configured Domains
+    do not name the Domain (where a Domain's mis-tags come from)."""
+    from ytbrain import tagging as T
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        with db.db:
+            db.db.executemany("INSERT INTO doc_tags VALUES (?,?,?,?,?,?,?)", [
+                ("d1", "eng-talks", '["coding"]', "[]", "hint", "{}", '["coding"]'),
+                ("d2", "yc-talks", '["coding", "gtm"]', "[]", "embedding", "{}", '["gtm"]')])
+            db.db.executemany("INSERT INTO item_tags VALUES (?,?,?,?,?,?)", [
+                ("i1", "d1", '["coding"]', "[]", "embedding", "{}"), ("i2", "d1", '["coding"]', "[]", "embedding", "{}"),
+                ("i3", "d2", '["coding", "gtm"]', "[]", "embedding", "{}"), ("i4", "d2", '["gtm"]', "[]", "embedding", "{}")])
+        st = T.domain_stats(db)
+    assert st["coding"]["items"] == 3 and st["coding"]["unhinted"] == 1 and len(st["coding"]["docs"]) == 2
+    assert st["coding"]["sources"]["yc-talks"]["unhinted"] == 1 and st["coding"]["sources"]["eng-talks"]["unhinted"] == 0
+    assert st["gtm"]["unhinted"] == 0
+
+
 def test_the_unplaced_marker_is_reserved_and_no_pack_can_serve_it():
     from founder_coach.search import UNPLACED
     from ytbrain import domains as D

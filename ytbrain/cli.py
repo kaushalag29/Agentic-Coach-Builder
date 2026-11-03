@@ -1874,6 +1874,23 @@ def _domains_tagging(args, reg) -> int:
             print(f"  {it['item_id'][:40]:40} {','.join(json.loads(it['domains'])):24} {it['origin']:10} "
                   + " ".join(f"{d}={v:.2f}" for d, v in sc.items()))
         return 0
+    if args.domains_cmd == "stats":
+        stats = T.domain_stats(db)
+        want = [args.domain] if args.domain else sorted(stats, key=lambda d: -stats[d]["items"])
+        if args.domain and args.domain not in stats:
+            print(f"domains stats: no item is tagged `{args.domain}` in the last run", file=sys.stderr)
+            return 1
+        print(f"domains stats: the last tag run ({db.meta('tagged_at') or 'unknown time'}), read-only. `unhinted` = items in "
+              f"a Document whose configured Domains do not name this one (tagged from the content alone)")
+        for d in want:
+            e = stats[d]
+            share = e["unhinted"] / e["items"] if e["items"] else 0
+            print(f"\n{d}: {e['items']} item(s) in {len(e['docs'])} Document(s), {e['unhinted']} unhinted ({share:.0%})")
+            rows = sorted(e["sources"].items(), key=lambda x: (-x[1]["unhinted"], -x[1]["items"]))[: args.top]
+            for sid, v in rows:
+                print(f"    {sid[:40]:40} {v['items']:6} item(s) {len(v['docs']):5} Doc(s)  unhinted {v['unhinted']:6} "
+                      f"({v['unhinted'] / v['items']:.0%})")
+        return 0
     if args.domains_cmd == "review":
         if args.accept or args.reject:
             for verb, specs in (("confirmed", args.accept or []), ("rejected", args.reject or [])):
@@ -2041,7 +2058,7 @@ def cmd_domains(args) -> int:
     choice with a required risk tier; a books folder only becomes a Domain this way (decision #23)."""
     from . import domains as D
     try:
-        if args.domains_cmd in ("why", "review", "propose", "sample", "alias"):
+        if args.domains_cmd in ("why", "review", "propose", "sample", "alias", "stats"):
             return _domains_tagging(args, D.load())
         if args.domains_cmd == "add":
             reg = D.add_domain(args.name, risk_tier=args.risk, description=args.description,
@@ -3598,6 +3615,9 @@ def main(argv=None) -> int:
                     help="confirm a group (repeatable); doc:DOC_ID:DOMAIN for one Document")
     dr.add_argument("--reject", action="append", metavar="SOURCE:DOMAIN",
                     help="never suggest this Domain there again (repeatable); doc:DOC_ID:DOMAIN for one Document")
+    dt = dsub.add_parser("stats", help="items and Documents per Domain and Source from the last tag run, with how many are tagged from content alone (read-only)")
+    dt.add_argument("--domain", help="only this Domain (default: all, largest first)")
+    dt.add_argument("--top", type=int, default=10, help="Sources to list per Domain, most unhinted first (default 10)")
     dp = dsub.add_parser("propose", help="group content no Domain fits and propose Domains, after the duplicate checks")
     dp.add_argument("--min-size", type=int, default=15, help="smallest group worth a Domain (default 15 items)")
     ds = dsub.add_parser("sample", help="labelling sheets for `ytbrain eval tags` (items and Documents)")

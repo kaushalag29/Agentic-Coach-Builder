@@ -50,6 +50,7 @@ class Pack:
     required: tuple[str, ...] = ()           # the profile fields setup must fill before the coach stops offering it
     runtime: dict = field(default_factory=dict)   # [runtime]: instructions, setup_nudge, coach_name, replace
     owned: tuple[str, ...] = ()              # kept private to this coach in a shared Project (ADR-0019): "*", or modules and fields
+    limits: dict = field(default_factory=dict)   # [limits]: what this coach never does, who to refer to, its standing warning
 
     @property
     def product_id(self) -> str:
@@ -125,6 +126,26 @@ def _runtime(raw, where: str) -> dict:
     return raw
 
 
+def _limits(raw, where: str) -> dict:
+    """[limits]: `never` (what the coach declines, each a short phrase: only that part of a question is declined),
+    `refer_to` (who makes that call) and `warning` (the one line after an opinion, ranking or recommendation). The
+    runtime puts them in coach_get_context so the skills read one source."""
+    raw = dict(raw or {})
+    if extra := set(raw) - {"never", "refer_to", "warning"}:
+        raise PackError(f"{where}: [limits] has unknown key(s) {', '.join(sorted(extra))}")
+    out: dict = {}
+    if "never" in raw:
+        out["never"] = list(_strs(raw["never"], f"{where}: [limits] never"))
+    for k in ("refer_to", "warning"):
+        if k in raw:
+            if not isinstance(raw[k], str) or not raw[k].strip():
+                raise PackError(f"{where}: [limits] {k} must be text")
+            out[k] = " ".join(raw[k].split())
+    if out.get("never") and "refer_to" not in out:
+        raise PackError(f"{where}: [limits] never needs refer_to: the sentence that declines names who makes that call")
+    return out
+
+
 def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, check_skills: bool = True) -> Pack:
     """packs/<id>/pack.toml checked: unknown modules, builds, skills without a source or Domains not in
     domains.yaml (when `known_domains` is given) are errors, never shipped."""
@@ -175,8 +196,9 @@ def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, che
     runtime = _runtime(data.get("runtime"), where)
     if bad := [o for o in owned if o != "*" and o not in (*MODULES, "profile", *names)]:
         raise PackError(f"{where}: owned names a module or profile field, or is \"*\"; not {', '.join(bad)}")
+    limits = _limits(data.get("limits"), where)
     pack = Pack(pack_id, domains, modules, skills, prompts, builds, prod, words, pdir, common, profile, required,
-                runtime, owned)
+                runtime, owned, limits)
     if check_skills and (gone := [s for s in skills if not pack.skill_file(s, root).exists()]):
         raise PackError(f"{where}: no source for skill(s) {', '.join(gone)} (packs/{pack_id}/skills/<name>/SKILL.md "
                         f"or plugin/skills/<name>/SKILL.md)")
@@ -199,4 +221,6 @@ def runtime_config(pack: Pack) -> dict:
         out["required"] = list(pack.required)
     if pack.runtime:
         out["runtime"] = dict(pack.runtime)
+    if pack.limits:
+        out["limits"] = {k: list(v) if isinstance(v, list) else v for k, v in pack.limits.items()}
     return out

@@ -59,6 +59,7 @@ only as education, from the hits, saying the evidence is partial).
 | `[product]` | the plugin's `id`, `display_name`, `description` and `keywords` |
 | `[words]` | what the person and a Project are called (`Engineer`, `system`) |
 | `[runtime]` | the coach's name, its setup nudge and its coaching contract (`instructions`) |
+| `[limits]` | what the coach never answers (`never`, needs `refer_to`) and the one-line `warning` that ends every opinion (ADR-0021); the coach declines only that part and ranks or recommends the rest |
 | `[runtime.replace]` | the shared runtime's wording, rewritten for this coach |
 | `[[profile]]` | each fact a Project remembers, with its description |
 

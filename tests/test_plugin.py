@@ -888,7 +888,7 @@ def test_the_coding_pack_builds_a_plugin_that_speaks_its_own_words():
     sys.path.insert(0, str(ROOT))
     from ytbrain import packs as PK
     coding = PK.load("coding", ROOT)
-    assert coding.product_id == "coding-coach" and coding.modules == ("goals", "decisions", "notes")
+    assert coding.product_id == "coding-coach" and coding.modules == ("goals", "commitments", "checkins", "decisions", "notes")
     assert coding.builds == ("private",) and set(coding.prompts) <= set(coding.skills)
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -908,16 +908,17 @@ def test_the_coding_pack_builds_a_plugin_that_speaks_its_own_words():
         assert "Coding coach" in own and "{{" not in own, "the Pack's own coach skill, rendered"
         for f in (out / "skills").rglob("SKILL.md"):
             text = f.read_text()
-            assert not re.search(r"\bFounder|founder coach|Stage\b|Check-in|Commitment", text.split("---", 2)[2]), \
-                (f.parent.name, re.findall(r".{40}(?:Founder|Stage|Check-in|Commitment).{20}", text)[:3])
+            assert not re.search(r"\bFounder|founder coach|Stage\b|\bYC\b", text.split("---", 2)[2]), \
+                (f.parent.name, re.findall(r".{40}(?:Founder|Stage|YC).{20}", text)[:3])
         got = _dump_runtime(out, tmp / "home")
         blob = json.dumps(got["tools"]) + got["instructions"] + got["hook"]
-        for word in ("Founder", "YC talk", "Commitment", "Check-in", "company", "commitments"):
+        for word in ("Founder", "YC talk", "company"):
             assert word not in blob, (word, re.findall(".{60}" + word + ".{30}", blob)[:2])
-        assert got["prompts"] == ["ask", "setup", "design-review", "decision-record"]
+        # the weekly loop is an opt-in the coding Pack makes (Phase 3): its words are the shared record kinds'
+        assert got["prompts"] == ["ask", "weekly-focus", "check-in", "setup", "design-review", "decision-record"]
         assert got["required"] == ["system", "stack"] and "lifecycle" in got["fields"] and "stage" not in got["fields"]
         record = next(x for x in got["tools"] if x["name"] == "coach_record")
-        assert sorted(record["input_schema"]["$defs"]) == ["DecisionIn", "GoalIn", "NoteIn", "NoteLinkIn"], \
+        assert sorted(record["input_schema"]["$defs"]) == ["CheckinIn", "CommitmentIn", "CommitmentsIn", "DecisionIn", "GoalIn", "NoteIn", "NoteLinkIn"], \
             "only the Pack's record kinds"
         assert got["hook"].startswith("Coding coach: No system profile yet")
         founder = _dump_runtime(ROOT, tmp / "home-founder")            # the shared runtime as written
@@ -1030,12 +1031,49 @@ def test_every_pack_searches_with_whole_questions_and_educates_below_strong_in_a
         assert "a string of keywords" in ask and "rewritten question" in ask, pack
     assert "never a string of keywords" in json.dumps(json.loads((ROOT / "tests/golden/coach_tools.json").read_text()))
     assert "anything below strong is declined" not in INSTRUCTIONS
-    assert "below strong, give only what the hits say, as education" in INSTRUCTIONS
-    assert "no trade, purchase, valuation, rate or allocation is ever advised" in INSTRUCTIONS
+    assert "below strong, give only what the hits say, attributed to their sources" in INSTRUCTIONS
+    assert "no trade, purchase, valuation, rate or allocation is ever advised" not in INSTRUCTIONS
     investor = (ROOT / "packs/investor/skills/coach/SKILL.md").read_text()
     assert "At `partial`, still answer the educational question" in investor and "decline as rule 4" not in investor
     assert "answer the educational question from the hits only" in (ROOT / "packs/investor/pack.toml").read_text()
-    assert "answer the general question as education" in (SKILLS / "coach" / "SKILL.md").read_text()
+    assert "answer from the hits only" in (SKILLS / "coach" / "SKILL.md").read_text() or \
+        "give your opinion from the hits" in (SKILLS / "coach" / "SKILL.md").read_text() or \
+        "still gets your opinion from the hits" in (SKILLS / "coach" / "SKILL.md").read_text()
+
+
+def test_every_pack_gives_an_opinion_when_asked_and_declines_only_its_declared_limits():
+    """2026-11-02 (dogfooding): the investor coach refused a request to find and rank candidates and the refusal
+    governed the whole conversation. A coach now answers with its best opinion, researches candidates on the web
+    without being asked, declines only `limits.never` (naming `limits.refer_to`) and ends with `limits.warning`; the
+    limits are declared in pack.toml and handed to the skills by coach_get_context."""
+    import tomllib
+    from founder_coach.server import INSTRUCTIONS
+    assert "give your best opinion" in INSTRUCTIONS and "limits.never" in INSTRUCTIONS and "limits.warning" in INSTRUCTIONS
+    for pack in ("founder", "coding", "investor"):
+        raw = tomllib.loads((ROOT / "packs" / pack / "pack.toml").read_text())
+        lim = raw["limits"]
+        assert lim["never"] and lim["refer_to"] and lim["warning"], pack
+        skill = (ROOT / ("plugin" if pack == "founder" else f"packs/{pack}") / "skills" / "coach" / "SKILL.md").read_text()
+        assert "## Opinions, rankings and research" in skill, pack
+        assert "never refuse because it is a recommendation" in skill or "never refuse because it is a recommendation" in \
+            skill.replace("\n", " "), pack
+        assert "limits.never" in skill and "limits.warning" in skill and "limits.refer_to" in skill, pack
+        assert "without being asked" in skill and "web, unverified" in skill, pack
+        if pack != "founder":
+            instr = raw["runtime"]["instructions"]
+            assert "give your best opinion" in instr and "limits.never" in instr, pack
+    investor = (ROOT / "packs/investor/skills/coach/SKILL.md").read_text() + (ROOT / "packs/investor/pack.toml").read_text()
+    assert "Never a security call" not in investor and "never pick, rate or time a security" not in investor
+    assert "price target" in investor and "market-timing" in investor, "the hard limits stay"
+
+def test_the_investor_review_is_kept_as_a_note_and_a_rebalance_as_a_decision():
+    """Phase 2: a periodic Review leaves a dated Note (no schema change), due again after `review_days`."""
+    text = (ROOT / "packs" / "investor" / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8")
+    assert "kind `note`" in text and "revisit_on" in text and "review_days" in text
+    assert "kind `decision`" in text and "coach_recall" in text
+    assert "only on a yes" in text, "saved on a yes, never by itself"
+    assert "Never put a recommendation in the Note" in text
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

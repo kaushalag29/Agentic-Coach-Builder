@@ -80,6 +80,7 @@ ytbrain eval tags --items domain-labels-items-<date>.csv --documents domain-labe
 ytbrain eval tags --items ... --documents ... --tune --save   # thresholds that pass on your labels
 ytbrain tag                           # apply (ops runs `tag --gated`: every run under the default auto policy, only after eval tags passed under reviewed)
 ytbrain domains why <doc>             # where a Document's Domains came from
+ytbrain domains stats [--domain coding]  # items/Documents per Domain and Source from the last tag run; which Sources are tagged by content alone (read-only)
 ytbrain domains review                # high-tier tags awaiting your yes (--accept SOURCE:DOMAIN)
 ytbrain domains propose               # content no Domain fits, grouped, checked against the list
 ytbrain coach new <id> --person Engineer --project-noun system --domains coding --field "system=the system, in one line" [--modules goals,decisions,notes] [--owned] [--like coding]   # draft a Pack and its ask, coach and setup skills from templates (no model; never overwrites)

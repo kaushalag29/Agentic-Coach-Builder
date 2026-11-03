@@ -672,6 +672,20 @@
       "description": "the Domains the knowledge pack covers (name, items, what it is about); present only when there are several",
       "title": "Library"
      },
+     "limits": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "this coach's hard limits: `never` (decline only that part of a question, in one plain sentence naming `refer_to`) and `warning` (one line after an opinion, ranking or recommendation). Everything else may be answered, ranked or recommended",
+      "title": "Limits"
+     },
      "notes_total": {
       "anyOf": [
        {

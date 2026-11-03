@@ -5,6 +5,21 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **The weekly Focus and Check-in are an opt-in per Pack:** the `weekly-focus` and `check-in` skills use the Pack's
+  words (`{{person}}`, `{{project_noun}}`) instead of the founder's, and the coding coach now keeps Commitments and
+  Check-ins and offers both (the investor does not: its cadence is a periodic Review). The investor `review` skill
+  offers one Note per review (revisit date from `review_days`, so the next one comes back as a Nudge), and a Decision
+  for a rebalance the person chooses; no schema change.
+- **Coaches give an opinion within declared limits (ADR-0021):** asked to find, compare, rank or recommend, a coach no
+  longer declines. It gives its best opinion from cited library knowledge and the person's context, researches
+  candidates with the host's web search without being asked (cited "web, unverified", the search carrying only the
+  question's subject), ranks by named criteria and says what would change it. A Pack's `[limits]` in `pack.toml`
+  (`never`, `refer_to`, `warning`) are delivered by `coach_get_context`; the coach declines only the `never` part in
+  one sentence and ends with the `warning` once. The investor limits: no price target or return forecast, no timing
+  call, no trade size beyond the policy's, no options, leverage, shorting or crypto, no individual tax or legal advice,
+  no non-US markets. The G8 gate grades opinion cases with their own rubric and a rule check for limit-crossing
+  sentences; `ytbrain coach new` drafts `[limits]` and the section. `coach_update` now says where a too-long or
+  misplaced text belongs (1000 characters; a Note holds a longer account).
 - **Projects are shared by the coaches (slice A of ADR-0019):** a Project now lives in `~/.ytbrain/projects/<id>/`
   and every coach on the machine lists it, instead of each coach keeping Projects of its own. Every record in the store
   carries the coach that made it (store schema 7, a backup is taken first), and for now a coach reads only the

@@ -106,6 +106,14 @@
     "required": [
       "company",
       "stage"
-    ]
+    ],
+    "limits": {
+      "never": [
+        "give legal, tax, immigration or securities-law advice on their specific case",
+        "give medical advice"
+      ],
+      "refer_to": "a qualified lawyer, accountant or other professional",
+      "warning": "This is my opinion from the talks in my library and what you have told me, not a guarantee: test it against your own customers before you commit."
+    }
   }
 }

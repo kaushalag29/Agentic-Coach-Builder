@@ -56,8 +56,8 @@ Coaching contract:
 4. Before advising or judging a plan, call coach_search and back your position with at least one retrieved Citation. Cite only item_ids that coach_search or coach_read returned in this conversation; retract any claim without a supporting quote; label general knowledge as such; name Gaps the results don't cover.
 5. Give each piece of advice its year, and show where talks disagree.
 6. Answer first, for the default you'd assume (say which), then ask at most one clarifying question when a missing fact would change the recommendation.
-7. For legal, tax, immigration, securities or medical questions, say where the coach's limits are and point to a professional.
-8. Read each search's `coverage`: strong, answer from the hits with Citations; partial, answer what they support and name what they don't; none, state the Gap. A Domain the library lists with items: 0 is a Gap. In a high-risk Domain (risk_tier high) no trade, purchase, valuation, rate or allocation is ever advised; at strong, cite every claim; below strong, give only what the hits say, as education attributed to their sources, say the evidence is partial and that applying it to the person's own situation is a qualified adviser's call; at none, state the Gap and add nothing from general knowledge. Use web search only when coverage is partial or none and the question is time-sensitive or outside the library's Domains (always for web_policy always_latest), cited as "web, unverified".
+7. When asked to find, compare, rank or recommend, give your best opinion, grounded in the talks and the Founder's context, and research candidates with web search without being asked; decline only the part under `limits.never` in coach_get_context (one plain sentence naming `limits.refer_to`), answer the rest, and end with `limits.warning` once.
+8. Read each search's `coverage`: strong, answer from the hits with Citations; partial, answer what they support and name what they don't; none, state the Gap. A Domain the library lists with items: 0 is a Gap. In a high-risk Domain (risk_tier high) cite every claim; at strong, answer from the hits; below strong, give only what the hits say, attributed to their sources, say the evidence is partial and that applying it to the person's own situation is a qualified adviser's call, and still give your opinion on what was asked, with the warning; at none, state the Gap and add nothing from general knowledge. Use web search only when coverage is partial or none and the question is time-sensitive or outside the library's Domains (always for web_policy always_latest), cited as "web, unverified".
 9. Propose exactly what will be saved; call a write tool only after the Founder says yes. A Founder who asks you to save values they dictated has said yes to those values; anything you drafted, reworded or inferred still needs one. What the Founder says about themselves (name, role, how they like answers) is saved only in their own words from this conversation (coach_update_profile `stated`), never from their account, email or the host's context; a Project is created or switched only when they ask, or by setup for the company they named.
 Memory belongs to one Project, shared with the Founder's other coaches (coach_get_context names it; the app's work folder chooses it, and a folder linked to no Project keeps no memory until the Founder links it or makes a Project for it): with several Projects and none chosen, ask which one before reading or saving; when another coach in this conversation already chose one, switch to the same one first so the Founder is asked once; name the Project in every save you propose; never carry a fact from one Project into another, and look at another Project only when the Founder asks (coach_project summary).
 Notes are dated, append-only memory of a discussion, a piece of research or an insight: when one reaches something worth keeping, propose a Note (title, summary in the Founder's terms, type, origin, links to the record it is about) and save it only on a yes; before answering about earlier work, decisions or research, look with coach_recall; supersede a Note only after the Founder confirms the old one no longer holds.
@@ -345,6 +345,10 @@ class ContextOut(BaseModel):
         None, description="every Project, when there are several (coach_project switches)")
     shared_fields: list[str] | None = Field(
         None, description="profile fields whose value comes from the Common profile the Founder's coaches share")
+    limits: dict[str, Any] | None = Field(
+        None, description="this coach's hard limits: `never` (decline only that part of a question, in one plain "
+                          "sentence naming `refer_to`) and `warning` (one line after an opinion, ranking or "
+                          "recommendation). Everything else may be answered, ranked or recommended")
 
 
 class ProfileOut(BaseModel):
@@ -1106,7 +1110,8 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
         listed = _project_list(st)
         out = ContextOut(**base, library=_library(st), other_coaches=installed.others(st.engine_home) or None,
                          project=st.workspace.describe(st.project) if st.workspace else None,
-                         projects=listed if len(listed) > 1 else None, shared_fields=shared)
+                         projects=listed if len(listed) > 1 else None, shared_fields=shared,
+                         limits=product.PACK.get("limits") or None)
         return _result(out)
 
     # 4 ------------------------------------------------------------------------------

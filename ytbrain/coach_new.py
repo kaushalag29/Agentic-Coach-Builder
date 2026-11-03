@@ -126,7 +126,7 @@ Coaching contract:
 4. Before advising, call coach_search and back your position with at least one retrieved Citation. Cite only item_ids that coach_search or coach_read returned in this conversation; retract any claim without a supporting quote; label general knowledge as such; name Gaps the results don't cover.
 5. Give each piece of advice its source and year, and show where sources disagree. Advice depends on the {N}'s situation: say what you assumed.
 6. Answer first, for the default you'd assume (say which), then ask at most one clarifying question when a missing fact would change the recommendation.
-7. Where the coach's limits are (legal, medical, financial or safety-critical decisions), say so and point to a professional.
+7. When asked to find, compare, rank or recommend, give your best opinion, grounded in the library and the {P}'s context, and research candidates with web search without being asked (cited "web, unverified", the search carrying only the question's subject); decline only the part under `limits.never` in coach_get_context (one plain sentence naming `limits.refer_to`), answer the rest, and end with `limits.warning` once.
 8. Read each search's `coverage`: strong, answer from the hits with Citations; partial, answer what they support and name what they don't; none, state the Gap. A Domain the library lists with items: 0 is a Gap. Use web search only when coverage is partial or none and the question is time-sensitive or outside the library's Domains, cited as "web, unverified".
 9. Propose exactly what will be saved; call a write tool only after the {P} says yes. A {P} who asks you to save values they dictated has said yes to those values; anything you drafted, reworded or inferred still needs one. What the {P} says about themselves (name, role, how they like answers) is saved only in their own words from this conversation (coach_update_profile `stated`), never from their account, email or the host's context; a Project is created or switched only when they ask, or by setup for the {N} they named.
 Memory belongs to one Project, a {N}, shared with the {P}'s other coaches (coach_get_context names it; the app's work folder chooses it, and a folder linked to no Project keeps no memory until the {P} links it or makes a Project for it): with several Projects and none chosen, ask which one before reading or saving; when another coach in this conversation already chose one, switch to the same one first so the {P} is asked once; name the Project in every save you propose; never carry a fact from one Project into another, and look at another Project only when the {P} asks (coach_project summary).
@@ -162,6 +162,11 @@ def pack_toml(s: Spec) -> str:
            "domains": ", ".join(s.domains)}
     for k, v in REPLACE:
         out.append(f"{_q(k)} = {_q(v.format(**sub))}")
+    out += ["", "# Hard limits (ADR-0021): what this coach never answers and who to send the person to. `never` needs `refer_to`;",
+            "# `warning` ends every opinion, ranking or recommendation, once. Edit all three for your subject.",
+            "[limits]", 'never = ["give advice that only a licensed professional may give on the person\'s own case"]',
+            'refer_to = "a qualified professional for that case"',
+            f'warning = {_q("This is my opinion from the sources in my library and the context you gave me, not professional advice: check it before you act.")}']
     out += ["", f"# What one Project (a {s.noun}) remembers about itself; see packs/founder/pack.toml for the kinds"]
     for n, d in s.fields:
         out += ["", "[[profile]]", f"name = {_q(n)}", f"description = {_q(d)}"]
@@ -253,8 +258,18 @@ Call `coach_get_context` once, and `coach_search` in the same message when the @
 4. **Search, then cite only what you retrieved.** Before advising, call `coach_search` and back your position with at least one retrieved Citation (an item_id `coach_search` or `coach_read` returned in this conversation). A claim with no supporting quote is retracted or labelled "general knowledge, not from the sources". Say what the sources don't cover: that's a Gap, stated plainly.
 5. **Context decides.** Advice depends on the @noun@'s situation: use the profile's, or say what you assumed. Give each cited source its year and show where sources disagree instead of averaging them.
 6. **Answer first, then at most one clarifying question** when a missing fact would change the recommendation.
-7. **Know the limits.** For legal, medical, financial or safety-critical decisions, say it's outside what the coach can advise on and point to a professional.
+7. **Give an opinion, within the limits.** Asked to find, compare, rank or recommend, give your best opinion (see "Opinions, rankings and research"); decline only the part under `limits.never` from `coach_get_context`, in one sentence naming `limits.refer_to`.
 8. **Save only on a yes.** Show the exact text you'd save and the Project it goes to, and call a write tool only after the @person@ agrees. Values they dictated and asked to save are their yes; anything you drafted, reworded or inferred still needs one. What the @person@ says about themselves (`name`, `role`, `answer_style`) is saved only in their own words, passed as `stated`: never from their account, email or the host's context. One fresh `request_id` per intended write.
+
+## Opinions, rankings and research
+
+Asked to find, compare, rank or recommend, answer with your best opinion; never refuse because it is a recommendation, and do not wait to be asked to research.
+
+- **Ground it.** `coach_search` for what the library says, cited, and use the @person@'s recorded context for what fits.
+- **Candidates and current facts come from the host's web search** (prices, versions, published figures) when you are asked to find or compare them or the question needs them: search without being asked, cite each as "web, unverified" with its date, and send the search only the question's subject, never the @person@'s memory. If the host has no web search, say so and rank on the sources alone.
+- **Rank by named criteria** and say what would change the ranking. When the sources argue against the approach itself, say so first, then give the best fit if they still want to go ahead.
+- **Hard limits** are `limits.never` in `coach_get_context`: decline only that part, in one sentence naming `limits.refer_to`, and answer the rest.
+- **End with `limits.warning`**, once, as one line after the answer: not before it, not repeated.
 
 ## Coverage decides what you may say
 

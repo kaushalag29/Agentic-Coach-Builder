@@ -650,6 +650,8 @@ def test_read_context_writes_and_errors_through_mcp():
         assert r.is_error and "Pass an item_id" in r.content[0].text
         r = await c.call_tool("coach_get_context", {})
         assert r.structured_content["nudges"][0]["kind"] == "setup"
+        lim = r.structured_content["limits"]                      # the Pack's hard limits and its warning line
+        assert lim["never"] and lim["refer_to"] and lim["warning"], lim
         r = await c.call_tool("coach_update_profile", {"changes": {"stage": "rocket"}, "request_id": "p1"})
         assert r.is_error and "stage must be one of" in r.content[0].text
         r = await c.call_tool("coach_record", {"entry": {"kind": "goal", "text": "g", "citations": ["adv:fake:1"]},

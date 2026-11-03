@@ -245,6 +245,13 @@
       ],
       "positionals": []
      },
+     "stats": {
+      "options": [
+       "--domain",
+       "--top"
+      ],
+      "positionals": []
+     },
      "why": {
       "options": [
        "--items"

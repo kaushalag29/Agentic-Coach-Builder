@@ -278,6 +278,9 @@ class TagDB:
     def docs(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM doc_tags ORDER BY doc_id"))
 
+    def tagged_items(self) -> list[sqlite3.Row]:
+        return list(self.db.execute("SELECT doc_id, domains FROM item_tags"))
+
     def items_of(self, doc_id: str) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM item_tags WHERE doc_id=? ORDER BY item_id", (doc_id,)))
 
@@ -882,3 +885,25 @@ def read_labels(path: Path, key: str, reg) -> tuple[dict[str, set[str]], list[st
             if names:
                 out[row[key]] = names
     return out, bad
+
+
+def domain_stats(db: "TagDB") -> dict[str, dict]:
+    """Read-only report of the last tag run: per Domain, its items and Documents, and per Source how many of those
+    items sit in a Document whose configured hint (domains: on the Source, a Book's folder) does not name the
+    Domain, i.e. tags that come from the content alone. A Source with a high `unhinted` share is where a Domain's
+    mis-tags come from (a founder talk tagged `coding` for mentioning code)."""
+    docs = {r["doc_id"]: (r["source_id"] or "?", set(json.loads(r["hints"]))) for r in db.docs()}
+    out: dict[str, dict] = {}
+    for r in db.tagged_items():
+        source, hints = docs.get(r["doc_id"], ("?", set()))
+        for d in json.loads(r["domains"]):
+            e = out.setdefault(d, {"items": 0, "docs": set(), "unhinted": 0, "sources": {}})
+            src = e["sources"].setdefault(source, {"items": 0, "docs": set(), "unhinted": 0})
+            e["items"] += 1
+            src["items"] += 1
+            e["docs"].add(r["doc_id"])
+            src["docs"].add(r["doc_id"])
+            if d not in hints:
+                e["unhinted"] += 1
+                src["unhinted"] += 1
+    return out
