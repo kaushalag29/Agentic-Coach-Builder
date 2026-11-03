@@ -92,12 +92,27 @@ MODULE_TEXT: list[tuple[str, str, str]] = [
     ("commitments", "this week's and overdue Commitments, the last Check-in, recent Decisions,", "recent Decisions,"),
     ("commitments", "Close or correct a Goal, Commitment, Decision or Check-in.", "Close or correct a Goal or a Decision."),
     ("commitments", " Commitments: open/done/dropped/carried (carried opens a linked copy in the next week)", ""),
-    ("goals", "Record a Goal or a Decision", "Record a Decision"),
-    ("goals", "Warnings flag\nmore than 3 active Goals. ", ""),
-    ("goals", "active Goals,\nrecent Decisions,", "recent Decisions,"),
-    ("goals", "Close or correct a Goal or a Decision.", "Correct a Decision's text."),
-    ("goals", "Goals: active/met/dropped.", "Decisions have no status: leave it out."),
+    ("goals-commitments", "Record a Goal or a Decision", "Record a Decision"),
+    ("goals-commitments", "Warnings flag\nmore than 3 active Goals. ", ""),
+    ("goals-commitments", "active Goals,\nrecent Decisions,", "recent Decisions,"),
+    ("goals-commitments", "Close or correct a Goal or a Decision.", "Correct a Decision's text."),
+    ("goals-commitments", "Goals: active/met/dropped.", "Decisions have no status: leave it out."),
+    # a Pack that keeps Commitments (the recurring loop) but no Goals: the commitments rules above did not apply
+    ("goals+commitments", "Warnings flag\nmore than 3 open Commitments or Goals. ", "Warnings flag\nmore than 3 open Commitments. "),
+    ("goals+commitments", "Record a Goal, Commitments, a Decision or a Check-in", "Record Commitments, a Decision or a Check-in"),
+    ("goals+commitments", "active Goals,\nthis week's and overdue Commitments", "this week's and overdue Commitments"),
+    ("goals+commitments", "Close or correct a Goal, Commitment, Decision or Check-in.", "Close or correct a Commitment, Decision or Check-in."),
+    ("goals+commitments", "Goals: active/met/dropped. ", ""),
 ]
+
+
+def rule_applies(spec: str, has) -> bool:
+    """A MODULE_TEXT rule's condition: `goals` = the Pack keeps no Goals; `goals+commitments` = no Goals but
+    Commitments; `goals-commitments` = neither (`has` says whether the Pack keeps a module)."""
+    base, sign, other = re.fullmatch(r"([a-z]+)(?:([+-])([a-z]+))?", spec).groups()
+    if has(base):
+        return False
+    return sign is None or (has(other) if sign == "+" else not has(other))
 
 
 def pack_text(text: str | None) -> str | None:
@@ -105,8 +120,8 @@ def pack_text(text: str | None) -> str | None:
     then its [runtime.replace] words (product.reword). The founder Pack's text comes back unchanged."""
     if not text:
         return text
-    for module, old, new in MODULE_TEXT:
-        if not product.has(module):
+    for spec, old, new in MODULE_TEXT:
+        if rule_applies(spec, product.has):
             text = text.replace(old, new)
     return product.reword(text)
 
@@ -345,6 +360,11 @@ class ContextOut(BaseModel):
         None, description="every Project, when there are several (coach_project switches)")
     shared_fields: list[str] | None = Field(
         None, description="profile fields whose value comes from the Common profile the Founder's coaches share")
+    loop: dict[str, Any] | None = Field(
+        None, description="the recurring Focus and review of this Project, when this coach offers one: `on`, `every` "
+                          "(weekly, fortnightly or monthly), `weeks`, the coach's `default` and its own `questions` "
+                          "to ask at each review. While `on` is false nothing is due and the coach does not start "
+                          "one unasked; absent when this coach keeps none")
     limits: dict[str, Any] | None = Field(
         None, description="this coach's hard limits: `never` (decline only that part of a question, in one plain "
                           "sentence naming `refer_to`) and `warning` (one line after an opinion, ranking or "

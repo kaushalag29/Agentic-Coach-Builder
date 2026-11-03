@@ -25,6 +25,16 @@ COMMON_FIELDS = ("timezone", "name", "role", "answer_style")
 # Kinds of profile field the runtime validates (founder_coach/store.py _profile_value)
 FIELD_KINDS = ("text", "int", "enum", "stage", "metrics", "places", "tz", "weekday", "allocation", "percent", "symbols")
 _FIELD = re.compile(r"[a-z][a-z0-9_]{0,39}")
+# The recurring Focus and Check-in (ADR-0022): how often it comes round, in weeks. Storage stays keyed by ISO week.
+LOOP_EVERY = {"weekly": 1, "fortnightly": 2, "monthly": 4}
+LOOP_FIELDS = (
+    {"name": "loop", "kind": "enum", "values": ["on", "off"], "stale": False,
+     "description": "whether this Project runs the recurring Focus and Check-in: on or off (until it is set, the coach's own default applies)"},
+    {"name": "loop_every", "kind": "enum", "values": list(LOOP_EVERY), "stale": False,
+     "description": "how often the Focus and Check-in come round: " + ", ".join(LOOP_EVERY) + " (4 weeks); only used while the loop is on"},
+    {"name": "checkin_day", "kind": "weekday", "stale": False,
+     "description": "preferred Check-in day: mon, tue, wed, thu, fri, sat, sun"},
+)
 BUILDS = ("private", "release")
 _ID = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 PRODUCT_FIELDS = ("id", "display_name", "description")
@@ -51,6 +61,7 @@ class Pack:
     runtime: dict = field(default_factory=dict)   # [runtime]: instructions, setup_nudge, coach_name, replace
     owned: tuple[str, ...] = ()              # kept private to this coach in a shared Project (ADR-0019): "*", or modules and fields
     limits: dict = field(default_factory=dict)   # [limits]: what this coach never does, who to refer to, its standing warning
+    loop: dict = field(default_factory=dict)     # [loop]: the recurring Focus and Check-in this coach offers (ADR-0022)
 
     @property
     def product_id(self) -> str:
@@ -146,6 +157,32 @@ def _limits(raw, where: str) -> dict:
     return out
 
 
+def _loop(raw, modules: tuple[str, ...], skills: tuple[str, ...], where: str) -> dict:
+    """[loop]: `every` (weekly, fortnightly or monthly: how often a Project's Focus and Check-in come round),
+    `default` (on or off until a Project sets its own `loop`) and `questions` (up to 5 check-in questions in this
+    coach's words). A Pack with a loop keeps Commitments and Check-ins and ships the weekly-focus and check-in skills."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise PackError(f"{where}: [loop] must be a table")
+    if extra := set(raw) - {"every", "default", "questions"}:
+        raise PackError(f"{where}: [loop] has unknown key(s) {', '.join(sorted(extra))}")
+    if missing := [m for m in ("commitments", "checkins") if m not in modules]:
+        raise PackError(f"{where}: [loop] needs the {' and '.join(missing)} module(s) in [pack] modules")
+    if missing := [k for k in ("weekly-focus", "check-in") if k not in skills]:
+        raise PackError(f"{where}: [loop] needs the {' and '.join(missing)} skill(s) in [pack] skills")
+    every = raw.get("every", "weekly")
+    if every not in LOOP_EVERY:
+        raise PackError(f"{where}: [loop] every is one of {', '.join(LOOP_EVERY)}, not {every!r}")
+    default = raw.get("default", "off")
+    if default not in ("on", "off"):
+        raise PackError(f"{where}: [loop] default is \"on\" or \"off\", not {default!r}")
+    questions = list(_strs(raw["questions"], f"{where}: [loop] questions")) if raw.get("questions") else []
+    if len(questions) > 5 or any(len(q) > 200 for q in questions):
+        raise PackError(f"{where}: [loop] questions are at most 5, each under 200 characters")
+    return {"every": every, "default": default, "questions": questions}
+
+
 def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, check_skills: bool = True) -> Pack:
     """packs/<id>/pack.toml checked: unknown modules, builds, skills without a source or Domains not in
     domains.yaml (when `known_domains` is given) are errors, never shipped."""
@@ -189,6 +226,9 @@ def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, che
     if not all(isinstance(v, str) for v in words.values()):
         raise PackError(f"{where}: [words] values must be text")
     profile = _profile(data.get("profile"), where)
+    loop = _loop(data.get("loop"), modules, skills, where)
+    if loop:       # the loop's own fields, unless the Pack describes one itself (the founder's checkin_day)
+        profile = (*profile, *(dict(f) for f in LOOP_FIELDS if f["name"] not in {x["name"] for x in profile}))
     names = [f["name"] for f in profile]
     required = _strs(p["required"], f"{where}: required") if p.get("required") else ()
     if bad := [f for f in required if f not in names]:
@@ -198,7 +238,7 @@ def load(pack_id: str = DEFAULT_PACK, root: Path = ROOT, known_domains=None, che
         raise PackError(f"{where}: owned names a module or profile field, or is \"*\"; not {', '.join(bad)}")
     limits = _limits(data.get("limits"), where)
     pack = Pack(pack_id, domains, modules, skills, prompts, builds, prod, words, pdir, common, profile, required,
-                runtime, owned, limits)
+                runtime, owned, limits, loop)
     if check_skills and (gone := [s for s in skills if not pack.skill_file(s, root).exists()]):
         raise PackError(f"{where}: no source for skill(s) {', '.join(gone)} (packs/{pack_id}/skills/<name>/SKILL.md "
                         f"or plugin/skills/<name>/SKILL.md)")
@@ -221,6 +261,8 @@ def runtime_config(pack: Pack) -> dict:
         out["required"] = list(pack.required)
     if pack.runtime:
         out["runtime"] = dict(pack.runtime)
+    if pack.loop:
+        out["loop"] = {k: list(v) if isinstance(v, list) else v for k, v in pack.loop.items()}
     if pack.limits:
         out["limits"] = {k: list(v) if isinstance(v, list) else v for k, v in pack.limits.items()}
     return out

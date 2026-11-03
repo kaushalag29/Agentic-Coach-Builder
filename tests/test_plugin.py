@@ -353,6 +353,17 @@ def test_coach_new_drafts_a_pack_that_loads_assembles_and_keeps_the_pinned_wordi
         assert not left, left
         pj = json.loads((out / "founder_coach" / "product.json").read_text())
         assert pj["pack"]["owned"] == ["*"] and pj["pack"]["domains"] == ["legal"]
+        # a coach without Commitments and Check-ins has no loop; one that keeps both gets `[loop]` (off) and its skills
+        assert pack.loop == {} and "weekly-focus" not in pack.skills
+        assert "Assumption: <the subject>" in coach and "never write the belief for them" in coach
+        tracked = N.Spec(id="habits", person="Member", noun="habit", subject="habit building", domains=("habits",),
+                         fields=[("habit", "the habit, in one line")], modules=("commitments", "checkins", "notes"))
+        N.create(repo, tracked, like="coding", known_domains=["habits"])
+        hp = PK.load("habits", repo)
+        assert hp.loop["default"] == "off" and hp.loop["every"] == "weekly" and 1 <= len(hp.loop["questions"]) <= 5
+        assert {"weekly-focus", "check-in"} <= set(hp.skills) and "check-in" in hp.prompts
+        assert [f["name"] for f in hp.profile if f["name"].startswith("loop") or f["name"] == "checkin_day"] == [
+            "loop", "loop_every", "checkin_day"]
         # the same input writes the same files, and it never overwrites a Pack
         try:
             N.create(repo, spec)
@@ -800,12 +811,54 @@ def test_the_founder_profile_lives_in_its_pack_and_the_runtime_keeps_one_copy_in
                 assert why in str(e), (why, str(e))
 
 
+def test_a_pack_declares_its_loop_and_the_runtime_and_the_loader_agree_on_it():
+    """ADR-0022: [loop] (every, default, questions) needs the Commitments and Check-ins modules and the two skills,
+    adds the loop's profile fields once, and reaches the runtime in product.json."""
+    from founder_coach import domain as D
+    from ytbrain import packs
+    assert D.LOOP_WEEKS == packs.LOOP_EVERY, "the runtime keeps the same weeks per interval as the loader"
+    head = '[pack]\nid = "x"\ndomains = ["coding"]\nmodules = %s\nskills = %s\n[product]\nid = "x-coach"\n' \
+           'display_name = "X"\ndescription = "d"\n'
+    full_modules, full_skills = '["commitments", "checkins"]', '["ask", "weekly-focus", "check-in"]'
+
+    def load(toml):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            (root / "packs" / "x").mkdir(parents=True)
+            (root / "packs" / "x" / "pack.toml").write_text(toml)
+            return packs.load("x", root=root, check_skills=False)
+
+    p = load(head % (full_modules, full_skills) + '[loop]\nevery = "monthly"\ndefault = "off"\nquestions = ["What moved?"]\n')
+    assert p.loop == {"every": "monthly", "default": "off", "questions": ["What moved?"]}
+    assert [f["name"] for f in p.profile] == ["loop", "loop_every", "checkin_day"]
+    assert packs.runtime_config(p)["loop"] == p.loop and "loop" not in packs.runtime_config(load(head % (full_modules, full_skills)))
+    p = load(head % (full_modules, full_skills) + '[loop]\n[[profile]]\nname = "checkin_day"\nkind = "weekday"\ndescription = "mine"\n')
+    assert [f["name"] for f in p.profile].count("checkin_day") == 1 and p.loop["default"] == "off", "off unless a Pack says on"
+    for bad, why in (('[loop]\ncolour = "x"\n', "unknown key"), ('[loop]\nevery = "daily"\n', "every is one of"),
+                     ('[loop]\ndefault = "maybe"\n', 'default is "on" or "off"'),
+                     ('[loop]\nquestions = ["a", "b", "c", "d", "e", "f"]\n', "at most 5")):
+        try:
+            load(head % (full_modules, full_skills) + bad)
+            raise AssertionError(f"accepted: {bad}")
+        except packs.PackError as e:
+            assert why in str(e), (why, str(e))
+    for modules, skills, why in (('["commitments"]', full_skills, "checkins"), ('["commitments", "checkins"]', '["ask"]', "weekly-focus")):
+        try:
+            load(head % (modules, skills) + "[loop]\n")
+            raise AssertionError("accepted a loop without its parts")
+        except packs.PackError as e:
+            assert why in str(e), str(e)
+    founder, coding, investor = (packs.load(i, check_skills=False) for i in ("founder", "coding", "investor"))
+    assert (founder.loop["default"], coding.loop["default"], investor.loop["default"]) == ("on", "off", "off")
+    assert all(0 < len(x.loop["questions"]) <= 5 for x in (coding, investor)) and not founder.loop["questions"]
+
+
 def test_every_module_sentence_a_pack_may_rewrite_is_in_the_runtimes_text():
     """MODULE_TEXT rewrites exact sentences of the tool texts for a Pack without a memory module, in order: for every
     Pack (packs/*/pack.toml), each rule that applies to it must find its sentence, so a wording change in the runtime
     can't silently leave a coach mentioning a record it can't save."""
     try:
-        from founder_coach.server import INSTRUCTIONS, MODULE_TEXT, create_server
+        from founder_coach.server import INSTRUCTIONS, MODULE_TEXT, create_server, rule_applies
     except ImportError:
         return _skipped("optional dependency not installed")
     sys.path.insert(0, str(ROOT))
@@ -832,9 +885,10 @@ def test_every_module_sentence_a_pack_may_rewrite_is_in_the_runtimes_text():
     kept = [(pid, set(PK.load(pid, check_skills=False).modules)) for pid in PK.all_ids()] + [("(core only)", set())]
     for pid, modules in kept:
         blob = "\n\x00\n".join(texts)
-        for i, (module, old, new) in enumerate(MODULE_TEXT):
-            if module in modules:
+        for i, (spec, old, new) in enumerate(MODULE_TEXT):
+            if not rule_applies(spec, modules.__contains__):
                 continue
+            module = spec
             assert old in blob, (pid, module, old)
             blob = blob.replace(old, new)
             used.add(i)
@@ -942,7 +996,7 @@ def test_the_investor_pack_builds_a_plugin_with_holdings_tools_and_no_founder_wo
     sys.path.insert(0, str(ROOT))
     from ytbrain import packs as PK
     inv = PK.load("investor", ROOT)
-    assert inv.product_id == "investor-coach" and inv.modules == ("holdings", "decisions", "notes") and inv.common_fields == ()
+    assert inv.product_id == "investor-coach" and inv.modules == ("holdings", "commitments", "checkins", "decisions", "notes") and inv.common_fields == ()
     assert inv.builds == ("private",) and inv.required == ("goal", "targets")
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -960,13 +1014,15 @@ def test_the_investor_pack_builds_a_plugin_with_holdings_tools_and_no_founder_wo
         names = [x["name"] for x in got["tools"]]
         assert {"coach_holdings", "coach_review", "coach_split"} <= set(names)
         blob = json.dumps(got["tools"]) + got["instructions"] + got["hook"]
-        for word in ("Founder", "YC talk", "Commitment", "Check-in", "commitments", "company", "Goal,"):
+        for word in ("Founder", "YC talk", "company", "Goal,"):
             assert word not in blob, (word, re.findall(".{60}" + word + ".{30}", blob)[:2])
         record = next(x for x in got["tools"] if x["name"] == "coach_record")
-        assert record["input_schema"]["properties"]["entry"].get("$ref", "").endswith("DecisionIn") or \
-            "DecisionIn" in json.dumps(record["input_schema"]), "Decisions only"
-        assert "GoalIn" not in json.dumps(record["input_schema"])
-        assert got["prompts"] == ["ask", "setup", "review"] and got["required"] == ["goal", "targets"]
+        assert "DecisionIn" in json.dumps(record["input_schema"]), "Decisions are records"
+        assert "GoalIn" not in json.dumps(record["input_schema"]), "no Goals: a Project is the goal"
+        # the recurring loop is an opt-in this Pack offers (ADR-0022): its records exist, its fields are declared
+        assert "CommitmentIn" in json.dumps(record["input_schema"]) and "CheckinIn" in json.dumps(record["input_schema"])
+        assert {"loop", "loop_every", "checkin_day"} <= set(got["fields"])
+        assert got["prompts"] == ["ask", "weekly-focus", "check-in", "setup", "review"] and got["required"] == ["goal", "targets"]
         assert "targets" in got["fields"] and "company" not in got["fields"]
         assert got["hook"].startswith("Investor coach: No Investment Policy Statement yet")
         sys.path.insert(0, str(ROOT / "tests"))
@@ -1065,6 +1121,30 @@ def test_every_pack_gives_an_opinion_when_asked_and_declines_only_its_declared_l
     investor = (ROOT / "packs/investor/skills/coach/SKILL.md").read_text() + (ROOT / "packs/investor/pack.toml").read_text()
     assert "Never a security call" not in investor and "never pick, rate or time a security" not in investor
     assert "price target" in investor and "market-timing" in investor, "the hard limits stay"
+
+def test_every_coach_offers_assumption_notes_and_the_loop_skills_read_the_loop():
+    """ADR-0022: the recurring loop is opt-in per Project, so its skills check `loop` first, use the Pack's questions
+    and the period's Notes; every coach can keep an assumption Note (a belief behind a choice, with a revisit date);
+    the investor Review names holdings without a thesis."""
+    read = lambda *parts: (ROOT.joinpath(*parts)).read_text(encoding="utf-8")   # noqa: E731
+    for name in ("weekly-focus", "check-in"):
+        text = read("plugin", "skills", name, "SKILL.md")
+        assert "Is the loop on?" in text and "`loop.on`" in text and "`loop_every`" in text, name
+        assert "coach_recall" in text and "{{person}}" in text and "Founder" not in text.split("---", 2)[2], name
+    assert "`loop.questions`" in read("plugin", "skills", "check-in", "SKILL.md")
+    for path in (("plugin", "skills", "coach"), ("packs", "coding", "skills", "coach"), ("packs", "investor", "skills", "coach")):
+        text = read(*path, "SKILL.md")
+        assert 'title "Assumption: <the subject>"' in text and "what would change their mind" in text, path
+        assert "only on a yes" in text and "never write the belief for them" in text, path
+        assert len(re.findall(r"^\d\. \*\*", text, re.M)) == 8, "the contract still has 8 rules"
+    for path in (("packs", "coding", "skills", "setup"), ("packs", "investor", "skills", "setup")):
+        text = read(*path, "SKILL.md")
+        assert "`loop: on`" in text and "off unless they say yes" in text and "don't ask again" in text, path
+    review = read("packs", "investor", "skills", "review", "SKILL.md")
+    assert "**Theses:**" in review and "Assumption: why I hold" in review and "Never write a thesis for them" in review
+    inv = read("packs", "investor", "skills", "coach", "SKILL.md")
+    assert "never an amount, a balance or an account number" in inv, "a thesis may name a holding, never an amount"
+
 
 def test_the_investor_review_is_kept_as_a_note_and_a_rebalance_as_a_decision():
     """Phase 2: a periodic Review leaves a dated Note (no schema change), due again after `review_days`."""

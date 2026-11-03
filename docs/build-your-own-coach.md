@@ -60,6 +60,7 @@ only as education, from the hits, saying the evidence is partial).
 | `[words]` | what the person and a Project are called (`Engineer`, `system`) |
 | `[runtime]` | the coach's name, its setup nudge and its coaching contract (`instructions`) |
 | `[limits]` | what the coach never answers (`never`, needs `refer_to`) and the one-line `warning` that ends every opinion (ADR-0021); the coach declines only that part and ranks or recommends the rest |
+| `[loop]` | the recurring Focus and Check-in (ADR-0022): `every` (`weekly`, `fortnightly`, `monthly`), `default` (`on` or `off`) and up to five Check-in `questions`; needs the `commitments` and `checkins` modules and the `weekly-focus` and `check-in` skills; a Project overrides it with its `loop` and `loop_every` |
 | `[runtime.replace]` | the shared runtime's wording, rewritten for this coach |
 | `[[profile]]` | each fact a Project remembers, with its description |
 

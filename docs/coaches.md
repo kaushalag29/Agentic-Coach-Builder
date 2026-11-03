@@ -46,7 +46,7 @@ id goes, and `scripts/assemble_plugin.py` fills it in from the Pack's `packs/<id
 the manifest, the MCP server config (`coach`, started with
 `uvx --from ${CLAUDE_PLUGIN_ROOT} founder-coach serve --pack ${CLAUDE_PLUGIN_ROOT}/pack`), a fail-open SessionStart hook and 10
 skills: `coach` (the coaching contract, model-only); `ask`, `weekly-focus`, `check-in`
-(Playbooks, in the words of the Pack: the founder and coding Packs list them, the investor does not: an opt-in a Pack makes by keeping the `commitments` and `checkins` modules); `project` (loads on its own when Projects come up); `setup`, `status`, `export`, `forget`, `feedback` (typed by the Founder). The skills
+(Playbooks, in the words of the Pack, run by the recurring loop a Pack declares in `[loop]`: on by default for the founder, off for the coding and investor coaches until a Project turns it on; ADR-0022); `project` (loads on its own when Projects come up); `setup`, `status`, `export`, `forget`, `feedback` (typed by the Founder). The skills
 are the single source for the MCP prompts: the assembler regenerates `founder_coach/playbooks/*.md`
 from them, and `founder_coach/product.json` from the Pack's `pack.toml` and `product.toml`.
 

@@ -27,11 +27,13 @@ FOUNDER_PROFILE: dict[str, tuple[str, str]] = {
     "workspace": ("places", "where the Founder keeps their own data, in their words: {what: tool or place}, e.g. "
                             "{\"pipeline\": \"HubSpot\", \"metrics\": \"Google Sheet 'KPIs'\", "
                             "\"investor updates\": \"Drive folder 'Updates'\"}"),
+    "loop": ("enum", "whether this Project runs the recurring Focus and Check-in: on or off (until it is set, the coach's own default applies)"),
+    "loop_every": ("enum", "how often the Focus and Check-in come round: weekly, fortnightly, monthly (4 weeks); only used while the loop is on"),
     "name": ("text", "what to call the person"),
     "role": ("text", "the person's role, e.g. CEO, CTO, solo founder"),
     "answer_style": ("text", "how they like answers, e.g. 'short, bullet points first'"),
 }
-FOUNDER_NEVER_STALE = ("timezone", "checkin_day", "workspace", "name", "role", "answer_style")
+FOUNDER_NEVER_STALE = ("timezone", "checkin_day", "workspace", "name", "role", "answer_style", "loop", "loop_every")
 # The Common profile (ADR-0016): facts about the person, not a Project, that one coach may share with the
 # others on a yes. A Pack lists which of these it reads and offers to save there (pack.toml common_fields).
 COMMON_FIELDS = ("timezone", "name", "role", "answer_style")
@@ -100,7 +102,15 @@ RECENT_NOTES = 5                                   # titles in the context diges
 MAX_OPEN_COMMITMENTS_PER_WEEK = 3      # Focus is 1-3 Commitments (CONTEXT.md)
 MAX_ACTIVE_GOALS = 3
 PROFILE_STALE_DAYS = 30
-CHECKIN_OVERDUE_DAYS = 8
+CHECKIN_OVERDUE_DAYS = 8                  # a weekly loop: a Check-in is overdue 8 days after the last one
+# The recurring Focus and Check-in (ADR-0022): weeks per period for each `loop_every`; tests/test_plugin.py checks it
+# equals ytbrain.packs.LOOP_EVERY. Storage stays keyed by ISO week.
+LOOP_WEEKS = {"weekly": 1, "fortnightly": 2, "monthly": 4}
+
+
+def checkin_overdue_days(weeks: int = 1) -> int:
+    """Days after the last Check-in (or the start) at which the next one is overdue: its period plus a day."""
+    return 7 * weeks + 1
 TEXT_MAX = 1000
 # Feedback (CONTEXT.md): a Founder's report that an answer or a saved record was wrong. The
 # categories map to the coach's gates (G2 citations, G3 Gaps, G4 sycophancy, G5 memory).

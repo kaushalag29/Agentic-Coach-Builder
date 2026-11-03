@@ -260,6 +260,14 @@ _Avoid_: guardrails, refusals, disclaimer
 A recommendation or ranking the coach gives from cited library knowledge and the person's own context, with the criteria it ranked by, what would change it and the Pack's warning. Candidates found on the web are cited "web, unverified".
 _Avoid_: advice (Advice is what a Document says), pick
 
+**Loop**:
+The recurring Focus and Check-in of a Project. A Pack declares its default rhythm and questions in `[loop]` (`every`, `default`, `questions`); a Project switches it on or off (`loop`) and may set its own rhythm (`loop_every`: weekly, fortnightly or monthly). One Focus per period is shared by every coach on the Project; Check-ins stay private to the coach that ran them (ADR-0022).
+_Avoid_: routine, cadence, schedule
+
+**Assumption**:
+A Note titled "Assumption: <subject>" that records a belief behind a choice, what would change the person's mind and a date to revisit it. Saved only on a yes, in the person's words. In the investor coach it is called a thesis. A due Assumption is asked about at the next Check-in; the investor Review lists holdings with none.
+_Avoid_: hypothesis, prediction
+
 **Nudge**:
 A reminder the coach surfaces when something is due, such as an overdue Check-in, a Goal past its target date or a Founder profile fact that needs confirming. A Nudge asks; it never changes a record by itself.
 _Avoid_: notification, alert, ping

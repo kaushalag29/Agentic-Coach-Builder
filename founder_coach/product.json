@@ -101,12 +101,38 @@
         "kind": "text",
         "description": "how they like answers, e.g. 'short, bullet points first'",
         "stale": false
+      },
+      {
+        "name": "loop",
+        "kind": "enum",
+        "values": [
+          "on",
+          "off"
+        ],
+        "stale": false,
+        "description": "whether this Project runs the recurring Focus and Check-in: on or off (until it is set, the coach's own default applies)"
+      },
+      {
+        "name": "loop_every",
+        "kind": "enum",
+        "values": [
+          "weekly",
+          "fortnightly",
+          "monthly"
+        ],
+        "stale": false,
+        "description": "how often the Focus and Check-in come round: weekly, fortnightly, monthly (4 weeks); only used while the loop is on"
       }
     ],
     "required": [
       "company",
       "stage"
     ],
+    "loop": {
+      "every": "weekly",
+      "default": "on",
+      "questions": []
+    },
     "limits": {
       "never": [
         "give legal, tax, immigration or securities-law advice on their specific case",

@@ -5,11 +5,17 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
-- **The weekly Focus and Check-in are an opt-in per Pack:** the `weekly-focus` and `check-in` skills use the Pack's
-  words (`{{person}}`, `{{project_noun}}`) instead of the founder's, and the coding coach now keeps Commitments and
-  Check-ins and offers both (the investor does not: its cadence is a periodic Review). The investor `review` skill
-  offers one Note per review (revisit date from `review_days`, so the next one comes back as a Nudge), and a Decision
-  for a rebalance the person chooses; no schema change.
+- **A recurring Focus and Check-in for any coach (ADR-0022):** a Pack declares `[loop]` in `pack.toml` (`every`:
+  weekly, fortnightly or monthly; `default`: on or off; up to five Check-in `questions` in its own terms) and each
+  Project switches it on or off (`loop`) and may set its own rhythm (`loop_every`). Founder is on by default; the
+  coding and investor coaches are off until setup or the person says yes. The `weekly-focus` and `check-in` skills use
+  the Pack's words, check the switch first and ask the Pack's questions. One Focus per period is shared by every coach
+  on the Project; Check-ins stay private. Storage is unchanged (ISO weeks); overdue Check-ins, carried Commitments,
+  repeated-carry warnings and the Nudge follow the Project's interval.
+- **Assumption Notes in every coach:** the coach offers to keep "Assumption: <subject>" (why, what would change the
+  person's mind, a revisit date) on a yes and asks about the due ones at the next Check-in. The investor Review
+  keeps one Note per review (the next review returns as a Nudge), offers a Decision for a rebalance the person chooses,
+  and lists holdings with no thesis Note or a past-due one.
 - **Coaches give an opinion within declared limits (ADR-0021):** asked to find, compare, rank or recommend, a coach no
   longer declines. It gives its best opinion from cited library knowledge and the person's context, researches
   candidates with the host's web search without being asked (cited "web, unverified", the search carrying only the

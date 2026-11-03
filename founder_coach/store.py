@@ -147,6 +147,11 @@ def next_week(week: str) -> str:
     return iso_week(week_start(week) + dt.timedelta(days=7))
 
 
+def shift_week(week: str, n: int) -> str:
+    """The ISO week `n` weeks after `week` (before it when n is negative)."""
+    return iso_week(week_start(week) + dt.timedelta(days=7 * n))
+
+
 def _j(v) -> str:
     return json.dumps(v, ensure_ascii=False, sort_keys=True)
 
@@ -1095,11 +1100,14 @@ class FounderStore:
     def _warnings(self, week: str | None = None) -> list[str]:
         out = []
         week = week or self.this_week()
-        sql, who = self._in("commitments", "SELECT COUNT(*) FROM commitments WHERE founder_id=? AND coach=? AND week=? "
-                                           "AND status='open'")
-        n = self.db.execute(sql, (self.fid, *who, week)).fetchone()[0]
+        weeks = self.loop_weeks()
+        sql, who = self._in("commitments", "SELECT COUNT(*) FROM commitments WHERE founder_id=? AND coach=? AND week>=? "
+                                           "AND week<=? AND status='open'")
+        n = self.db.execute(sql, (self.fid, *who, shift_week(week, 1 - weeks), week)).fetchone()[0]
         if n > D.MAX_OPEN_COMMITMENTS_PER_WEEK:
-            out.append(f"{n} open Commitments in {week}; Focus works best with at most "
+            out.append(f"{n} open Commitments in "
+                       + (week if weeks == 1 else f"the {weeks}-week period ending {week}")
+                       + f"; Focus works best with at most "
                        f"{D.MAX_OPEN_COMMITMENTS_PER_WEEK}. Ask the Founder which to drop or carry.")
         sql, who = self._in("goals", "SELECT COUNT(*) FROM goals WHERE founder_id=? AND coach=? AND status='active'")
         g = self.db.execute(sql, (self.fid, *who)).fetchone()[0]
@@ -1188,7 +1196,7 @@ class FounderStore:
             self._change(kind, rid, "status" if status is not None else "update", rec, after, source)
             out = {"id": rid, "before": rec, "after": after}
             if status == "carried":
-                week = max(self.this_week(), next_week(rec["week"]))
+                week = max(self.this_week(), shift_week(rec["week"], self.loop_weeks()))
                 new = self._new_id("commitment")
                 self.db.execute("INSERT INTO commitments (id, founder_id, coach, week, action, cue, outcome, goal_id, "
                                 "citations, status, carried_from, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1263,8 +1271,30 @@ class FounderStore:
                 r["carried_weeks"] = self._carry_streak(r["id"])
         return rows
 
+    def loop(self) -> dict | None:
+        """The recurring Focus and Check-in of this Project (ADR-0022): on or off, how often, the Pack's check-in
+        questions. A Pack without [loop] that keeps Commitments and Check-ins runs it always, weekly (the way every
+        Project did before); a Pack that keeps neither has none (None)."""
+        if not (product.has("commitments") and product.has("checkins")):
+            return None
+        cfg = product.PACK.get("loop") or {}
+        mine = self._current_value("loop")
+        on = (mine == "on") if mine in ("on", "off") else cfg.get("default", "on") == "on"
+        every = self._current_value("loop_every") or cfg.get("every", "weekly")
+        if every not in D.LOOP_WEEKS:
+            every = "weekly"
+        return {"on": on, "every": every, "weeks": D.LOOP_WEEKS[every], "default": cfg.get("default", "on"),
+                "questions": list(cfg.get("questions") or [])}
+
+    def loop_weeks(self) -> int:
+        lp = self.loop()
+        return lp["weeks"] if lp else 1
+
     def overdue_commitments(self) -> list[dict]:
-        return [c for c in self.commitments(status="open") if c["week"] < self.this_week()]
+        """Open Commitments whose period has ended: a Commitment of week W belongs to the loop period of
+        `loop_weeks()` weeks starting at W (one week: any earlier week)."""
+        weeks, now = self.loop_weeks(), week_start(self.this_week())
+        return [c for c in self.commitments(status="open") if (now - week_start(c["week"])).days // 7 >= weeks]
 
     def checkins(self, limit: int = 5) -> list[dict]:
         return self._rows("SELECT * FROM checkins WHERE founder_id=? AND coach=? ORDER BY created_at DESC LIMIT ?", limit)

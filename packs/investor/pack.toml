@@ -8,14 +8,26 @@ id = "investor"
 domains = ["investment"]
 # Holdings snapshots (per account and date) and Decisions; the Investment Policy Statement is the Project's profile.
 # No Goals: a Project is itself the goal (retirement 2055, college 2040), with every account that serves it (R10).
-modules = ["holdings", "decisions", "notes"]
+# Commitments and Check-ins are the opt-in loop (ADR-0022): research and process, never performance.
+modules = ["holdings", "commitments", "checkins", "decisions", "notes"]
 # no common_fields: nothing about money ever leaves its Project, not even into the shared profile (C3)
 # owned = everything: in a Project other coaches share (ADR-0019) no other coach reads a record or policy field of this one
 owned = ["*"]
 required = ["goal", "targets"]
-skills = ["ask", "coach", "setup", "review", "project", "status", "export", "forget", "feedback"]
-prompts = ["ask", "setup", "review"]
+skills = ["ask", "coach", "setup", "review", "weekly-focus", "check-in", "project", "status", "export", "forget", "feedback"]
+prompts = ["ask", "setup", "review", "weekly-focus", "check-in"]
 builds = ["private"]
+
+# The recurring Focus and Check-in (ADR-0022): off until a Project turns it on (`loop` in its profile). Its questions
+# are about research and decisions; the numbers belong to the periodic Review.
+[loop]
+every = "weekly"
+default = "off"
+questions = [
+  "What did you research or discuss this period, and what did you conclude?",
+  "Which decision did you make or put off, and why?",
+  "Has anything changed in the reasons behind a position you hold?",
+]
 
 [product]
 id = "investor-coach"

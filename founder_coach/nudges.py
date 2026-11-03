@@ -21,19 +21,23 @@ def nudges(store: FounderStore) -> list[dict]:
     started = store.created_at()
     day = D.WEEKDAYS.index(prof["checkin_day"]["value"]) if "checkin_day" in prof else None
     checked_this_week = bool(last) and last[0]["week"] == week
+    lp = store.loop()
+    weeks = lp["weeks"] if lp else 1
+    loop_on = lp is None or lp["on"]            # a Project that turned the loop off gets no Focus or Check-in Nudges
+    limit, period = D.checkin_overdue_days(weeks), 7 * weeks
     overdue_days = None
-    if last_day and (today - last_day).days >= D.CHECKIN_OVERDUE_DAYS:
-        overdue_days = (today - last_day).days - 7
-    elif day is not None and today.weekday() > day and not checked_this_week and (
+    if last_day and (today - last_day).days >= limit:
+        overdue_days = (today - last_day).days - period
+    elif weeks == 1 and day is not None and today.weekday() > day and not checked_this_week and (
             last_day or (started and (today - started.astimezone(store.tz()).date()).days >= 7)):
         overdue_days = today.weekday() - day
-    elif not last_day and started and (today - started.astimezone(store.tz()).date()).days >= D.CHECKIN_OVERDUE_DAYS:
-        overdue_days = (today - started.astimezone(store.tz()).date()).days - 7
-    if overdue_days is not None:
+    elif not last_day and started and (today - started.astimezone(store.tz()).date()).days >= limit:
+        overdue_days = (today - started.astimezone(store.tz()).date()).days - period
+    if overdue_days is not None and loop_on:
         out.append({"kind": "checkin_overdue",
                     "message": f"Check-in overdue by {max(1, overdue_days)} day(s)"
                                + (f" (last one {last_day.isoformat()})" if last_day else " (none yet)")})
-    old = store.overdue_commitments()
+    old = store.overdue_commitments() if loop_on else []
     if old:
         out.append({"kind": "open_past_commitments", "ids": [c["id"] for c in old],
                     "message": f"{len(old)} Commitment(s) from earlier weeks still open: review them as done, "
@@ -111,6 +115,7 @@ def context(store: FounderStore, detailed: bool = False) -> dict:
            "last_checkin": (store.checkins(1) or [None])[0] if has("checkins") else None,
            "recent_decisions": store.decisions(5) if has("decisions") else [],
            **({"recent_notes": store.notes(D.RECENT_NOTES), "notes_total": store.note_count()} if has("notes") else {}),
+           **({"loop": lp} if (lp := store.loop()) is not None else {}),
            "nudges": [x for x in nudges(store) if x["kind"] not in NUDGE_MODULE or has(NUDGE_MODULE[x["kind"]])]}
     if not detailed:
         for c in ctx["this_week"] + ctx["overdue"]:

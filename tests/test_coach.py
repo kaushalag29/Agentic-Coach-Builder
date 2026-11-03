@@ -200,6 +200,51 @@ def test_carrying_a_commitment_links_a_copy_and_counts_the_streak():
     assert s.update(d, changes={"revisit_on": "2026-12-01"})["after"]["revisit_on"] == "2026-12-01"
 
 
+def test_the_loop_follows_the_projects_interval_and_switch():
+    """ADR-0022: the recurring Focus and Check-in. A Project sets `loop` (on/off) and `loop_every`; the overdue
+    Nudge, the overdue Commitments, the carry week and the open-count warning all read the interval."""
+    from founder_coach.store import shift_week
+    c = Clock()
+    s = _store(c)
+    s.update_profile({"company": "Acme", "stage": "mvp"})
+    assert s.loop() == {"on": True, "every": "weekly", "weeks": 1, "default": "on", "questions": []}, s.loop()
+    _raises(lambda: s.update_profile({"loop": "sometimes"}), "must be one of")
+    s.update_profile({"loop_every": "fortnightly"})
+    cid = s.record({"kind": "commitments", "items": [{"action": "a", "outcome": "b"}]})["ids"][0]
+    week0 = s.get(cid)["week"]
+    c.advance(days=9)                                  # the next week: inside a two-week period
+    assert s.overdue_commitments() == [] and "checkin_overdue" not in [n["kind"] for n in N.nudges(s)]
+    c.advance(days=6)                                  # 15 days after the start: the period is over
+    assert [x["id"] for x in s.overdue_commitments()] == [cid]
+    assert [n["kind"] for n in N.nudges(s)][:2] == ["checkin_overdue", "open_past_commitments"]
+    new = s.get(s.update(cid, status="carried")["new_id"])
+    assert new["week"] == max(s.this_week(), shift_week(week0, 2)), "a carried Commitment moves on by the period"
+    s.update_profile({"loop_every": "monthly"})
+    assert s.loop()["weeks"] == 4 and s.loop()["every"] == "monthly"
+    many = s.record({"kind": "commitments", "items": [{"action": f"x{i}", "outcome": "o"} for i in range(3)]})
+    assert any("4-week period" in w for w in many["warnings"]), many["warnings"]
+    s.update_profile({"loop": "off"})
+    assert s.loop()["on"] is False
+    kinds = [n["kind"] for n in N.nudges(s)]
+    assert "checkin_overdue" not in kinds and "open_past_commitments" not in kinds, kinds
+    assert N.context(s)["loop"]["on"] is False
+    s.update_profile({"loop": "on"})
+    # a Pack that offers the loop sets its own default and questions; the Project's own switch wins
+    saved = product.PACK.get("loop")
+    product.PACK["loop"] = {"every": "weekly", "default": "off", "questions": ["What did you conclude?"]}
+    try:
+        t = _store(Clock())
+        t.update_profile({"company": "Acme", "stage": "mvp"})
+        assert t.loop()["on"] is False and t.loop()["questions"] == ["What did you conclude?"]
+        t.update_profile({"loop": "on"})
+        assert t.loop()["on"] is True
+    finally:
+        if saved is None:
+            product.PACK.pop("loop", None)
+        else:
+            product.PACK["loop"] = saved
+
+
 def test_weeks_follow_the_founders_time_zone():
     c = Clock("2026-09-27T20:00:00+00:00")                        # Sunday 20:00 UTC = Monday 01:30 in India
     s = _store(c)

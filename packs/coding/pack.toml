@@ -15,6 +15,16 @@ prompts = ["ask", "setup", "design-review", "decision-record", "weekly-focus", "
 # private only: its knowledge is mostly Books you own (ADR-0014); a release build waits for public Sources
 builds = ["private"]
 
+# The recurring Focus and Check-in (ADR-0022): offered, off until a Project turns it on (`loop` in its profile).
+[loop]
+every = "weekly"
+default = "off"
+questions = [
+  "What shipped or moved this period, with the evidence (a merged change, a metric, a link)?",
+  "What is blocked, and by whom or what?",
+  "Did a technical decision or an assumption you rely on change?",
+]
+
 [product]
 id = "coding-coach"
 display_name = "Coding Coach"

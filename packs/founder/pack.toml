@@ -17,6 +17,11 @@ skills = ["ask", "coach", "setup", "project", "status", "export", "forget", "fee
 prompts = ["ask", "weekly-focus", "check-in", "setup"]     # also served as MCP prompts (hosts without skills)
 builds = ["private", "release"]
 
+# The recurring Focus and Check-in (ADR-0022): weekly, on until a Project turns it off (`loop` in its profile).
+[loop]
+every = "weekly"                       # weekly | fortnightly | monthly (4 weeks); a Project may set its own `loop_every`
+default = "on"
+
 [product]
 id = "founder-coach"                   # lowercase letters, digits and hyphens
 display_name = "Founder Coach"
