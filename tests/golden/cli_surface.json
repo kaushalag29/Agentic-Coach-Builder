@@ -214,6 +214,12 @@
        "alias"
       ]
      },
+     "diff": {
+      "options": [
+       "--csv"
+      ],
+      "positionals": []
+     },
      "ignore": {
       "options": [],
       "positionals": [
@@ -224,11 +230,26 @@
       "options": [],
       "positionals": []
      },
+     "promote": {
+      "options": [
+       "--allow-unchecked",
+       "--dry-run"
+      ],
+      "positionals": [
+       "names"
+      ]
+     },
      "propose": {
       "options": [
        "--min-size"
       ],
       "positionals": []
+     },
+     "restore": {
+      "options": [],
+      "positionals": [
+       "backup"
+      ]
      },
      "review": {
       "options": [
@@ -405,6 +426,7 @@
      },
      "tags": {
       "options": [
+       "--compare",
        "--documents",
        "--items",
        "--save",
@@ -591,12 +613,14 @@
    "tag": {
     "handler": "cmd_tag",
     "options": [
+     "--check",
      "--dry-run",
      "--gated",
      "--max-cost",
      "--no-apply",
      "--no-llm",
-     "--retry-undecided"
+     "--retry-undecided",
+     "--stage"
     ],
     "positionals": []
    },

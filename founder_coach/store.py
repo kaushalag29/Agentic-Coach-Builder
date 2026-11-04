@@ -873,14 +873,31 @@ class FounderStore:
     # ------------------------------------------------------------------ keyword search over the Project's memory
     _WORD = re.compile(r"[^\W_]{2,}", re.UNICODE)
 
-    def recall(self, query: str, kinds: list[str] | None = None, limit: int = 8,
-               include_superseded: bool = False) -> list[dict]:
-        """Keyword search over this Project's Notes, Decisions, Goals, Commitments and Check-ins, best first.
-        [{id, kind, title, snippet, date, score, superseded_by?}]. Notes use the FTS5 index (bm25); the other kinds
-        are small and are scored by how many of the query's words they contain."""
-        words = list(dict.fromkeys(w.lower() for w in self._WORD.findall(query or "")))[:12]
-        if not words:
-            raise StoreError("query needs at least one word of two or more letters")
+    def recall(self, query: str | None, kinds: list[str] | None = None, limit: int = 8,
+               include_superseded: bool = False, since: str | None = None, until: str | None = None,
+               timeline: bool = False) -> list[dict]:
+        """The hits of `recall_page`, without the count."""
+        return self.recall_page(query, kinds, limit, include_superseded, since, until, timeline)[0]
+
+    def recall_page(self, query: str | None, kinds: list[str] | None = None, limit: int = 8,
+                    include_superseded: bool = False, since: str | None = None, until: str | None = None,
+                    timeline: bool = False) -> tuple[list[dict], int]:
+        """Keyword search over this Project's Notes, Decisions, Goals, Commitments and Check-ins, best first, as
+        ([{id, kind, title, snippet, date, score?, week?, superseded_by?}], how many matched). Notes use the FTS5 index
+        (bm25); the other kinds are small and are scored by how many of the query's words they contain.
+
+        `since` and `until` (YYYY-MM-DD, both inclusive) keep the records dated in that window: a Note by the day it
+        was made, a Decision by the day it was decided, the others by the day they were created. `timeline` lists the
+        matches oldest first instead of best first, and then the query may be left out to list everything in the
+        window."""
+        text = (query or "").strip()
+        words = list(dict.fromkeys(w.lower() for w in self._WORD.findall(text)))[:12]
+        if not words and (text or not timeline):
+            raise StoreError("query needs at least one word of two or more letters (or timeline: true to list "
+                             "records by date)")
+        lo, hi = _day(since, "since"), _day(until, "until")
+        if lo and hi and lo > hi:
+            raise StoreError(f"since ({lo}) is after until ({hi})")
         limit = max(1, min(25, int(limit)))
         want = set(kinds or ("note", "decision", "goal", "commitment", "checkin"))
         out: list[dict] = []
@@ -896,19 +913,30 @@ class FounderStore:
                     continue
                 for row in self.db.execute(f"SELECT * FROM {table} WHERE founder_id=? AND coach=?", (self.fid, self.coach,)):
                     hay = " ".join(str(row[c] or "") for c in cols).lower()
-                    hit = sum(1 for w in words if w in hay)
+                    hit = sum(1 for w in words if w in hay) if words else 1
                     if hit:
-                        out.append({"id": row["id"], "kind": kind, "title": str(row[title])[:120],
-                                    "snippet": _snippet(hay, words), "date": str(row[day])[:10],
-                                    "score": round(hit / len(words), 3)})
-        out.sort(key=lambda r: r["date"], reverse=True)          # newest first, then the best match first
-        out.sort(key=lambda r: -r["score"])
-        return out[:limit]
+                        item = {"id": row["id"], "kind": kind, "title": str(row[title])[:120],
+                                "snippet": _snippet(hay, words), "date": str(row[day])[:10], "_t": str(row[day])}
+                        if words:
+                            item["score"] = round(hit / len(words), 3)
+                        if "week" in row.keys() and row["week"]:
+                            item["week"] = row["week"]
+                        out.append(item)
+        out = [r for r in out if (not lo or r["date"] >= lo) and (not hi or r["date"] <= hi)]
+        if timeline:
+            out.sort(key=lambda r: (r["_t"], r["id"]))                      # oldest first
+        else:
+            out.sort(key=lambda r: r["date"], reverse=True)          # newest first, then the best match first
+            out.sort(key=lambda r: -r["score"])
+        return [{k: v for k, v in r.items() if k != "_t"} for r in out[:limit]], len(out)
 
     def _recall_notes(self, words: list[str], include_superseded: bool) -> list[dict]:
         sup = "" if include_superseded else " AND n.superseded_by IS NULL"
         rows: list[sqlite3.Row] = []
-        if self.has_fts():
+        if not words:                                              # a timeline with no query: every Note
+            rows = self.db.execute(f"SELECT n.*, 0.0 AS rank FROM notes n WHERE n.founder_id=? AND n.coach=?{sup}",
+                                   (self.fid, self.coach)).fetchall()
+        elif self.has_fts():
             match = " OR ".join(f"{w}*" for w in words)
             try:
                 rows = self.db.execute(
@@ -925,8 +953,9 @@ class FounderStore:
             hay = (r["title"] + " " + r["summary"]).lower()
             hit = sum(1 for w in words if w in hay)
             item = {"id": r["id"], "kind": "note", "title": r["title"], "snippet": _snippet(hay, words),
-                    "date": r["created_at"][:10], "score": round(max(hit, 1) / len(words), 3), "type": r["type"],
-                    "origin": r["origin"]}
+                    "date": r["created_at"][:10], "_t": r["created_at"], "type": r["type"], "origin": r["origin"]}
+            if words:
+                item["score"] = round(max(hit, 1) / len(words), 3)
             if r["superseded_by"]:
                 item["superseded_by"] = r["superseded_by"]
             out.append(item)
@@ -1513,6 +1542,16 @@ def _file_key(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return st.st_dev, st.st_ino
+
+
+def _day(value: str | None, name: str) -> str | None:
+    """A date window's edge as YYYY-MM-DD (None when not given); anything else is refused by name."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return dt.date.fromisoformat(str(value).strip()[:10]).isoformat()
+    except ValueError:
+        raise StoreError(f"{name} must be a date like 2026-10-01") from None
 
 
 def _snippet(text: str, words: list[str], width: int = 160) -> str:

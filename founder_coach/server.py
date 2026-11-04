@@ -327,8 +327,10 @@ class ReadOut(BaseModel):
 
 class RecallOut(BaseModel):
     query: str
-    hits: list[dict[str, Any]] = Field(description="best first: id, kind, title, snippet, date, score (the share of the "
-                                       "query's words found); a Note also type, origin and superseded_by")
+    hits: list[dict[str, Any]] = Field(description="best first (oldest first with timeline): id, kind, title, snippet, "
+                                       "date, score (the share of the query's words found, when there was a query), week "
+                                       "(on a record kept by week); a Note also type, origin and superseded_by")
+    total: int | None = Field(default=None, description="how many records matched, of which `hits` shows the first ones")
     note: str | None = None
 
 
@@ -1310,22 +1312,31 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
     if product.has("notes"):
         @_tool(name="coach_recall", title="Search this Project's Notes and records", annotations=READ)
         def coach_recall(
-            query: Annotated[str, Field(min_length=2, max_length=300, description="the words the earlier discussion, "
-                                        "research or decision would contain, e.g. 'pricing experiment interviews'")],
             ctx: Context,
+            query: Annotated[str | None, Field(min_length=2, max_length=300, description="the words the earlier "
+                             "discussion, research or decision would contain, e.g. 'pricing experiment interviews'; "
+                             "optional with timeline")] = None,
             kinds: Annotated[list[Literal["note", "decision", "goal", "commitment", "checkin"]] | None, Field(
                 description="only these kinds of record; default all")] = None,
             limit: Annotated[int, Field(ge=1, le=25, description="most hits to return")] = 8,
             include_superseded: Annotated[bool, Field(description="also Notes a newer Note replaced")] = False,
+            since: Annotated[str | None, Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="only records dated on or "
+                             "after this day, YYYY-MM-DD (a Note by when it was made, a Decision by when it was "
+                             "decided)")] = None,
+            until: Annotated[str | None, Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="only records dated on or "
+                             "before this day, YYYY-MM-DD")] = None,
+            timeline: Annotated[bool, Field(description="list the matches oldest first instead of best first; the "
+                                "query may then be left out to list every record in the window")] = False,
             id: Annotated[str | None, Field(description="instead of a search: the id of one record to read in full, "
                                             "with its links")] = None,
         ) -> Annotated[CallToolResult, RecallOut]:
             """Look up what this Project's memory already holds: Notes (full-text, best match first) and the
             other records this coach keeps. Use it before answering about earlier work, decisions or research, and
             before proposing a Note, to link or supersede rather than repeat. Pass `id` to read one record whole
-            (a Note's summary, citations as saved, and its links). Results are the Founder's own words and the coach's
-            earlier conclusions, dated: say when something was said, and treat an origin "coach" Note as a lead,
-            not a fact. Read-only."""
+            (a Note's summary, citations as saved, and its links). For "what happened when", pass `since` and `until`
+            (days, inclusive) and `timeline: true`: the records come oldest first, each with its date, and a query
+            narrows them. Results are the Founder's own words and the coach's earlier conclusions, dated: say when
+            something was said, and treat an origin "coach" Note as a lead, not a fact. Read-only."""
             store = _need_store(_state(ctx))
             try:
                 if id:
@@ -1333,13 +1344,23 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
                     if rec is None:
                         raise ToolError(f"no record {id!r}; ids come from coach_get_context or a coach_recall search")
                     return _result(RecallOut(query=id, hits=[rec]))
-                hits = store.recall(query, kinds=kinds, limit=limit, include_superseded=include_superseded)
+                if not query and not timeline:
+                    raise ToolError("give a query (the words the record would contain), or timeline: true to list "
+                                    "records by date")
+                hits, total = store.recall_page(query, kinds=kinds, limit=limit, include_superseded=include_superseded,
+                                                since=since, until=until, timeline=timeline)
             except StoreError as e:
                 raise ToolError(str(e)) from None
             except (sqlite3.Error, OSError) as e:
                 raise ToolError(_storage_error(e)) from None
-            return _result(RecallOut(query=query, hits=hits, note=None if hits else
-                                     "nothing in this Project's memory matches: say so, don't guess what was said"))
+            note = None
+            if not hits:
+                note = ("nothing in this Project's memory matches" + (" in that period" if since or until else "")
+                        + ": say so, don't guess what was said")
+            elif total > len(hits):
+                note = (f"{total - len(hits)} more match" + (f"; to continue, ask again with since={hits[-1]['date']} "
+                        f"(records from that day repeat)" if timeline else " (narrow the query, the kinds or the dates)"))
+            return _result(RecallOut(query=query or "", hits=hits, total=total, note=note))
 
     # 6b -----------------------------------------------------------------------------
     # The investor Pack's Holdings (M6g): only a Pack that keeps them has these tools. Numbers are computed here,

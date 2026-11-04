@@ -28,6 +28,14 @@ Policies (ADR-0017 amendment, 2026-10-13): `auto` applies every run's tags with 
 a failing or outdated labelled set is reported, not blocking. `reviewed` applies them only after
 `ytbrain eval tags` passed, and a run it holds back keeps the tags already applied.
 
+The checker (ADR-0023, off by default: YTBRAIN_TAG_CHECK=flagged|all, `ytbrain tag --check`): a model reads each
+flagged chunk *with its Document's title and summary* and chooses among every Domain (or none), because a chunk read
+alone, without its Document, scores nearly alike for a talk that merely mentions code and one that teaches it.
+Flagged = a chunk the embedding could not place, or one where a Domain nobody hinted wins or ties (`all`: every
+chunk). Its verdicts are cached in tags.db like tie-breaks; a chunk it could not answer keeps its embedding and
+tie-break tag and is asked again next run. A backfill is staged first (`tag --check flagged --stage`), compared
+(`domains diff`), then promoted one Domain at a time after a backup (`domains promote`, `domains restore`).
+
 Nothing here re-extracts or re-embeds: results go to data/tags/tags.db (with their origin and
 scores, for `ytbrain domains why`) and onto the index's `domains` column in place.
 """
@@ -36,6 +44,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import sqlite3
 import time
 from collections import Counter
@@ -64,6 +73,25 @@ Texts:
 {texts}
 
 Answer with JSON only: {{"answers": [{{"n": 1, "domains": ["<a candidate>"]}}, ...]}}, one entry per text."""
+CHECK_PROMPT = """You sort short texts from a personal knowledge Library by subject. Each text is one passage or
+item from a larger document; the document's title and the start of its summary are given so you can read the text
+in context. For each numbered text, choose the Domain(s) it is mainly about, ONLY from the list below. Choose one;
+choose two only when the text is equally about both; choose none when no Domain fits (greetings, anecdotes,
+housekeeping). A document that mentions a subject in passing does not make a passage about it: judge what THIS
+text is about.
+
+Domains:
+{domains}
+
+Texts:
+{texts}
+
+Answer with JSON only: {{"answers": [{{"n": 1, "domains": ["<a Domain from the list>"]}}, ...]}}, one entry per
+text, with an empty list for none."""
+CHECK_VERSION = "ck1-" + hashlib.sha256(CHECK_PROMPT.encode()).hexdigest()[:8]
+CHECK_MODES = ("off", "flagged", "all")
+CHECK_TEXT = 700                # characters of the chunk the checker reads
+CHECK_SUMMARY = 300             # characters of the Document's summary it reads beside the title
 AUTO_MIN_PASSAGES = 2           # `auto`: decided Passages a high-tier Domain needs, whatever its share
 TIEBREAK_VERSION = "tb1-" + hashlib.sha256(TIEBREAK_PROMPT.encode()).hexdigest()[:8]
 
@@ -183,6 +211,13 @@ class TagDB:
                 PRIMARY KEY (scope, domain));
             CREATE TABLE IF NOT EXISTS auto_tags (doc_id TEXT NOT NULL, domain TEXT NOT NULL,
                 PRIMARY KEY (doc_id, domain));
+            CREATE TABLE IF NOT EXISTS checked (key TEXT PRIMARY KEY, domains TEXT NOT NULL, model TEXT NOT NULL,
+                at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS staged_item_tags (item_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL,
+                domains TEXT NOT NULL, suggested TEXT NOT NULL, origin TEXT NOT NULL, scores TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS staged_doc_tags (doc_id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
+                domains TEXT NOT NULL, suggested TEXT NOT NULL, origin TEXT NOT NULL, shares TEXT NOT NULL,
+                hints TEXT NOT NULL);
         """)
 
     def meta(self, key: str) -> str | None:
@@ -202,6 +237,65 @@ class TagDB:
         self.db.executemany("INSERT OR REPLACE INTO tiebreak VALUES (?,?,?,?)",
                             [(k, json.dumps(v), model, now) for k, v in rows])
         self.db.commit()
+
+    def checked(self, keys: list[str]) -> dict[str, list[str]]:
+        """The checker's cached verdicts: key -> Domains ([] = the model said none fits)."""
+        out = {}
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            q = "SELECT key, domains FROM checked WHERE key IN (" + ",".join("?" * len(chunk)) + ")"
+            out.update({r["key"]: json.loads(r["domains"]) for r in self.db.execute(q, chunk)})
+        return out
+
+    def cache_checked(self, rows: list[tuple[str, list[str]]], model: str) -> None:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.db.executemany("INSERT OR REPLACE INTO checked VALUES (?,?,?,?)",
+                            [(k, json.dumps(v), model, now) for k, v in rows])
+        self.db.commit()
+
+    # -- staging: a backfill's results wait here, beside the tags in use, until promoted one Domain at a time
+    def stage(self, items: dict, docs: dict, meta: dict) -> None:
+        """Keep a whole run's results for comparison, in one transaction; the tags in use are not touched."""
+        with self.db:
+            self.db.execute("DELETE FROM staged_item_tags")
+            self.db.execute("DELETE FROM staged_doc_tags")
+            self.db.executemany("INSERT INTO staged_item_tags VALUES (?,?,?,?,?,?)", [
+                (i, t.doc_id, json.dumps(list(t.domains)), json.dumps(list(t.suggested)), t.origin,
+                 json.dumps(t.scores)) for i, t in items.items()])
+            self.db.executemany("INSERT INTO staged_doc_tags VALUES (?,?,?,?,?,?,?)", [
+                (d, t.source_id, json.dumps(list(t.domains)), json.dumps(list(t.suggested)), t.origin,
+                 json.dumps(t.shares), json.dumps(list(t.hints))) for d, t in docs.items()])
+            self.db.executemany("INSERT OR REPLACE INTO meta VALUES (?,?)",
+                                [(f"staged_{k}", str(v)) for k, v in meta.items()])
+
+    def staged(self) -> bool:
+        return bool(self.meta("staged_tagged_at"))
+
+    def backup(self, directory: Path | None = None) -> Path:
+        """A consistent copy of tags.db (SQLite's own backup, safe while open), named by the time; never overwritten."""
+        d = Path(directory) if directory else self.path.parent / "backups"
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        target, n = d / f"tags-{stamp}.db", 1
+        while target.exists():
+            n += 1
+            target = d / f"tags-{stamp}-{n}.db"
+        tmp = target.with_suffix(".db.tmp")
+        dst = sqlite3.connect(str(tmp))
+        try:
+            self.db.backup(dst)
+        finally:
+            dst.close()
+        os.replace(tmp, target)
+        return target
+
+    def restore(self, path: Path) -> None:
+        """Put a backup's contents back (the whole file, in one SQLite backup)."""
+        src = sqlite3.connect(str(path))
+        try:
+            src.backup(self.db)
+        finally:
+            src.close()
 
     def confirmations(self) -> set[tuple[str, str]]:
         return {(r["scope"], r["domain"]) for r in self.db.execute("SELECT scope, domain FROM confirmations")}
@@ -318,7 +412,7 @@ class ItemTag:
     doc_id: str
     domains: tuple[str, ...]
     suggested: tuple[str, ...] = ()
-    origin: str = "embedding"      # embedding | tiebreak | unresolved | inherited | document
+    origin: str = "embedding"      # embedding | tiebreak | checked | unresolved | inherited | document
     scores: dict = field(default_factory=dict)
 
 
@@ -345,6 +439,13 @@ class Result:
     calls: int = 0
     cost: float = 0.0
     est_calls: int = 0             # dry run: calls the uncached close calls would need
+    flagged: int = 0               # chunks the checker is to read this run
+    check_cached: int = 0          # of them, answered from the cache
+    check_asked: int = 0           # of them, answered by the model this run
+    unchecked: int = 0             # of them, still without a verdict (model unreachable, over budget): asked again next run
+    check_changed: int = 0         # of the answered, ones whose Domains differ from what the embedding offered
+    check_calls: int = 0
+    est_check_calls: int = 0       # dry run: calls the uncached flagged chunks would need
 
     @property
     def awaiting_review(self) -> int:
@@ -406,15 +507,160 @@ def llm_tiebreak(reg, model: str) -> AskBatch:
     return ask
 
 
+CheckInput = tuple[str, str, str]                       # (chunk text, Document title, Document summary)
+AskCheck = Callable[[list[CheckInput]], tuple[list[list[str] | None], float, int]]
+
+
+def _definitions(reg) -> list[list]:
+    """What the checker's answer depends on: each Domain's name, description, examples and `not_about`."""
+    return [[d.name, d.description, list(d.examples), d.not_about] for d in sorted(reg.domains.values(), key=lambda d: d.name)]
+
+
+def check_key(text: str, title: str, summary: str, reg, model: str) -> str:
+    """The cache key of a verdict: the chunk, the context it was read in, every Domain's definition, the prompt
+    and the model. A changed definition, prompt or model asks again; nothing else does."""
+    blob = json.dumps([text[:CHECK_TEXT], title, summary[:CHECK_SUMMARY], _definitions(reg), CHECK_VERSION, model],
+                      ensure_ascii=False)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def llm_check(reg, model: str) -> AskCheck:
+    """A batch of (text, title, summary) -> ([the chunk's Domains, [] when none fits, None when the model gave no
+    usable answer], cost, calls), over the same endpoint and backoff as the tie-break. The Domain list is closed:
+    a name outside it is no answer."""
+    from pydantic import BaseModel
+
+    from .eval import llm
+
+    class One(BaseModel):
+        n: int
+        domains: list[str]
+
+    class Batch(BaseModel):
+        answers: list[One]
+
+    listing = "\n".join(
+        f"- {d.name}: {d.description}" + (f" Not about: {d.not_about}" if d.not_about else "")
+        + (" For example: " + " | ".join(d.examples) if d.examples else "")
+        for d in sorted(reg.domains.values(), key=lambda d: d.name))
+    names = set(reg.names)
+
+    def ask(batch):
+        texts = "\n\n".join(
+            f"[{i}] Document: {title or '(untitled)'}" + (f" - {summary[:CHECK_SUMMARY]}" if summary else "")
+            + f"\nText: {text[:CHECK_TEXT]}" for i, (text, title, summary) in enumerate(batch, 1))
+        a = llm.ask(CHECK_PROMPT.format(domains=listing, texts=texts), Batch, model)
+        out: list[list[str] | None] = [None] * len(batch)
+        for ans in (a.value.answers if a.value else []):
+            if 1 <= ans.n <= len(batch):
+                chosen = [d for d in dict.fromkeys(ans.domains) if d in names]
+                out[ans.n - 1] = sorted(chosen) if chosen else ([] if not ans.domains else None)
+        return out, a.cost, a.calls
+    return ask
+
+
+def check_mode(raw: str | None = None) -> str:
+    """off | flagged | all, from the argument or YTBRAIN_TAG_CHECK; a typo is refused, never guessed."""
+    from . import config as C
+    name = str(raw if raw is not None else C.TAG_CHECK).strip().lower() or "off"
+    if name not in CHECK_MODES:
+        raise PolicyError(f"YTBRAIN_TAG_CHECK={name!r} is not a mode: use off, flagged or all")
+    return name
+
+
+def _flag_for_check(rows: list[dict], cands: dict[str, list[str]], hints: dict, mode: str) -> list[dict]:
+    """The chunks the checker reads: in `flagged` mode those the embedding could not place or where a Domain
+    nobody hinted wins or ties; in `all` mode every chunk. Summaries never (they take their Document's Domains)."""
+    out = []
+    for r in rows:
+        if r.get("kind") == "summary":
+            continue
+        c = cands[r["item_id"]]
+        hinted = set(hints.get(r["doc_id"]) or ())
+        if mode == "all" or not c or any(d not in hinted for d in c):
+            out.append(r)
+    return out
+
+
+def _run_check(rows, cands, hints, reg, ask, mode, titles, db, model, s, max_cost, dry_run, say, res) -> dict[str, list[str]]:
+    """item_id -> the checker's Domains for the flagged chunks that have a verdict (cached or asked now)."""
+    summaries = {r["doc_id"]: r.get("text") or "" for r in rows if r.get("kind") == "summary"}
+
+    def context(r):
+        return titles.get(r["doc_id"], "") or "", summaries.get(r["doc_id"], "")
+
+    flagged = _flag_for_check(rows, cands, hints, mode)
+    res.flagged = len(flagged)
+    keys = {r["item_id"]: check_key(r.get("text") or "", *context(r), reg, model) for r in flagged}
+    have = db.checked(list(keys.values())) if db else {}
+    verdict: dict[str, list[str]] = {}
+    todo = []
+    for r in flagged:
+        k = keys[r["item_id"]]
+        if k in have:
+            verdict[r["item_id"]] = sorted(d for d in have[k] if d in reg.names)
+            res.check_cached += 1
+        else:
+            todo.append(r)
+    res.est_check_calls = math.ceil(len(todo) / s.batch) if todo else 0
+    if todo and ask and not dry_run:
+        from .eval.llm import Budget, run_parallel
+        from .extract.runner import BackendUnavailable
+        budget = Budget(max_cost if max_cost is not None else float("inf"))
+        batches = [todo[i:i + s.batch] for i in range(0, len(todo), s.batch)]
+        failed = {"n": 0, "why": ""}
+
+        def work(part):
+            result = ask([(r.get("text") or "", *context(r)) for r in part])
+            budget.add(result[1])
+            return result
+
+        def on_result(part, result, err):
+            if err is not None:
+                failed["n"] += 1
+                failed["why"] = failed["why"] or f"{type(err).__name__}: {str(err)[:120]}"
+                return
+            answers, cost, calls = result
+            res.cost += cost
+            res.check_calls += calls
+            new = []
+            for r, a in zip(part, answers):
+                if a is None:                           # no usable answer: not cached, so asked again next run
+                    continue
+                verdict[r["item_id"]] = a
+                res.check_asked += 1
+                new.append((keys[r["item_id"]], list(a)))
+            if db and new:
+                db.cache_checked(new, model)
+        say(f"tag: the checker ({model}) reads {len(todo)} chunk(s) in {len(batches)} batch(es), {s.workers} at a time"
+            + (f", up to ${max_cost:g}" if max_cost is not None else ""))
+        try:
+            stopped = run_parallel(batches, work, on_result, workers=s.workers, budget=budget, label="tag checks")
+        except BackendUnavailable as e:
+            stopped = f"backend: {e}"
+        if failed["n"]:
+            say(f"tag: the checker was unavailable for {failed['n']} batch(es) ({failed['why']}); those chunks keep their "
+                f"embedding and tie-break tags until the next run")
+        if stopped:
+            say(f"tag: stopped checking ({stopped}); the chunks not read keep their embedding and tie-break tags until "
+                f"the next run (verdicts so far are cached)")
+    res.unchecked = len(flagged) - len(verdict)
+    return verdict
+
+
 def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hints: dict[str, list[str]],
         settings: Settings | None = None, ask: AskBatch | None = None, db: TagDB | None = None,
         model: str = "", max_cost: float | None = None, dry_run: bool = False, say=print,
-        retry_undecided: bool = False, auto_share: float | None = None) -> Result:
+        retry_undecided: bool = False, auto_share: float | None = None,
+        check: AskCheck | None = None, mode: str = "off", titles: dict[str, str] | None = None,
+        check_model: str = "") -> Result:
     """Tag every item in `rows` with `vectors` (KnowledgeStore.tag_inputs). `hints`: doc_id -> configured
     Domains (never the registry default). `ask`: the tie-break model, or None to leave close calls
     unresolved. `auto_share`: the `auto` policy's bar for applying a high-tier Domain from the content alone
-    (None: only a hint or a person confirms one). Pure apart from `db` (cache reads always; writes only
-    when not a dry run)."""
+    (None: only a hint or a person confirms one). `mode` (off | flagged | all) with `check` (the checking model,
+    or None for cached verdicts only) and `titles` (doc_id -> title): the checker of ADR-0023 reads the flagged
+    chunks with their Document's title and summary before the tie-break does, and a chunk with a verdict is not
+    sent to it. Pure apart from `db` (cache reads always; writes only when not a dry run)."""
     s = settings or Settings()
     names = reg.names
     prof = profile_texts(reg)
@@ -426,10 +672,13 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
     cands: dict[str, list[str]] = {}
     for r, sc in zip(rows, scores):
         cands[r["item_id"]] = candidates(sc, set(hints.get(r["doc_id"]) or ()), s)
-    close = [r for r in rows if len(cands[r["item_id"]]) > 1]
+    res = Result({}, {})
+    verdict = (_run_check(rows, cands, hints, reg, check, mode, titles or {}, db, check_model or model, s, max_cost,
+                          dry_run, say, res) if mode != "off" else {})
+    close = [r for r in rows if len(cands[r["item_id"]]) > 1 and r["item_id"] not in verdict]
+    res.close_calls = len(close)
     keys = {r["item_id"]: tiebreak_key(r.get("text") or "", cands[r["item_id"]], reg, model) for r in close}
     have = db.cached(list(keys.values())) if db else {}
-    res = Result({}, {}, close_calls=len(close))
     chosen: dict[str, tuple[list[str], str]] = {}
     todo = []
     for r in close:
@@ -447,7 +696,8 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
         # or a failure loses at most the batches in flight, and the next run asks only what is left.
         from .eval.llm import Budget, run_parallel
         from .extract.runner import BackendUnavailable
-        budget = Budget(max_cost if max_cost is not None else float("inf"))
+        cap = None if max_cost is None else max(0.0, max_cost - res.cost)      # what the checker spent is spent
+        budget = Budget(cap if cap is not None else float("inf"))
         batches = [todo[i:i + s.batch] for i in range(0, len(todo), s.batch)]
         failed = {"n": 0, "why": ""}
 
@@ -474,7 +724,7 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
             if db and new:
                 db.cache(new, model)
         say(f"tag: asking {model} about {len(todo)} close call(s) in {len(batches)} batch(es), "
-            f"{s.workers} at a time" + (f", up to ${max_cost:g}" if max_cost is not None else ""))
+            f"{s.workers} at a time" + (f", up to ${cap:g}" if cap is not None else ""))
         try:
             stopped = run_parallel(batches, work, on_result, workers=s.workers, budget=budget, label="tag tie-breaks")
         except BackendUnavailable as e:                 # bad key, model or credit: nothing more can work
@@ -493,6 +743,11 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
         c = cands[r["item_id"]]
         top = dict(sorted(sc.items(), key=lambda kv: -kv[1])[:3])
         top = {d: round(v, 4) for d, v in top.items()}
+        if r["item_id"] in verdict:             # the checker read it with its Document: its Domains, or none fit
+            v = tuple(sorted(verdict[r["item_id"]]))
+            res.items[r["item_id"]] = ItemTag(r["doc_id"], v, origin="checked", scores=top)
+            res.check_changed += int(set(v) != set(c))
+            continue
         if not c:
             res.items[r["item_id"]] = ItemTag(r["doc_id"], (), origin="inherited", scores=top)
         elif len(c) == 1:
@@ -558,7 +813,8 @@ def run(rows: list[dict], vectors, reg, embed: Callable[[list[str]], list], hint
         res.docs[doc_id] = DocTag(source_id, ok, sugg, origin, shares, tuple(sorted(hinted)), auto)
         for r in items:
             t = res.items[r["item_id"]]
-            if not t.domains:
+            t.domains = tuple(d for d in t.domains if not is_rejected(d, doc_id, source_id, hinted))   # a "no" reaches
+            if not t.domains:                                       # the items too, not only the Document (ADR-0023)
                 t.domains = ok
             elif r.get("kind") == "summary":
                 t.domains, t.origin = ok, "document"
@@ -633,10 +889,13 @@ def apply_plan(db: TagDB, *, gated: bool, no_apply: bool, pol: str, reg, s: Sett
     return ("keep" if db.applied else "store"), note
 
 
-def meta_for(reg, s: Settings, embed_model: str, model: str) -> dict:
-    return {"tagger_version": TAGGER_VERSION, "domain_list": reg.fingerprint(), "settings": s.key(),
-            "embed_model": embed_model, "tiebreak_model": model, "tiebreak_prompt": TIEBREAK_VERSION,
-            "tagged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+def meta_for(reg, s: Settings, embed_model: str, model: str, mode: str = "off", check_model: str = "") -> dict:
+    out = {"tagger_version": TAGGER_VERSION, "domain_list": reg.fingerprint(), "settings": s.key(),
+           "embed_model": embed_model, "tiebreak_model": model, "tiebreak_prompt": TIEBREAK_VERSION,
+           "tagged_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if mode != "off":
+        out.update({"check_mode": mode, "check_model": check_model or model, "check_prompt": CHECK_VERSION})
+    return out
 
 
 # ----------------------------------------------------------------------------- new Domains (`domains propose`)
@@ -907,3 +1166,178 @@ def domain_stats(db: "TagDB") -> dict[str, dict]:
                 e["unhinted"] += 1
                 src["unhinted"] += 1
     return out
+
+
+# ----------------------------------------------------------------------------- staged backfills (ADR-0023)
+@dataclass
+class Diff:
+    """The staged run against the tags in use, by Domain: what promoting that Domain would change."""
+    items: list[tuple[str, str, tuple[str, ...], tuple[str, ...], str]]   # item_id, doc_id, now, staged, staged origin
+    docs: list[tuple[str, tuple[str, ...], tuple[str, ...]]]              # doc_id, now, staged
+    per_domain: dict[str, dict[str, int]]
+    only_staged: int = 0           # staged items the tags in use don't have (not indexed yet): never promoted
+    only_current: int = 0          # items in use the staged run no longer has
+
+
+def diff(db: TagDB) -> Diff:
+    """Item and Document tags that differ between the staged run and the tags in use (Domains that reach packs
+    only: a change of suggestion alone is not a change here)."""
+    now = {r["item_id"]: (r["doc_id"], tuple(sorted(json.loads(r["domains"])))) for r in db.db.execute("SELECT * FROM item_tags")}
+    new = {r["item_id"]: (r["doc_id"], tuple(sorted(json.loads(r["domains"]))), r["origin"])
+           for r in db.db.execute("SELECT * FROM staged_item_tags")}
+    items = [(i, new[i][0], now[i][1], new[i][1], new[i][2]) for i in sorted(new) if i in now and now[i][1] != new[i][1]]
+    docs_now = {r["doc_id"]: tuple(sorted(json.loads(r["domains"]))) for r in db.db.execute("SELECT * FROM doc_tags")}
+    docs_new = {r["doc_id"]: tuple(sorted(json.loads(r["domains"]))) for r in db.db.execute("SELECT * FROM staged_doc_tags")}
+    docs = [(d, docs_now[d], docs_new[d]) for d in sorted(docs_new) if d in docs_now and docs_now[d] != docs_new[d]]
+    per: dict[str, dict[str, int]] = {}
+
+    def bump(domain: str, key: str) -> None:
+        per.setdefault(domain, {"items_gained": 0, "items_lost": 0, "docs_gained": 0, "docs_lost": 0})[key] += 1
+    for _i, _d, before, after, _o in items:
+        for d in set(after) - set(before):
+            bump(d, "items_gained")
+        for d in set(before) - set(after):
+            bump(d, "items_lost")
+    for _d, before, after in docs:
+        for d in set(after) - set(before):
+            bump(d, "docs_gained")
+        for d in set(before) - set(after):
+            bump(d, "docs_lost")
+    return Diff(items, docs, per, len(set(new) - set(now)), len(set(now) - set(new)))
+
+
+def _toggle(before: tuple[str, ...], after: tuple[str, ...], domain: str, *, keep_one: bool) -> tuple[str, ...]:
+    """`before` with only `domain`'s membership taken from `after`. An item or Document never ends with no Domain:
+    when losing `domain` leaves none, it takes the staged Domains (where it is going)."""
+    out = set(before)
+    if domain in after:
+        out.add(domain)
+    else:
+        out.discard(domain)
+    if not out and keep_one:
+        out = set(after)
+    return tuple(sorted(out))
+
+
+def promote(db: TagDB, domains: list[str]) -> tuple[dict[str, tuple[str, ...]], int]:
+    """Take the staged run's changes that concern `domains` (gaining or losing them) and no others, in one
+    transaction: ({item_id: new Domains} for the index, Documents changed). The caller backs up first."""
+    staged_items = {r["item_id"]: r for r in db.db.execute("SELECT * FROM staged_item_tags")}
+    staged_docs = {r["doc_id"]: r for r in db.db.execute("SELECT * FROM staged_doc_tags")}
+    want: dict[str, tuple[str, ...]] = {}
+    item_sql, doc_sql = [], []
+    for r in db.db.execute("SELECT * FROM item_tags"):
+        st = staged_items.get(r["item_id"])
+        if st is None:
+            continue
+        before, after = tuple(json.loads(r["domains"])), tuple(json.loads(st["domains"]))
+        sug_b, sug_a = tuple(json.loads(r["suggested"])), tuple(json.loads(st["suggested"]))
+        cur, sug, took = before, sug_b, False
+        for d in domains:
+            if (d in before) != (d in after):
+                cur, took = _toggle(cur, after, d, keep_one=True), True
+            if (d in sug_b) != (d in sug_a):
+                sug = _toggle(sug, sug_a, d, keep_one=False)
+        if tuple(sorted(cur)) != tuple(sorted(before)) or tuple(sorted(sug)) != tuple(sorted(sug_b)):
+            want[r["item_id"]] = cur
+            item_sql.append((json.dumps(list(cur)), json.dumps(list(sug)), st["origin"] if took else r["origin"], r["item_id"]))
+    for r in db.db.execute("SELECT * FROM doc_tags"):
+        st = staged_docs.get(r["doc_id"])
+        if st is None:
+            continue
+        before, after = tuple(json.loads(r["domains"])), tuple(json.loads(st["domains"]))
+        sug_b, sug_a = tuple(json.loads(r["suggested"])), tuple(json.loads(st["suggested"]))
+        cur, sug, took = before, sug_b, False
+        for d in domains:
+            if (d in before) != (d in after):
+                cur, took = _toggle(cur, after, d, keep_one=True), True
+            if (d in sug_b) != (d in sug_a):
+                sug = _toggle(sug, sug_a, d, keep_one=False)
+        if tuple(sorted(cur)) != tuple(sorted(before)) or tuple(sorted(sug)) != tuple(sorted(sug_b)):
+            doc_sql.append((json.dumps(list(cur)), json.dumps(list(sug)), st["origin"] if took else r["origin"],
+                            st["shares"] if took else r["shares"], r["doc_id"]))
+    with db.db:
+        db.db.executemany("UPDATE item_tags SET domains=?, suggested=?, origin=? WHERE item_id=?", item_sql)
+        db.db.executemany("UPDATE doc_tags SET domains=?, suggested=?, origin=?, shares=? WHERE doc_id=?", doc_sql)
+        db.db.execute("INSERT OR REPLACE INTO meta VALUES ('promoted', ?)", (",".join(domains),))
+    return want, len(doc_sql)
+
+
+def latest_backup(directory: Path | None = None) -> Path | None:
+    d = Path(directory) if directory else TAGS_DIR / "backups"
+    files = sorted(d.glob("tags-*.db")) if d.is_dir() else []
+    return files[-1] if files else None
+
+
+# ----------------------------------------------------------------------------- comparing arms on one labelled sheet (ADR-0023)
+MIN_LABELS = 10                 # a Domain with fewer labelled items than this is never judged promotable
+WRONG_PACK_BAR = 0.01           # the share of labelled items a tagger may send to a Pack the label doesn't belong to
+
+
+def staged_current(db: TagDB) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """The staged run's tags, shaped like `current` (item_id -> Domains and suggestions, doc_id -> the same)."""
+    items = {r["item_id"]: set(json.loads(r["domains"])) | set(json.loads(r["suggested"]))
+             for r in db.db.execute("SELECT * FROM staged_item_tags")}
+    docs = {r["doc_id"]: set(json.loads(r["domains"])) | set(json.loads(r["suggested"]))
+            for r in db.db.execute("SELECT * FROM staged_doc_tags")}
+    return items, docs
+
+
+def domain_scores(labels: dict[str, set[str]], got: dict[str, set[str]]) -> dict[str, dict]:
+    """Per Domain over the labelled items that are tagged: true/false positives, misses, precision and recall."""
+    out: dict[str, dict] = {}
+    for item_id, want in labels.items():
+        if item_id not in got:
+            continue
+        have = got[item_id]
+        for d in want | have:
+            e = out.setdefault(d, {"tp": 0, "fp": 0, "fn": 0})
+            e["tp"] += int(d in want and d in have)
+            e["fp"] += int(d in have and d not in want)
+            e["fn"] += int(d in want and d not in have)
+    for e in out.values():
+        e["precision"] = round(e["tp"] / (e["tp"] + e["fp"]), 4) if e["tp"] + e["fp"] else 0.0
+        e["recall"] = round(e["tp"] / (e["tp"] + e["fn"]), 4) if e["tp"] + e["fn"] else 0.0
+        e["f1"] = round(2 * e["precision"] * e["recall"] / (e["precision"] + e["recall"]), 4) \
+            if e["precision"] + e["recall"] else 0.0
+        e["labelled"] = e["tp"] + e["fn"]
+    return out
+
+
+def wrong_pack_rate(labels: dict[str, set[str]], got: dict[str, set[str]], pack_domains: dict[str, set[str]]) -> float:
+    """The share of labelled, tagged items that reach a Pack none of whose Domains the label names (a founder talk in
+    the coding coach). `pack_domains`: Pack id -> its Domains."""
+    n = bad = 0
+    for item_id, want in labels.items():
+        if item_id not in got:
+            continue
+        n += 1
+        right = {p for p, ds in pack_domains.items() if ds & want}
+        reached = {p for p, ds in pack_domains.items() if ds & got[item_id]}
+        bad += int(bool(reached - right))
+    return round(bad / n, 4) if n else 0.0
+
+
+def compare_arms(labels: dict[str, set[str]], now: dict[str, set[str]], staged: dict[str, set[str]],
+                 pack_domains: dict[str, set[str]]) -> dict:
+    """The tags in use against the staged run on the same labels. The staged run `beats` the current one when its
+    precision and recall together are higher and fewer than WRONG_PACK_BAR of items reach a wrong Pack; a Domain is
+    `promotable` when its own F1 is no lower, it has at least MIN_LABELS labelled items, and the staged run beats overall."""
+    a, b = domain_scores(labels, now), domain_scores(labels, staged)
+    tot = {}
+    for name, got in (("now", now), ("staged", staged)):
+        sc = domain_scores(labels, got)
+        tp, fp, fn = (sum(e[k] for e in sc.values()) for k in ("tp", "fp", "fn"))
+        tot[name] = {"precision": round(tp / (tp + fp), 4) if tp + fp else 0.0,
+                     "recall": round(tp / (tp + fn), 4) if tp + fn else 0.0,
+                     "wrong_pack": wrong_pack_rate(labels, got, pack_domains),
+                     "items": sum(1 for i in labels if i in got)}
+    beats = (tot["staged"]["precision"] + tot["staged"]["recall"] > tot["now"]["precision"] + tot["now"]["recall"]
+             and tot["staged"]["wrong_pack"] < WRONG_PACK_BAR)
+    per = {}
+    for d in sorted(set(a) | set(b)):
+        x, y = a.get(d, {"f1": 0.0, "labelled": 0, "precision": 0.0, "recall": 0.0}), \
+            b.get(d, {"f1": 0.0, "labelled": 0, "precision": 0.0, "recall": 0.0})
+        per[d] = {"now": x, "staged": y,
+                  "promotable": bool(beats and y["labelled"] >= MIN_LABELS and y["f1"] >= x["f1"])}
+    return {"now": tot["now"], "staged": tot["staged"], "beats": beats, "domains": per}

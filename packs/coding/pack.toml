@@ -4,7 +4,7 @@
 [pack]
 id = "coding"
 # What it answers from: items whose Domains include any of these (ytbrain pack build --for coding)
-domains = ["coding", "system-design"]
+domains = ["coding", "system-design", "ai-engineering"]
 # Memory beyond the core: Goals ("p99 under 200 ms by Q1"), Decisions (architecture decisions), Notes, and the weekly
 # loop (Commitments, Check-ins; the check-in and weekly-focus skills): an opt-in a Pack makes by listing them
 modules = ["goals", "commitments", "checkins", "decisions", "notes"]

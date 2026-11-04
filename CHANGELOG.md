@@ -5,6 +5,20 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **A model checks each chunk with its Document before it is tagged (ADR-0023, off by default):** a chunk read alone
+  scored almost the same for a talk that mentions code and one that teaches it, so founder talks were tagged `coding`.
+  `ytbrain tag --check flagged` has a model read the chunks the embedding can't place, with the Document's title and
+  summary, against every Domain (or none); verdicts are cached and a chunk it can't answer keeps its embedding tag.
+  A Library that is already tagged is backfilled safely: `tag --check flagged --stage` keeps the result beside the tags in
+  use, `domains diff` compares it per Domain, `domains promote DOMAIN` backs up and applies one Domain at a time, and
+  `domains restore` undoes it. A new `ai-engineering` Domain (coding Pack) holds books on building with LLMs, `coding`
+  names programming languages and AI coding assistants, and `domains review --reject` now removes a Domain from the
+  Document's items as well as the Document.
+
+- **`coach_recall` by date:** `since` and `until` (YYYY-MM-DD, inclusive) keep only records dated in that window (a Note
+  by when it was made, a Decision by when it was decided), and `timeline: true` lists the matches oldest first, with the
+  query optional, so "what happened in October?" is one call. A result says how many matched (`total`) and where to
+  continue. Commitments and Check-ins show their week. No schema change; the coach skills say when to use it.
 - **A recurring Focus and Check-in for any coach (ADR-0022):** a Pack declares `[loop]` in `pack.toml` (`every`:
   weekly, fortnightly or monthly; `default`: on or off; up to five Check-in `questions` in its own terms) and each
   Project switches it on or off (`loop`) and may set its own rhythm (`loop_every`). Founder is on by default; the

@@ -82,11 +82,24 @@ domains:
     web_policy: always_latest
   coding:
     aliases: ["programming", "software engineering", "software craftsmanship"]
-    description: "Writing and maintaining code: clean code, design patterns, refactoring, testing, craftsmanship and professional habits of programmers."
+    description: "Writing and maintaining code: clean code, design patterns, refactoring, testing, programming languages and their idioms, craftsmanship, the professional habits of programmers, and working with AI coding assistants."
+    not_about: "Founders, teams or companies that only mention software in passing, and building products on top of AI models (prompting, retrieval, evaluation, fine-tuning): that is ai-engineering."
     examples:
       - How do I name functions and keep them small?
       - When is the Strategy pattern better than a conditional?
       - How do I refactor legacy code safely?
+      - How do I get an AI coding assistant to make changes I can trust?
     risk_tier: low
     freshness: evergreen
+    web_policy: when_gap
+  ai-engineering:
+    aliases: ["llm engineering", "applied ai", "generative ai engineering"]
+    description: "Building applications on top of foundation models and LLMs: prompting, retrieval and RAG, agents and tool use, evaluation, fine-tuning, dataset engineering, inference cost and latency, and shipping AI systems to production."
+    not_about: "General programming practice and using an AI assistant to write code: that is coding. Starting or funding an AI company: that is startup."
+    examples:
+      - How do I evaluate an LLM application before I ship it?
+      - When should I fine-tune a model instead of improving the prompt or retrieval?
+      - How do I keep the cost and latency of an agent under control?
+    risk_tier: low
+    freshness: 730
     web_policy: when_gap

@@ -20,7 +20,7 @@ when you start it; it isn't scheduled (the 03:15 launchd job still runs only `yt
 
 | Plan | Steps (each an ordinary `ytbrain` command, with its own resume) | When |
 |---|---|---|
-| ingest | `sync` → `clean` → `extract` → `verify` → one more extract + verify for Documents verify newly flagged → `index` → `tag --gated` → `enrich` → `verify` → `index` | every run (sync is how new talks, pages and books are found; a book folder that is no Domain name is only noted, since `tag` tags its Books by content, ADR-0017; `tag --gated` stores the Domains every run, at most $1 of tie-breaks, and applies them to the index as `YTBRAIN_TAG_POLICY` says (`auto`, the default: every run; `reviewed`: only after `ytbrain eval tags` passed for this tagger, Domain list and thresholds); `enrich` adds Rules and Facts to investment, coding and system-design Documents, at most $2 a run, and the second `verify` and `index` check and index only what it changed) |
+| ingest | `sync` → `clean` → `extract` → `verify` → one more extract + verify for Documents verify newly flagged → `index` → `tag --gated` → `enrich` → `verify` → `index` | every run (sync is how new talks, pages and books are found; a book folder that is no Domain name is only noted, since `tag` tags its Books by content, ADR-0017; `tag --gated` stores the Domains every run, at most $1 of tie-breaks, and applies them to the index as `YTBRAIN_TAG_POLICY` says (`auto`, the default: every run; `reviewed`: only after `ytbrain eval tags` passed for this tagger, Domain list and thresholds); `enrich` adds Rules and Facts to investment, coding, system-design and ai-engineering Documents, at most $2 a run, and the second `verify` and `index` check and index only what it changed) |
 | eval | `eval build --set <split> --top-up` for every split with Documents → `eval run --config full` → `eval judge --config full` → gate | the index or the labels changed since the last eval, or its verdict wasn't a pass |
 | plugin | `pack build` → assemble `dist/plugin` (+ zip) → with private Sources, `pack build --include-private` → `dist/plugin-private` (+ zip) → every other Pack in `packs/` (its pack from its Domains, its plugin assembled and validated, Private and/or Release as its `pack.toml` says) → `eval gap` on the shipped pack (a report: it never stops the run) → `claude plugin validate` → with `--coach`, `eval coach` | the last eval passed on the current index, and the index or the plugin's code changed; the coach eval only with `--coach`, and then only the gates whose inputs changed |
 
@@ -72,6 +72,9 @@ suggestions. Under `reviewed` they are
 applied only after `ytbrain eval tags` passed, and a run held back keeps the tags already applied. The summary and
 `last-run.md` say what the step did ("tags applied", "held back, earlier tags kept", how many high-tier tags were
 applied from the content). A bad policy value stops the run at that step, with the reason, before anything is written.
+With `YTBRAIN_TAG_CHECK=flagged` the step also has a model read the chunks the embedding can't place (ADR-0023). Backfill an
+already tagged Library with `ytbrain tag --check flagged --stage`, `ytbrain domains diff` and `ytbrain domains promote DOMAIN`
+rather than letting ingest do it, and `ytbrain domains restore` undoes a promotion.
 
 ## Public builds of the other Packs
 

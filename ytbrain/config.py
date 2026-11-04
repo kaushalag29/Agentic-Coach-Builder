@@ -108,6 +108,7 @@ LLM_MODEL = os.environ.get("YTBRAIN_LLM_MODEL", "qwen3:30b-a3b")
 # Kept as text: tagging.policy() checks them, so a typo stops the tag Step with a clear message instead of an import.
 TAG_POLICY = os.environ.get("YTBRAIN_TAG_POLICY", "auto")
 TAG_AUTO_SHARE = os.environ.get("YTBRAIN_TAG_AUTO_SHARE", "0.5")   # auto: a high-tier Domain on this share of a Document
+TAG_CHECK = os.environ.get("YTBRAIN_TAG_CHECK", "off")   # the chunk checker (ADR-0023): off | flagged | all
 LLM_BASE_URL = os.environ.get("YTBRAIN_LLM_BASE_URL", "http://localhost:11434")
 LLM_NUM_CTX = int(os.environ.get("YTBRAIN_LLM_NUM_CTX", "32768"))  # Ollama silently truncates
                                      # prompts past its default window (2-4k); a 20k-token transcript needs this

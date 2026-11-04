@@ -77,3 +77,10 @@ a weekly Check-in is too coarse to carry it.
   itself.
 - **Risk.** A Note is a summary, and a summary of a summary drifts: Origin, the kept quotes and the dates are there so
   a reader can see how far a Note is from what was said.
+
+## Amendment 2026-11-04: recall by date
+
+`coach_recall` takes `since` and `until` (days, inclusive) and `timeline`, which lists matches oldest first and lets the
+query be left out. A record's date is when it was made (a Decision: when it was decided); a Note still carries no
+validity interval. A markdown vault with `[[wikilinks]]` already opens in Obsidian, which draws the graph; a generated
+graph or diagram of Notes, Decisions and Goals is deferred until a person asks for it.

@@ -1135,6 +1135,7 @@ def test_every_coach_offers_assumption_notes_and_the_loop_skills_read_the_loop()
     for path in (("plugin", "skills", "coach"), ("packs", "coding", "skills", "coach"), ("packs", "investor", "skills", "coach")):
         text = read(*path, "SKILL.md")
         assert 'title "Assumption: <the subject>"' in text and "what would change their mind" in text, path
+        assert "`timeline: true`" in text and "`since`/`until`" in text, "the coach knows how to ask for a period"
         assert "only on a yes" in text and "never write the belief for them" in text, path
         assert len(re.findall(r"^\d\. \*\*", text, re.M)) == 8, "the contract still has 8 rules"
     for path in (("packs", "coding", "skills", "setup"), ("packs", "investor", "skills", "setup")):

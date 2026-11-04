@@ -37,10 +37,10 @@ Every command is resumable: Ctrl+C keeps finished work, and re-running continues
 | `invalidate <stage>` | Mark `fetch`, `clean`, `extract`, `verify` or `index` for redo | `--only-flagged`, `--source ID`, `--reason` |
 | `drop --source ID` | Take a Source's Documents out of the knowledge (then `index`) | |
 | `domains [list\|add\|ignore\|alias\|why\|review\|propose\|sample]` | The Library's Domains in `domains.yaml` (comments kept): list them, declare one (`add NAME --risk low\|medium\|high --description "…"`), mark a sorting folder (`ignore FOLDER`), another name for one (`alias DOMAIN NAME`); why a Document has its Domains (`why DOC`); high-tier tags awaiting confirmation (`review`, `--accept SOURCE:DOMAIN`); proposed Domains for content none fits (`propose`); labelling sheets for `eval tags` (`sample`) | `--example Q`, `--freshness DAYS`, `--web-policy`; `review --accept`; `propose --min-size N`; `sample --n --docs --seed` |
-| `enrich` | Add Rules, and Facts to records without any, for investment, coding and system-design Documents (ADR-0018): one call per Document, every item quoted; marks `verify` stale so the quotes are checked, then `index` turns them into `rule` and `fact` items; once per extraction and enrich prompt | `--dry-run`, `--max-cost USD`, `--doc PREFIX`, `--limit N` |
+| `enrich` | Add Rules, and Facts to records without any, for investment, coding, system-design and ai-engineering Documents (ADR-0018): one call per Document, every item quoted; marks `verify` stale so the quotes are checked, then `index` turns them into `rule` and `fact` items; once per extraction and enrich prompt | `--dry-run`, `--max-cost USD`, `--doc PREFIX`, `--limit N` |
 | `eval latency` | Search p95 the way the plugin runs it (its runtime, a Knowledge pack, ONNX models), on real Tuning questions after a warm-up; gate 1.5 s; writes data/eval/latency.json | `--pack PATH`, `--n`, `--no-rerank` |
 | `eval parity` | The subject-neutral extraction prompt against the startup one on ~30 startup talks (shadow extractions, the Library untouched): the neutral verifier pass rate within 2 points and at least 80 % of the Verified items; a pass makes new founder content use it | `--n`, `--max-cost` (default $1) |
-| `tag` | Tag Passages and items with Domains by what they say (ADR-0017): embedding scores, a cheap model for close calls only (cached), Document Domains by Passage share; nothing re-extracted or re-embedded | `--dry-run`, `--max-cost USD`, `--no-llm`, `--no-apply`, `--gated` |
+| `tag` | Tag Passages and items with Domains by what they say (ADR-0017): embedding scores, a cheap model for close calls only (cached), Document Domains by Passage share; nothing re-extracted or re-embedded | `--dry-run`, `--max-cost USD`, `--no-llm`, `--no-apply`, `--gated`, `--check off\|flagged\|all`, `--stage` |
 | `eval coach` | Gates G2 and G4–G8 (G8 for the investor coach) on the real host: the local Claude Code on your plan (Haiku, token-saving). Each gate is cached on what it reads (runtime, pack content, its skills, its cases) and how it is graded (rubric, judges, turn cap, the grading code), so only gates whose inputs changed run; a failed G4-G6 case gets up to three runs and a majority decides; stops if the plugin is reassembled mid-run with a change the gate reads | `--gate`, `--limit`, `--model`, `--max-turns`, `--host claude\|openrouter`, `--max-cost`, `--plugin DIR` (default `dist/plugin`) |
 | `claude [--model M] [--openrouter] -- <args>` | The local Claude Code for plugin work, on your plan with Haiku | `--model`, `--openrouter` (before `--`) |
 
@@ -81,6 +81,11 @@ ytbrain eval tags --items ... --documents ... --tune --save   # thresholds that 
 ytbrain tag                           # apply (ops runs `tag --gated`: every run under the default auto policy, only after eval tags passed under reviewed)
 ytbrain domains why <doc>             # where a Document's Domains came from
 ytbrain domains stats [--domain coding]  # items/Documents per Domain and Source from the last tag run; which Sources are tagged by content alone (read-only)
+ytbrain tag --check flagged --stage   # backfill (ADR-0023): a model reads the chunks the embedding can't place, with their Document; the result waits beside the tags in use, the index untouched
+ytbrain eval tags --items SHEET --compare   # score the staged run against the tags in use on the same labels: which Domains to promote
+ytbrain domains diff [--csv]          # the staged run against the tags in use, per Domain (--csv: the changed chunks with their text)
+ytbrain domains promote coding        # back up tags.db, then take only the staged changes that gain or lose that Domain, onto the index (--dry-run first)
+ytbrain domains restore               # put the latest tags.db backup back, and its Domains on the index
 ytbrain domains review                # high-tier tags awaiting your yes (--accept SOURCE:DOMAIN)
 ytbrain domains propose               # content no Domain fits, grouped, checked against the list
 ytbrain coach new <id> --person Engineer --project-noun system --domains coding --field "system=the system, in one line" [--modules goals,decisions,notes] [--owned] [--like coding]   # draft a Pack and its ask, coach and setup skills from templates (no model; never overwrites)
@@ -92,7 +97,7 @@ ytbrain eval run --config pack-keywords --compare pack-no-rerank   # what keywor
 ytbrain upgrade --dry-run             # records a new extraction would make differently: how many, at what cost
                                       #   (coding and system-design chapters move to the subject-neutral prompt)
 ytbrain eval parity                   # the neutral prompt vs the startup one on ~30 startup talks (shadow, ~$0.10)
-ytbrain enrich --dry-run              # Rules (and Facts) for investment, coding, system-design Documents
+ytbrain enrich --dry-run              # Rules (and Facts) for investment, coding, system-design, ai-engineering Documents
 ytbrain enrich --max-cost 2 && ytbrain verify && ytbrain index
 ytbrain enrich --workers 4            # parallel model calls (default YTBRAIN_LLM_WORKERS, as for extract); progress as extract's
 ytbrain upgrade --max-cost 2          # re-extract as many of them as fit $2 (then extract, verify, index)

@@ -271,7 +271,7 @@ class Ops:
                        note="Domains by content (ADR-0017), per YTBRAIN_TAG_POLICY (auto by default); "
                             "a cheap model only for uncached close calls"),
                   Step("ingest:enrich", ["enrich", "--max-cost", f"{ENRICH_MAX_COST:g}"],
-                       note="Rules (and Facts) for investment, coding and system-design Documents (ADR-0018)"),
+                       note="Rules (and Facts) for investment, coding, system-design and ai-engineering Documents (ADR-0018)"),
                   Step("ingest:verify-enriched", ["verify"], note="checks the quotes enrich added"),
                   Step("ingest:index-enriched", ["index"], note="indexes the Verified rules and facts")]
         return steps

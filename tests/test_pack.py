@@ -687,6 +687,90 @@ def test_ytbrain_tag_follows_the_policy_end_to_end_and_never_takes_applied_tags_
     assert code == 0 and meta(fresh, "applied") == "0" and meta(fresh, "status").startswith("stored for review"), out
 
 
+def test_a_backfill_is_staged_compared_promoted_per_domain_and_restored_on_a_real_index():
+    """ADR-0023 end to end: `tag --check flagged --stage` leaves the index alone; `domains diff` reports; `domains
+    promote` backs up and changes only the Domains named, in place; `domains restore` puts the backup back."""
+    try:
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from ytbrain.knowledge.store import KnowledgeStore
+    except ImportError:
+        return
+    from ytbrain import cli, config
+    from ytbrain import domains as D
+    from ytbrain import tagging as T
+    tmp = Path(tempfile.mkdtemp())
+    emb = HashEmbed()
+    store = KnowledgeStore(path=tmp / "lance")
+    for doc in dict.fromkeys(r["doc_id"] for r in ROWS):
+        store.replace_document(doc, [{**r, "domains": ["startup"], "source_id": "s", "vector": emb([r["indexable"]])[0],
+                                      "embed_model": emb.name} for r in ROWS if r["doc_id"] == doc], emb.dim)
+    reg = D.parse({"default": "startup", "domains": {"startup": {"description": "startups", "risk_tier": "medium"},
+                                                     "gtm": {"description": "selling", "risk_tier": "medium"}}})
+    db_path = tmp / "tags.db"
+    seen = []
+
+    def fake_llm_check(_reg, _model):
+        def ask(batch):
+            seen.append(batch)
+            return [["gtm"] if "pricing" in text else ["startup"] for text, _t, _s in batch], 0.0, 1
+        return ask
+
+    def domains_of():
+        return {r["item_id"]: tuple(sorted(r["domains"])) for r in store.tag_inputs()[0]}
+
+    def run(fn, ns):
+        out = io.StringIO()
+        rows, vectors = store.tag_inputs()
+        with mock.patch.object(cli, "_tag_inputs", lambda cmd: (store, rows, vectors, emb)), \
+                mock.patch.object(cli, "_domains", lambda: reg), mock.patch.object(cli, "_doc_tags", lambda *a, **k: {}), \
+                mock.patch.object(cli, "MANIFEST_DB", tmp / "m.db"), mock.patch.object(cli, "KnowledgeStore", store, create=True), \
+                mock.patch.object(T, "TAGS_DB", db_path), mock.patch.object(T, "llm_check", fake_llm_check), \
+                mock.patch("ytbrain.knowledge.store.KnowledgeStore", lambda *a, **k: store), \
+                mock.patch.object(config, "TAG_POLICY", "auto"), mock.patch.object(config, "TAG_AUTO_SHARE", "0.5"), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = fn(ns)
+        return code, out.getvalue()
+
+    base = dict(dry_run=False, max_cost=None, no_llm=False, retry_undecided=False, no_apply=False, gated=False,
+                check=None, stage=False)
+    code, out = run(cli.cmd_tag, argparse.Namespace(**{**base, "no_llm": True}))
+    assert code == 0, out
+    before = domains_of()
+    assert set(before.values()) == {("startup",)}
+    code, out = run(cli.cmd_tag, argparse.Namespace(**{**base, "check": "flagged", "stage": True}))
+    assert code == 0 and "staged for comparison" in out and "the checker had" in out, out
+    assert domains_of() == before, "staging never touches the index"
+    assert seen, "the checker was asked"
+    dns = lambda **k: argparse.Namespace(**k)                                              # noqa: E731
+    code, out = run(lambda a: cli._domains_tagging(a, reg), dns(domains_cmd="diff", csv=False))
+    assert code == 0 and "gtm" in out and "differ" in out, out
+    code, out = run(lambda a: cli._domains_tagging(a, reg), dns(domains_cmd="promote", names=["cooking"], dry_run=False,
+                                                                 allow_unchecked=False))
+    assert code == 2 and "not a Domain" in out
+    code, out = run(lambda a: cli._domains_tagging(a, reg), dns(domains_cmd="promote", names=["gtm"], dry_run=True,
+                                                                 allow_unchecked=False))
+    assert code == 0 and "dry run" in out and domains_of() == before and not (tmp / "backups").exists()
+    code, out = run(lambda a: cli._domains_tagging(a, reg), dns(domains_cmd="promote", names=["gtm"], dry_run=False,
+                                                                 allow_unchecked=False))
+    assert code == 0 and "backed up" in out and list((tmp / "backups").glob("tags-*.db")), out
+    after = domains_of()
+    assert after != before and all("gtm" in d for i, d in after.items() if "CCCCCCCCCC3" in i and not i.startswith("sum:")), after
+    code, out = run(lambda a: cli._domains_tagging(a, reg), dns(domains_cmd="restore", backup=None))
+    assert code == 0 and "back to" in out and domains_of() == before, out
+    # a run staged against another Domain list is refused
+    other = D.parse({"default": "startup", "domains": {"startup": {"description": "startups", "risk_tier": "medium"},
+                                                       "gtm": {"description": "changed", "risk_tier": "medium"}}})
+    out = io.StringIO()
+    with mock.patch.object(T, "TAGS_DB", db_path), mock.patch.object(cli, "MANIFEST_DB", tmp / "m.db"), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        assert cli._domains_tagging(dns(domains_cmd="promote", names=["gtm"], dry_run=False, allow_unchecked=False),
+                                    other) == 1
+    assert "Domain list changed" in out.getvalue()
+
+
 def test_a_packs_build_holds_only_its_domains_items_and_describes_only_its_domains():
     """ADR-0016: `pack build --for <id>` ships the items in any of the Pack's Domains."""
     try:

@@ -18,3 +18,8 @@ python experiments/laya/score.py                # REPORT.md with the verdict, by
 
 `score.py` also writes `disputed.md`: up to 50 items the judges split on, with their text, for a hand check of the
 panel. Both stay in `data/`.
+
+## Also used to validate the tag checker (ADR-0023)
+
+`panel_sheet.py` lets the same three-judge panel label a `ytbrain domains sample` sheet, so `ytbrain eval tags --items SHEET
+--compare` can score the tags in use and a staged run without a person labelling anything (see its docstring for the steps).

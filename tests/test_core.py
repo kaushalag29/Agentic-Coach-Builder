@@ -2733,7 +2733,7 @@ def test_diversity_rules_are_source_agnostic_and_compose():
 def test_domains_yaml_declares_the_registry_and_a_missing_file_means_startup_only():
     from ytbrain import domains as D
     reg = D.load()                                           # the repo's own domains.yaml
-    assert reg.names == ["startup", "gtm", "leadership", "system-design", "finance", "investment", "coding"] and reg.default == "startup"
+    assert reg.names == ["startup", "gtm", "leadership", "system-design", "finance", "investment", "coding", "ai-engineering"] and reg.default == "startup"
     assert reg.get("finance").risk_tier == "high" and reg.get("finance").web_policy == "always_latest"
     assert reg.get("startup").half_life_days is None and reg.get("system-design").half_life_days == 1825
     assert all(d.description and d.examples for d in reg.domains.values()), "the router needs both"
@@ -3275,6 +3275,213 @@ def test_domains_stats_reports_per_source_how_many_items_are_tagged_from_content
     assert st["coding"]["items"] == 3 and st["coding"]["unhinted"] == 1 and len(st["coding"]["docs"]) == 2
     assert st["coding"]["sources"]["yc-talks"]["unhinted"] == 1 and st["coding"]["sources"]["eng-talks"]["unhinted"] == 0
     assert st["gtm"]["unhinted"] == 0
+
+
+def _check_answers(text_to_domains):
+    """A fake checker: answers by the marker words in each chunk, records what it was shown."""
+    seen = []
+
+    def ask(batch):
+        seen.append(batch)
+        return [text_to_domains.get(t) for t, _title, _summary in batch], 0.01, 1
+    return ask, seen
+
+
+def test_the_checker_reads_flagged_chunks_with_their_document_and_replaces_the_tie_break_for_them():
+    """ADR-0023: context-aware verdicts over every Domain, cached, with an unchecked fallback."""
+    from ytbrain import tagging as T
+    reg = _tag_registry()
+    rows, vecs = _tag_rows()
+    s = T.Settings(floor=0.5, close=0.05, share=0.2, min_passages=1, batch=40, workers=1)
+    titles = {"d1": "Talk one", "d2": "Talk two"}
+    hints = {"d1": ["gtm"]}
+    answers = {"text LEAD": ["gtm"], "text GTM LEAD": ["leadership"], "text NOISE": [], "text FIN": ["finance"]}
+
+    def no_tiebreak(batch):
+        raise AssertionError("a chunk the checker answered is never sent to the tie-break")
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        ask, seen = _check_answers(answers)
+        res = T.run(rows, vecs, reg, _axis_embed, hints, s, no_tiebreak, db, "m", check=ask, mode="flagged",
+                    titles=titles, check_model="cm", say=lambda m: None)
+        shown = {t: (title, summ) for batch in seen for t, title, summ in batch}
+        assert "text GTM" not in shown, "d1 hints gtm and the embedding agrees: not flagged"
+        assert shown["text LEAD"] == ("Talk one", "text GTM"), "the chunk is read with its Document's title and summary"
+        assert shown["text GTM LEAD"][0] == "Talk one" and "text NOISE" in shown
+        it = res.items
+        assert it["psg:d1:1"].origin == "embedding" and it["psg:d1:1"].domains == ("gtm",)
+        assert it["psg:d1:2"].domains == ("gtm",) and it["psg:d1:2"].origin == "checked", \
+            "the embedding said leadership; read in its Document the checker said gtm"
+        assert it["psg:d1:3"].domains == ("leadership",) and it["psg:d1:3"].origin == "checked"
+        assert res.close_calls == 0 and res.asked == 0, "the tie-break asked nothing"
+        assert it["psg:d1:4"].origin == "checked" and it["psg:d1:4"].domains == res.docs["d1"].domains, \
+            "none fits: the chunk takes its Document's Domains and says nothing about the Document"
+        assert res.docs["d1"].shares == {"gtm": 0.667, "leadership": 0.333}, "the empty verdict is not counted"
+        assert it["adv:d1:a1"].suggested == ("finance",), "a high-tier verdict still waits for confirmation"
+        assert res.check_asked == res.flagged == 6 and res.unchecked == 0 and res.check_changed >= 2
+        db.replace(res.items, res.docs, {"tagger_version": "1"})
+        again = T.run(rows, vecs, reg, _axis_embed, hints, s, no_tiebreak, db, "m", check=None, mode="flagged",
+                      titles=titles, check_model="cm", say=lambda m: None)
+        assert again.check_cached == again.flagged and again.check_asked == 0, "verdicts are cached: no model needed"
+        assert {k: v.domains for k, v in again.items.items()} == {k: v.domains for k, v in res.items.items()}
+        # a changed Domain definition, the prompt or the model reads again; nothing else does
+        other = T.check_key("text LEAD", "Talk one", "text GTM", reg, "cm")
+        assert other != T.check_key("text LEAD", "Talk one", "text GTM", reg, "other-model")
+        assert other != T.check_key("text LEAD", "Talk two", "text GTM", reg, "cm"), "the Document is part of the key"
+        from ytbrain import domains as D
+        edited = D.parse({"default": "startup", "domains": {
+            n: {"description": reg.get(n).description + (" more" if n == "gtm" else ""), "risk_tier": reg.get(n).risk_tier}
+            for n in reg.names}})
+        assert other != T.check_key("text LEAD", "Talk one", "text GTM", edited, "cm")
+        # all: every chunk, hinted or not
+        full = T.run(rows, vecs, reg, _axis_embed, hints, s, None, None, "m", dry_run=True, check=ask, mode="all",
+                     titles=titles, check_model="cm", say=lambda m: None)
+        assert full.flagged == 7 and full.est_check_calls == 1, "every chunk but the summary; a dry run asks nothing"
+        db.close()
+    # a checker that cannot answer leaves the embedding and tie-break tags, counts the chunks, and asks again later
+    said = []
+    down_calls = {"n": 0}
+
+    def down(batch):
+        down_calls["n"] += 1
+        raise ConnectionError("endpoint unreachable")
+    res = T.run(rows, vecs, reg, _axis_embed, hints, s, None, None, "m", check=down, mode="flagged", titles=titles,
+                check_model="cm", say=said.append)
+    assert res.unchecked == res.flagged == 6 and res.check_asked == 0 and any("checker was unavailable" in m for m in said)
+    assert res.items["psg:d1:3"].origin == "unresolved" and res.items["psg:d1:3"].domains == ("gtm", "leadership")
+    # a verdict naming no Domain of the list is no answer
+    res = T.run(rows, vecs, reg, _axis_embed, hints, s, None, None, "m", check=lambda b: ([None for _ in b], 0.0, 1),
+                mode="flagged", titles=titles, check_model="cm", say=said.append)
+    assert res.unchecked == 6
+
+
+def test_the_checker_reads_every_domain_and_its_answer_is_a_closed_list():
+    from unittest import mock
+    from ytbrain import tagging as T
+    from ytbrain.eval import llm
+    from ytbrain import domains as D
+    reg = D.parse({"default": "startup", "domains": {
+        "startup": {"description": "START", "risk_tier": "medium"},
+        "coding": {"description": "CODE", "risk_tier": "low", "not_about": "founders who mention code",
+                   "examples": ["How do I refactor?"]},
+        "finance": {"description": "FIN", "risk_tier": "high"}}})
+    sent = []
+
+    class One:
+        def __init__(self, n, domains):
+            self.n, self.domains = n, domains
+
+    def fake_ask(prompt, cls, model):
+        sent.append(prompt)
+        return llm.Answer(cls(answers=[{"n": 1, "domains": ["coding"]}, {"n": 2, "domains": ["cooking"]},
+                                        {"n": 3, "domains": []}]), 0.01, 1)
+    with mock.patch.object(llm, "ask", fake_ask):
+        out, cost, calls = T.llm_check(reg, "m")([("t1", "A talk", "its summary"), ("t2", "B", ""), ("t3", "C", "")])
+    assert out == [["coding"], None, []], "a name outside the list is no answer; an empty list means none fits"
+    p = sent[0]
+    assert "- coding: CODE Not about: founders who mention code For example: How do I refactor?" in p
+    assert "- startup: START" in p and "- finance: FIN" in p, "every Domain is offered, not only candidates"
+    assert "Document: A talk - its summary\nText: t1" in p and "Document: B\nText: t2" in p
+    try:
+        T.check_mode("sometimes")
+        raise AssertionError("a typo is refused")
+    except T.PolicyError as e:
+        assert "off, flagged or all" in str(e)
+    assert T.check_mode("ALL") == "all" and T.check_mode("") == "off"
+
+
+def test_a_rejection_reaches_the_items_not_only_the_document():
+    """ADR-0023: `domains review --reject` used to remove only the Document's tag; low-tier item tags stayed."""
+    from ytbrain import tagging as T
+    reg = _tag_registry()
+    rows, vecs = _tag_rows()
+    s = T.Settings(floor=0.5, close=0.05, share=0.2, min_passages=1)
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        first = T.run(rows, vecs, reg, _axis_embed, {}, s, None, db, "m", say=lambda m: None)
+        assert first.items["psg:d1:2"].domains == ("leadership",)
+        db.reject(["source:s1"], "leadership")
+        res = T.run(rows, vecs, reg, _axis_embed, {}, s, None, db, "m", say=lambda m: None)
+        assert "leadership" not in res.docs["d1"].domains
+        for item_id, t in res.items.items():
+            if t.doc_id == "d1":
+                assert "leadership" not in t.domains and "leadership" not in t.suggested, (item_id, t)
+        assert res.items["psg:d1:2"].domains == res.docs["d1"].domains, "it takes its Document's Domains instead"
+        assert res.items["psg:d1:1"].domains == ("gtm",), "other chunks are untouched"
+        db.close()
+
+
+def test_a_staged_backfill_is_compared_promoted_one_domain_at_a_time_and_restored_from_a_backup():
+    from ytbrain import tagging as T
+    reg = _tag_registry()
+    rows, vecs = _tag_rows()
+    s = T.Settings(floor=0.5, close=0.05, share=0.2, min_passages=1, workers=1)
+    titles = {"d1": "Talk one"}
+    ask, _seen = _check_answers({"text LEAD": ["gtm"], "text GTM LEAD": ["gtm"], "text NOISE": [], "text FIN": ["finance"],
+                                 "text GTM": ["gtm"]})
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        now = T.run(rows, vecs, reg, _axis_embed, {}, s, lambda b: ([["leadership"] for _ in b], 0.0, 1), db, "m",
+                    say=lambda m: None)
+        db.replace(now.items, now.docs, {"applied": "1"})
+        in_use = {r["item_id"]: json.loads(r["domains"]) for r in db.db.execute("SELECT * FROM item_tags")}
+        assert in_use["psg:d1:2"] == ["leadership"] and in_use["psg:d1:3"] == ["leadership"]
+        staged = T.run(rows, vecs, reg, _axis_embed, {}, s, None, db, "m", check=ask, mode="flagged", titles=titles,
+                       check_model="cm", say=lambda m: None)
+        assert not db.staged()
+        db.stage(staged.items, staged.docs, {**T.meta_for(reg, s, "e", "m", "flagged", "cm"), "unchecked": 0})
+        assert db.staged() and db.meta("staged_check_mode") == "flagged"
+        assert {r["item_id"]: json.loads(r["domains"]) for r in db.db.execute("SELECT * FROM item_tags")} == in_use, \
+            "staging leaves the tags in use alone"
+        df = T.diff(db)
+        moved = {i: (b, a) for i, _d, b, a, _o in df.items}
+        assert moved["psg:d1:2"] == (("leadership",), ("gtm",)) and moved["psg:d1:3"] == (("leadership",), ("gtm",))
+        assert df.per_domain["gtm"]["items_gained"] >= 2 and df.per_domain["leadership"]["items_lost"] >= 2
+        # promote gtm: it is gained, leadership is not touched -- the items carry both until leadership is promoted
+        want, _docs = T.promote(db, ["gtm"])
+        assert want["psg:d1:2"] == ("gtm", "leadership") and want["psg:d1:3"] == ("gtm", "leadership")
+        rows_now = {r["item_id"]: json.loads(r["domains"]) for r in db.db.execute("SELECT * FROM item_tags")}
+        assert rows_now["psg:d1:2"] == ["gtm", "leadership"] and rows_now["psg:d1:1"] == in_use["psg:d1:1"]
+        assert T.diff(db).per_domain.get("gtm", {}).get("items_gained", 0) == 0, "gtm is now what the staged run says"
+        want, _docs = T.promote(db, ["leadership"])
+        assert want["psg:d1:2"] == ("gtm",), "losing the last unpromoted Domain leaves what the checker chose"
+        final = {r["item_id"]: json.loads(r["domains"]) for r in db.db.execute("SELECT * FROM item_tags")}
+        staged_final = {r["item_id"]: json.loads(r["domains"]) for r in db.db.execute("SELECT * FROM staged_item_tags")}
+        differ = {k: (final[k], staged_final[k]) for k in final if final[k] != staged_final[k]}
+        assert not differ, differ
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        now = T.run(rows, vecs, reg, _axis_embed, {}, s, None, db, "m", say=lambda m: None)
+        db.replace(now.items, now.docs, {"applied": "1"})
+        before = {r["item_id"]: r["domains"] for r in db.db.execute("SELECT * FROM item_tags")}
+        bak = db.backup()
+        assert bak.exists() and bak.parent.name == "backups" and T.latest_backup(bak.parent) == bak
+        assert db.backup() != bak, "a backup is never overwritten"
+        db.db.execute("UPDATE item_tags SET domains='[\"finance\"]'")
+        db.db.commit()
+        db.restore(bak)
+        assert {r["item_id"]: r["domains"] for r in db.db.execute("SELECT * FROM item_tags")} == before
+        db.close()
+
+
+def test_the_staged_run_is_compared_with_the_tags_in_use_per_domain_and_a_wrong_pack_blocks_it():
+    from ytbrain import tagging as T
+    packs = {"founder": {"startup", "gtm"}, "coding": {"coding"}}
+    labels = {f"i{n}": {"coding"} for n in range(12)} | {f"s{n}": {"startup"} for n in range(12)}
+    now = {i: {"coding"} for i in labels}                                  # everything is coding: founder talks too
+    good = {i: set(want) for i, want in labels.items()}
+    c = T.compare_arms(labels, now, good, packs)
+    assert c["now"]["wrong_pack"] == 0.5 and c["staged"]["wrong_pack"] == 0.0
+    assert c["beats"] and c["domains"]["coding"]["promotable"] and c["domains"]["startup"]["promotable"]
+    assert c["domains"]["coding"]["staged"]["precision"] == 1.0 and c["domains"]["coding"]["now"]["precision"] == 0.5
+    # a staged run that sends a founder item to the coding coach does not beat 1 % wrong-pack
+    bad = dict(good, s0={"coding"})
+    c = T.compare_arms(labels, now, bad, packs)
+    assert c["staged"]["wrong_pack"] > T.WRONG_PACK_BAR and not c["beats"] and not c["domains"]["coding"]["promotable"]
+    # too few labels: never promotable, however good
+    few = {"i0": {"coding"}, "s0": {"startup"}}
+    c = T.compare_arms(few, {i: {"coding"} for i in few}, {i: set(w) for i, w in few.items()}, packs)
+    assert c["beats"] and not c["domains"]["coding"]["promotable"]
 
 
 def test_the_unplaced_marker_is_reserved_and_no_pack_can_serve_it():

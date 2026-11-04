@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, Field
 
-ENRICH_DOMAINS = frozenset({"investment", "coding", "system-design"})   # M6d: packs that use Rules/Facts
+ENRICH_DOMAINS = frozenset({"investment", "coding", "system-design", "ai-engineering"})   # M6d: packs that use Rules/Facts
 ENRICH_RELEASE = "1.0.0"
 
 ENRICH_PROMPT = """\

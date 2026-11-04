@@ -35,7 +35,7 @@ flowchart TD
         VERIFY["verify<br/>every quote located in the source; timestamps derived"]
         INDEX["index<br/>Verified items + Passages, local embeddings (bge-m3)"]
         TAG["tag 🤖<br/>Domains by content; a cheap model only for close calls"]
-        ENRICH["enrich 🤖<br/>Rules and Facts for investment, coding, system-design"]
+        ENRICH["enrich 🤖<br/>Rules and Facts for investment, coding, system-design, ai-engineering"]
         SYNC --> CLEAN --> EXTRACT --> VERIFY --> INDEX --> TAG --> ENRICH
     end
     ENRICH --> PACK["pack build<br/>one SQLite file per Pack, ONNX embeddings (no torch)"]

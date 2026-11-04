@@ -1345,7 +1345,7 @@ def test_the_context_tells_the_host_which_domains_the_pack_covers_only_when_ther
     lib = many["ctx"]["library"]
     assert [d["name"] for d in lib["domains"]][:3] == ["startup", "leadership", "finance"] and "domains" in lib["use"]
     assert {d["name"]: d["items"] for d in lib["domains"]} == {"finance": 2, "leadership": 3, "startup": 30, "system-design": 0,
-                                                              "investment": 0, "coding": 0, "gtm": 0}, "declared but empty is listed, with 0"
+                                                              "investment": 0, "coding": 0, "gtm": 0, "ai-engineering": 0}, "declared but empty is listed, with 0"
     assert "Gap" in lib["use"]
     lead = next(d for d in lib["domains"] if d["name"] == "leadership")
     assert lead["description"] and lead["risk_tier"] == "low", "the host chooses Domains by what they are about"
@@ -1633,6 +1633,46 @@ def test_recall_finds_notes_and_records_by_their_words_and_hides_superseded_note
     assert s.recall('fee" OR NOT (*') is not None
 
 
+def test_recall_can_be_cut_to_a_date_window_and_listed_oldest_first_as_a_timeline():
+    c = Clock()                                                  # 2026-09-21
+    s = _store(c)
+    n1 = s.record(_note(title="Pricing interviews", summary="Five clinics said the setup fee is the blocker."))["ids"][0]
+    c.advance(days=10)                                           # 10-01
+    d1 = s.record({"kind": "decision", "text": "Drop the setup fee", "reasoning": "clinics said it blocks them"})["ids"][0]
+    c.advance(days=10)                                           # 10-11
+    n2 = s.record(_note(title="Hiring plan", summary="Hire a designer before the first engineer."))["ids"][0]
+    c.advance(minutes=5)
+    g1 = s.record({"kind": "goal", "text": "Ten clinics onboard alone", "measure": "10 clinics"})["ids"][0]
+    c.advance(days=20)                                           # 10-31
+    n3 = s.record(_note(title="Fee test", summary="The setup fee was dropped for three clinics."))["ids"][0]
+    ids = lambda **kw: [h["id"] for h in s.recall(**kw)]             # noqa: E731
+    # a window keeps only what is dated inside it (both ends inclusive), a search still ranks inside it
+    assert ids(query="setup fee", since="2026-10-01", until="2026-10-11") == [d1]
+    assert set(ids(query="setup fee", until="2026-10-01")) == {n1, d1} and ids(query="setup fee", since="2026-10-31") == [n3]
+    assert ids(query="setup fee", since="2026-11-01") == []
+    # a timeline lists oldest first, with or without a query, and carries each record's day
+    full = s.recall(None, timeline=True)
+    assert [h["id"] for h in full] == [n1, d1, n2, g1, n3] and [h["date"] for h in full][:3] == [
+        "2026-09-21", "2026-10-01", "2026-10-11"]
+    assert all("score" not in h for h in full), "no query, no score"
+    assert [h["id"] for h in s.recall("setup fee", timeline=True)] == [n1, d1, n3]
+    assert [h["id"] for h in s.recall(None, timeline=True, since="2026-10-05", until="2026-10-20")] == [n2, g1]
+    assert [h["id"] for h in s.recall("", kinds=["decision", "goal"], timeline=True)] == [d1, g1]
+    # paging: the count says how many matched, and the next page starts at the last day shown
+    hits, total = s.recall_page(None, limit=2, timeline=True)
+    assert [h["id"] for h in hits] == [n1, d1] and total == 5
+    # a superseded Note stays hidden in a timeline unless asked for
+    n4 = s.record(_note(title="Fee test, final", summary="Fee dropped for all.", supersedes=n3))["ids"][0]
+    assert n3 not in [h["id"] for h in s.recall(None, timeline=True)] and n4 in [h["id"] for h in s.recall(None, timeline=True)]
+    assert n3 in [h["id"] for h in s.recall(None, timeline=True, include_superseded=True)]
+    # refusals say what to fix
+    _raises(lambda: s.recall(None), "timeline: true")
+    _raises(lambda: s.recall("a !", timeline=True), "at least one word")
+    _raises(lambda: s.recall("fee", since="last week"), "since must be a date")
+    _raises(lambda: s.recall("fee", since="2026-10-20", until="2026-10-01"), "after until")
+    _raises(lambda: s.recall(None, until="2026-13-40", timeline=True), "until must be a date")
+
+
 def test_the_keyword_index_is_derived_and_search_falls_back_without_it():
     s = _store()
     s.record(_note())
@@ -1712,6 +1752,15 @@ def test_notes_are_saved_and_recalled_through_mcp():
         assert r.structured_content["hits"][0]["evidence"][0]["quote"] == "set your price high"
         r = await c.call_tool("coach_recall", {"query": "zebra"})
         assert r.structured_content["hits"] == [] and "don't guess" in r.structured_content["note"]
+        r = await c.call_tool("coach_recall", {"timeline": True})
+        assert not r.is_error and [h["id"] for h in r.structured_content["hits"]][-1] == nid
+        assert r.structured_content["total"] >= 1
+        r = await c.call_tool("coach_recall", {"timeline": True, "since": "2999-01-01"})
+        assert r.structured_content["hits"] == [] and "in that period" in r.structured_content["note"]
+        r = await c.call_tool("coach_recall", {})
+        assert r.is_error and "timeline: true" in r.content[0].text
+        r = await c.call_tool("coach_recall", {"query": "vault", "since": "yesterday"})
+        assert r.is_error
         r = await c.call_tool("coach_recall", {"query": "ok", "id": "n-0000"})
         assert r.is_error and "no record" in r.content[0].text
         r = await c.call_tool("coach_update", {"id": nid, "changes": {"title": "x"}, "request_id": "n3"})

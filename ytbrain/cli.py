@@ -1751,6 +1751,10 @@ def _tag_model() -> str:
     return os.environ.get("YTBRAIN_TAG_MODEL") or LLM_MODEL
 
 
+def _check_model() -> str:
+    return os.environ.get("YTBRAIN_TAG_CHECK_MODEL") or _tag_model()
+
+
 def cmd_tag(args) -> int:
     """Tag Passages and items with Domains by what they say (ADR-0017): no re-extraction, no re-embedding."""
     from . import tagging as T
@@ -1761,6 +1765,7 @@ def cmd_tag(args) -> int:
     store, rows, vectors, embed = got
     try:
         pol, auto_share = T.policy()
+        mode = T.check_mode(getattr(args, "check", None))
     except T.PolicyError as e:
         print(f"tag: {e}", file=sys.stderr)
         return 2
@@ -1768,16 +1773,30 @@ def cmd_tag(args) -> int:
     m = Manifest(MANIFEST_DB)
     docs = sorted({r["doc_id"] for r in rows})
     hints = {d: v[0] for d, v in _doc_tags(m, docs, default=False).items()}
+    titles = {r["doc_id"]: r["title"] or "" for r in m.documents("1=1")}
     model, s, db = _tag_model(), T.load_settings(), T.TagDB()
+    check_model = _check_model()
     ask = None if args.no_llm else T.llm_tiebreak(reg, model)
+    ask_check = None if args.no_llm or mode == "off" else T.llm_check(reg, check_model)
     print(f"tag: {len(rows)} item(s) in {len(docs)} Document(s) against {len(reg.names)} Domain(s) "
           f"(floor {s.floor}, close {s.close}, share {s.share}; policy {pol}"
-          + (f", high-tier on {auto_share:g} of a Document" if pol == "auto" else "") + ")", flush=True)
+          + (f", high-tier on {auto_share:g} of a Document" if pol == "auto" else "")
+          + (f"; checker {mode}" if mode != "off" else "") + ")", flush=True)
     res = T.run(rows, vectors, reg, embed, hints, s, ask, db, model, args.max_cost, args.dry_run,
                 retry_undecided=getattr(args, "retry_undecided", False),
-                auto_share=auto_share if pol == "auto" else None)
+                auto_share=auto_share if pol == "auto" else None,
+                check=ask_check, mode=mode, titles=titles, check_model=check_model)
+    if mode != "off":
+        print(f"tag: the checker had {res.flagged} chunk(s) to read: {res.check_cached} from the cache, "
+              f"{res.check_asked} asked, {res.unchecked} without a verdict; {res.check_changed} of the answered "
+              f"differ from what the embedding offered" + (f" · ${res.cost:.3f} in all" if res.cost else ""))
+        if res.unchecked and not args.dry_run:
+            print(f"tag: {res.unchecked} chunk(s) keep their embedding and tie-break tags and are read again next run")
+        if args.dry_run and res.est_check_calls:
+            print(f"tag: a real run would ask {check_model} {res.est_check_calls} time(s) "
+                  f"(~${res.est_check_calls * T.EST_COST_PER_CALL:.2f} estimated; cap it with --max-cost)")
     print(f"tag: {res.close_calls} close call(s): {res.cached} from the cache, {res.asked} asked, "
-          f"{res.unresolved} kept every candidate" + (f" · ${res.cost:.3f} on {model}" if res.cost else ""))
+          f"{res.unresolved} kept every candidate" + (f" · ${res.cost:.3f} on {model}" if res.cost and mode == "off" else ""))
     if res.undecided:
         print(f"tag: {res.undecided} close call(s) the model already left undecided keep every candidate (cached; "
               f"`--retry-undecided` asks again)")
@@ -1806,13 +1825,20 @@ def cmd_tag(args) -> int:
     if args.dry_run:
         print("tag: dry run, nothing changed")
         return 0
+    if getattr(args, "stage", False):
+        db.stage(res.items, res.docs, {**T.meta_for(reg, s, store.embed_model() or EMBED_MODEL, model, mode, check_model),
+                                       "flagged": res.flagged, "unchecked": res.unchecked,
+                                       "check_changed": res.check_changed, "cost": f"{res.cost:.4f}"})
+        print("tag: staged for comparison; the tags in use and the index are untouched. Next: "
+              "`ytbrain domains diff`, then `ytbrain domains promote DOMAIN` one Domain at a time")
+        return 0
     action, why = T.apply_plan(db, gated=args.gated, no_apply=args.no_apply, pol=pol, reg=reg, s=s)
     if action == "keep":
         db.set_meta({"status": f"held back, earlier tags kept: {why}", "policy": pol, "auto_confirmed": 0})
         print(f"tag: not applied, and the tags already on the index stay (applied {db.meta('tagged_at') or 'earlier'}): "
               f"{why}. This run's tags are not stored; `ytbrain tag --no-apply` stores them for review")
         return 0
-    meta = {**T.meta_for(reg, s, store.embed_model() or EMBED_MODEL, model),
+    meta = {**T.meta_for(reg, s, store.embed_model() or EMBED_MODEL, model, mode, check_model),
             "applied": "1" if action == "apply" else "0", "policy": pol,
             "auto_confirmed": str(res.auto_confirmed if action == "apply" else 0),
             "awaiting": str(len(res.awaiting) if action == "apply" else 0),
@@ -1890,6 +1916,103 @@ def _domains_tagging(args, reg) -> int:
             for sid, v in rows:
                 print(f"    {sid[:40]:40} {v['items']:6} item(s) {len(v['docs']):5} Doc(s)  unhinted {v['unhinted']:6} "
                       f"({v['unhinted'] / v['items']:.0%})")
+        return 0
+    if args.domains_cmd == "diff":
+        if not db.staged():
+            print("domains diff: nothing staged: run `ytbrain tag --check flagged --stage` first", file=sys.stderr)
+            return 1
+        d = T.diff(db)
+        print(f"domains diff: the run staged {db.meta('staged_tagged_at')} (checker {db.meta('staged_check_mode') or 'off'} "
+              f"on {db.meta('staged_check_model') or '-'}) against the tags in use. {len(d.items)} item(s) and "
+              f"{len(d.docs)} Document(s) differ; {db.meta('staged_unchecked') or 0} flagged chunk(s) still had no verdict")
+        if d.only_staged or d.only_current:
+            print(f"  not compared: {d.only_staged} staged item(s) the tags in use don't have, {d.only_current} in use "
+                  f"that the staged run doesn't")
+        for name in sorted(d.per_domain, key=lambda x: -sum(d.per_domain[x].values())):
+            e = d.per_domain[name]
+            print(f"  {name:16} items +{e['items_gained']} -{e['items_lost']}   Documents +{e['docs_gained']} -{e['docs_lost']}")
+        if not d.per_domain:
+            print("  no Domain changes")
+        if args.csv:
+            texts = {}
+            got = _tag_inputs("domains diff")
+            if not isinstance(got, int):
+                texts = {r["item_id"]: " ".join((r.get("text") or "").split())[:300] for r in got[1]}
+            p = REPORTS / f"tag-diff-{time.strftime('%Y%m%d')}.csv"
+            with open(p, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(["item_id", "doc_id", "title", "now", "staged", "origin", "text"])
+                for item_id, doc_id, before, after, origin in d.items:
+                    w.writerow([item_id, doc_id, titles.get(doc_id, ""), "|".join(before), "|".join(after), origin,
+                                texts.get(item_id, "")])
+            print(f"domains diff: {len(d.items)} changed item(s) with their text in {p}")
+        print("domains diff: promote a Domain you are satisfied with: ytbrain domains promote DOMAIN "
+              "(it takes only the changes that gain or lose that Domain)")
+        return 0
+    if args.domains_cmd == "promote":
+        bad = [n for n in args.names if n not in reg]
+        if bad:
+            print(f"domains promote: not a Domain: {', '.join(bad)} (declared: {', '.join(reg.names)})", file=sys.stderr)
+            return 2
+        if not db.staged():
+            print("domains promote: nothing staged: run `ytbrain tag --check flagged --stage` first", file=sys.stderr)
+            return 1
+        if db.meta("staged_domain_list") != reg.fingerprint():
+            print("domains promote: the Domain list changed since the run was staged; stage again "
+                  "(`ytbrain tag --check flagged --stage`, cached verdicts are free)", file=sys.stderr)
+            return 1
+        unchecked = int(db.meta("staged_unchecked") or 0)
+        if unchecked and not args.allow_unchecked:
+            print(f"domains promote: {unchecked} flagged chunk(s) had no verdict in the staged run; run "
+                  f"`ytbrain tag --check flagged --stage` again to finish them, or pass --allow-unchecked", file=sys.stderr)
+            return 1
+        names = list(dict.fromkeys(args.names))
+        d = T.diff(db)
+        for n in names:
+            e = d.per_domain.get(n, {"items_gained": 0, "items_lost": 0, "docs_gained": 0, "docs_lost": 0})
+            print(f"domains promote: {n}: items +{e['items_gained']} -{e['items_lost']}, "
+                  f"Documents +{e['docs_gained']} -{e['docs_lost']}")
+        if args.dry_run:
+            print("domains promote: dry run, nothing changed")
+            return 0
+        backup = db.backup()
+        print(f"domains promote: backed up the tags to {backup}")
+        want, docs_changed = T.promote(db, names)
+        print(f"domains promote: {len(want)} item tag(s) and {docs_changed} Document tag(s) changed in the tags in use")
+        if db.applied and want:
+            try:
+                from .knowledge.store import KnowledgeStore
+                store = KnowledgeStore()
+            except RuntimeError as e:
+                print(f"domains promote: the tags changed but the index could not be opened ({e}); "
+                      f"`ytbrain domains restore` undoes it", file=sys.stderr)
+                return INDEX_MISSING_EXTRA
+            n = store.set_item_domains(want)
+            print(f"domains promote: {n} item(s) changed Domains in the index (in place)")
+            if n:
+                store.build_fulltext_index()
+        print("domains promote: next, `ytbrain pack build` (or `ytbrain ops plugin`); undo with `ytbrain domains restore`")
+        return 0
+    if args.domains_cmd == "restore":
+        src = Path(args.backup) if args.backup else T.latest_backup(db.path.parent / "backups")
+        if not src or not src.exists():
+            print("domains restore: no backup found in data/tags/backups (a promote makes one)", file=sys.stderr)
+            return 1
+        before = db.backup()
+        db.restore(src)
+        print(f"domains restore: tags.db is back to {src.name} (what it was a moment ago is kept as {before.name})")
+        if db.applied:
+            try:
+                from .knowledge.store import KnowledgeStore
+                store = KnowledgeStore()
+            except RuntimeError as e:
+                print(f"domains restore: the tags are back but the index could not be opened ({e})", file=sys.stderr)
+                return INDEX_MISSING_EXTRA
+            n = store.set_item_domains(db.item_domains())
+            print(f"domains restore: {n} item(s) changed Domains in the index (in place)")
+            if n:
+                store.build_fulltext_index()
+            print("domains restore: next, `ytbrain pack build` (or `ytbrain ops plugin`)")
         return 0
     if args.domains_cmd == "review":
         if args.accept or args.reject:
@@ -2058,7 +2181,7 @@ def cmd_domains(args) -> int:
     choice with a required risk tier; a books folder only becomes a Domain this way (decision #23)."""
     from . import domains as D
     try:
-        if args.domains_cmd in ("why", "review", "propose", "sample", "alias", "stats"):
+        if args.domains_cmd in ("why", "review", "propose", "sample", "alias", "stats", "diff", "promote", "restore"):
             return _domains_tagging(args, D.load())
         if args.domains_cmd == "add":
             reg = D.add_domain(args.name, risk_tier=args.risk, description=args.description,
@@ -2381,6 +2504,27 @@ def _eval_tags(args) -> int:
             T.save_settings(ranked[0][0])
             print(f"eval tags: saved to {T.SETTINGS_FILE}; run `ytbrain tag` to apply")
         return 0
+    if args.compare:
+        if not db.staged():
+            print("eval tags: nothing staged: run `ytbrain tag --check flagged --stage` first", file=sys.stderr)
+            return 1
+        from . import packs as PK
+        pack_domains = {pid: set(PK.load(pid, check_skills=False, known_domains=reg.names).domains) for pid in PK.all_ids()}
+        c = T.compare_arms(items, T.current(db)[0], T.staged_current(db)[0], pack_domains)
+        print(f"eval tags --compare: {c['now']['items']} labelled item(s), the staged run "
+              f"({db.meta('staged_check_mode') or 'off'}) against the tags in use")
+        for label, e in (("in use", c["now"]), ("staged", c["staged"])):
+            print(f"  {label:7} precision {e['precision']:.1%}  recall {e['recall']:.1%}  to a wrong Pack {e['wrong_pack']:.1%}")
+        print(f"  staged run {'BEATS' if c['beats'] else 'does not beat'} the tags in use (precision + recall higher, "
+              f"under {T.WRONG_PACK_BAR:.0%} to a wrong Pack)")
+        for d, e in c["domains"].items():
+            print(f"  {d:16} F1 {e['now']['f1']:.2f} -> {e['staged']['f1']:.2f}  ({e['staged']['labelled']} labelled)  "
+                  + ("promotable" if e["promotable"] else
+                     ("too few labels" if e["staged"]["labelled"] < T.MIN_LABELS else "not promotable")))
+        ok = [d for d, e in c["domains"].items() if e["promotable"]]
+        if ok:
+            print(f"eval tags --compare: ytbrain domains promote {' '.join(ok)}   (or one at a time)")
+        return 0 if c["beats"] else 1
     r = T.score_labels(items, docs, *T.current(db), reg)
     g = T.GATE
     print(f"eval tags: {r['items']} item(s): precision {r['precision']:.0%} (gate {g['precision']:.0%}), "
@@ -2941,7 +3085,7 @@ def _doc_domains(m, doc_ids, declared: bool = False) -> dict[str, set[str]]:
 
 
 def cmd_enrich(args) -> int:
-    """Add Rules (and Facts to records without any) for investment, coding and system-design Documents (ADR-0018)."""
+    """Add Rules (and Facts to records without any) for investment, coding, system-design and ai-engineering Documents (ADR-0018)."""
     from . import enrich as E
     from .extract import runner
     m = Manifest(MANIFEST_DB)
@@ -3383,6 +3527,13 @@ def main(argv=None) -> int:
     sp.add_argument("--retry-undecided", action="store_true",
                     help="ask again about close calls the model already left undecided (cached otherwise)")
     sp.add_argument("--no-apply", action="store_true", help="store the tags for review and labelling; leave the index's Domains")
+    sp.add_argument("--check", choices=list(("off", "flagged", "all")), default=None,
+                    help="the chunk checker (ADR-0023): a model reads each chunk with its Document's title and summary "
+                         "and chooses among every Domain. flagged = chunks the embedding could not place or where an "
+                         "unhinted Domain wins; all = every chunk (default: YTBRAIN_TAG_CHECK, off)")
+    sp.add_argument("--stage", action="store_true",
+                    help="keep this run's tags for comparison only (`domains diff`, `domains promote`); the tags in use "
+                         "and the index are untouched")
     sp.add_argument("--gated", action="store_true", help="what `ytbrain ops` runs: YTBRAIN_TAG_POLICY=auto (default) "
                                                           "applies every run; reviewed applies only after `ytbrain eval "
                                                           "tags` passed and otherwise keeps the tags already applied")
@@ -3479,6 +3630,8 @@ def main(argv=None) -> int:
     etg.add_argument("--documents", default=None, metavar="CSV", help="the filled Document sheet")
     etg.add_argument("--tune", action="store_true", help="score every threshold setting on these labels, best first")
     etg.add_argument("--save", action="store_true", help="with --tune: keep the best for the next `ytbrain tag`")
+    etg.add_argument("--compare", action="store_true",
+                     help="the staged run (`tag --stage`) against the tags in use on these labels, per Domain: which to promote")
     ech = esub.add_parser("choice", help="P12: with several coaches installed, does each prompt reach the right one "
                                          "(the real host, your Claude plan; no judges)")
     ech.add_argument("--plugin", action="append", metavar="DIR", required=True,
@@ -3618,6 +3771,17 @@ def main(argv=None) -> int:
     dt = dsub.add_parser("stats", help="items and Documents per Domain and Source from the last tag run, with how many are tagged from content alone (read-only)")
     dt.add_argument("--domain", help="only this Domain (default: all, largest first)")
     dt.add_argument("--top", type=int, default=10, help="Sources to list per Domain, most unhinted first (default 10)")
+    dd = dsub.add_parser("diff", help="the staged tag run (`tag --stage`) against the tags in use, by Domain (read-only)")
+    dd.add_argument("--csv", action="store_true", help="also write every changed item to data/reports/tag-diff-DATE.csv, "
+                                                         "with its text, to read the changes")
+    dm = dsub.add_parser("promote", help="back up tags.db, then take the staged changes that gain or lose these Domains, "
+                                         "and no others, and put them on the index")
+    dm.add_argument("names", nargs="+", metavar="DOMAIN")
+    dm.add_argument("--dry-run", action="store_true", help="show what would change; change nothing")
+    dm.add_argument("--allow-unchecked", action="store_true",
+                    help="promote even though the staged run left chunks without a verdict")
+    dx = dsub.add_parser("restore", help="put a tags.db backup back (default the latest) and its Domains on the index")
+    dx.add_argument("backup", nargs="?", default=None, metavar="FILE", help="a file from data/tags/backups")
     dp = dsub.add_parser("propose", help="group content no Domain fits and propose Domains, after the duplicate checks")
     dp.add_argument("--min-size", type=int, default=15, help="smallest group worth a Domain (default 15 items)")
     ds = dsub.add_parser("sample", help="labelling sheets for `ytbrain eval tags` (items and Documents)")
@@ -3682,7 +3846,9 @@ def main(argv=None) -> int:
         and not getattr(args, "save_baseline", False) and not getattr(args, "refresh_baseline", False)
     read_only = read_only or (args.cmd in ("upgrade", "tag", "enrich") and args.dry_run) or \
         (args.cmd == "eval" and getattr(args, "eval_cmd", "") in ("tags", "parity", "latency"))
-    if args.cmd not in MUTATING or read_only:
+    writes_tags = args.cmd == "domains" and getattr(args, "domains_cmd", "") in ("promote", "restore") \
+        and not getattr(args, "dry_run", False)
+    if (args.cmd not in MUTATING and not writes_tags) or read_only:
         return args.func(args)
     try:
         with exclusive():

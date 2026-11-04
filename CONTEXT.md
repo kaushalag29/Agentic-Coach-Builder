@@ -126,8 +126,12 @@ Everything ingested on this machine, synced, extracted, verified and indexed onc
 _Avoid_: corpus (when meaning all Packs), database, knowledge base
 
 **Domain**:
-A named subject area (startup, gtm, finance, leadership, system design, investment) from a controlled list. Passages and Knowledge items are tagged with Domains by what they say, and a Document belongs to every Domain that covers a sizeable share of its text, so one talk can have several. A Source's or folder's Domain is only a hint. A new Domain is proposed by the system and accepted by the person, never created by a tagger; synonyms become its aliases. A Pack chooses Domains; a search covers all of them unless the person restricts it to some. Content whose only Domain is a high-tier one nobody has confirmed yet is **unplaced**: in no Pack until it is confirmed, never given the default Domain.
+A named subject area (startup, gtm, finance, leadership, system design, investment) from a controlled list. Passages and Knowledge items are tagged with Domains by what they say, and a Document belongs to every Domain that covers a sizeable share of its text, so one talk can have several. A Source's or folder's Domain is only a hint. A new Domain is proposed by the system and accepted by the person, never created by a tagger; synonyms become its aliases. Where the embedding cannot decide a chunk, a **checker** model reads it with its Document's title and summary against the whole list (ADR-0023). A Pack chooses Domains; a search covers all of them unless the person restricts it to some. Content whose only Domain is a high-tier one nobody has confirmed yet is **unplaced**: in no Pack until it is confirmed, never given the default Domain.
 _Avoid_: category, profile, vertical, collection
+
+**Checker** / **staged tags**:
+The second pass of tagging (ADR-0023): a model reads a chunk the embedding could not decide, together with its Document's title and summary, and chooses among every Domain or none. Its verdicts are cached. A backfill of a Library already tagged is **staged**: the checker's whole result waits beside the tags in use, is compared (`ytbrain domains diff`), and is **promoted** one Domain at a time after a backup (`ytbrain domains promote`, undone by `ytbrain domains restore`).
+_Avoid_: re-tagging (that is `ytbrain tag` replacing the tags in use), classifier
 
 **Routing**:
 Choosing which Domains a search favours or is limited to. By default there is none: a search covers the whole Library, because a Domain filter, even a perfectly chosen one, ranked worse. A search is limited to Domains only when the person asks for that; the server can favour Domains by similarity when a pack turns that on.

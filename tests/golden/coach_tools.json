@@ -1763,7 +1763,7 @@
    "open_world_hint": false,
    "read_only_hint": true
   },
-  "description": "Look up what this Project's memory already holds: Notes (full-text, best match first) and the\nother records this coach keeps. Use it before answering about earlier work, decisions or research, and\nbefore proposing a Note, to link or supersede rather than repeat. Pass `id` to read one record whole\n(a Note's summary, citations as saved, and its links). Results are the Founder's own words and the coach's\nearlier conclusions, dated: say when something was said, and treat an origin \"coach\" Note as a lead,\nnot a fact. Read-only.",
+  "description": "Look up what this Project's memory already holds: Notes (full-text, best match first) and the\nother records this coach keeps. Use it before answering about earlier work, decisions or research, and\nbefore proposing a Note, to link or supersede rather than repeat. Pass `id` to read one record whole\n(a Note's summary, citations as saved, and its links). For \"what happened when\", pass `since` and `until`\n(days, inclusive) and `timeline: true`: the records come oldest first, each with its date, and a query\nnarrows them. Results are the Founder's own words and the coach's earlier conclusions, dated: say when\nsomething was said, and treat an origin \"coach\" Note as a lead, not a fact. Read-only.",
   "input": {
    "properties": {
     "id": {
@@ -1817,16 +1817,55 @@
      "type": "integer"
     },
     "query": {
-     "description": "the words the earlier discussion, research or decision would contain, e.g. 'pricing experiment interviews'",
-     "maxLength": 300,
-     "minLength": 2,
-     "title": "Query",
-     "type": "string"
+     "anyOf": [
+      {
+       "maxLength": 300,
+       "minLength": 2,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "the words the earlier discussion, research or decision would contain, e.g. 'pricing experiment interviews'; optional with timeline",
+     "title": "Query"
+    },
+    "since": {
+     "anyOf": [
+      {
+       "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "only records dated on or after this day, YYYY-MM-DD (a Note by when it was made, a Decision by when it was decided)",
+     "title": "Since"
+    },
+    "timeline": {
+     "default": false,
+     "description": "list the matches oldest first instead of best first; the query may then be left out to list every record in the window",
+     "title": "Timeline",
+     "type": "boolean"
+    },
+    "until": {
+     "anyOf": [
+      {
+       "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "only records dated on or before this day, YYYY-MM-DD",
+     "title": "Until"
     }
    },
-   "required": [
-    "query"
-   ],
    "title": "coach_recallArguments",
    "type": "object"
   },
@@ -1834,7 +1873,7 @@
   "output": {
    "properties": {
     "hits": {
-     "description": "best first: id, kind, title, snippet, date, score (the share of the query's words found); a Note also type, origin and superseded_by",
+     "description": "best first (oldest first with timeline): id, kind, title, snippet, date, score (the share of the query's words found, when there was a query), week (on a record kept by week); a Note also type, origin and superseded_by",
      "items": {
       "additionalProperties": true,
       "type": "object"
@@ -1857,6 +1896,19 @@
     "query": {
      "title": "Query",
      "type": "string"
+    },
+    "total": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "how many records matched, of which `hits` shows the first ones",
+     "title": "Total"
     }
    },
    "required": [

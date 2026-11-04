@@ -58,7 +58,7 @@ ytbrain claude -- --plugin-dir dist/plugin                   # then: /founder-co
 
 **One plugin per Pack** (ADR-0016). `packs/<id>/pack.toml` says what each coach is: its Domains, memory modules,
 skills (its own `packs/<id>/skills/` first, then the shared ones above), profile fields, and the words its runtime
-uses. The **coding coach** (`coding-coach`, private build only) answers from the coding and system-design Books and
+uses. The **coding coach** (`coding-coach`, private build only) answers from the coding, system-design and ai-engineering Books and
 talks, remembers a system's stack, scale, SLOs and constraints with its Goals and Decisions, and adds two Playbooks:
 `design-review` (restate, ask for evidence, the single biggest risk, cited) and `decision-record` (a Decision in
 memory, and on a second yes an ADR file in your repo).
@@ -122,7 +122,8 @@ ytbrain gaps --replay                                                # the weak 
     and is logged, and names the Project it was proposed for (another Project's save is refused);
     `coach_project` lists, switches, creates and renames Projects, or summarises one on request;
   - `coach_recall`: keyword search over the Project's own Notes, Decisions, Goals, Commitments and Check-ins (read-only;
-    `id` reads one record whole, with its links); a Pack that keeps `notes` has it (ADR-0020);
+    `id` reads one record whole, with its links; `since` and `until` (days) keep a window, and `timeline` lists the
+    matches oldest first, with the query optional); a Pack that keeps `notes` has it (ADR-0020);
   - `coach_corpus_status`: what the pack covers, the search models, where memory lives, and `host`: the coach's
     process id and start time, the folder the app started it in or named (`CLAUDE_PROJECT_DIR`), the app's name and
     whether it offers workspace roots;
