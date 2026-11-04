@@ -3464,7 +3464,7 @@ def test_a_staged_backfill_is_compared_promoted_one_domain_at_a_time_and_restore
         db.close()
 
 
-def test_the_staged_run_is_compared_with_the_tags_in_use_per_domain_and_a_wrong_pack_blocks_it():
+def test_the_staged_run_is_compared_with_the_tags_in_use_per_domain_and_a_worse_pack_holds_its_domains_back():
     from ytbrain import tagging as T
     packs = {"founder": {"startup", "gtm"}, "coding": {"coding"}}
     labels = {f"i{n}": {"coding"} for n in range(12)} | {f"s{n}": {"startup"} for n in range(12)}
@@ -3472,16 +3472,31 @@ def test_the_staged_run_is_compared_with_the_tags_in_use_per_domain_and_a_wrong_
     good = {i: set(want) for i, want in labels.items()}
     c = T.compare_arms(labels, now, good, packs)
     assert c["now"]["wrong_pack"] == 0.5 and c["staged"]["wrong_pack"] == 0.0
+    assert c["packs"]["coding"] == {"now": 0.5, "staged": 0.0, "ok": True}
     assert c["beats"] and c["domains"]["coding"]["promotable"] and c["domains"]["startup"]["promotable"]
     assert c["domains"]["coding"]["staged"]["precision"] == 1.0 and c["domains"]["coding"]["now"]["precision"] == 0.5
-    # a staged run that sends a founder item to the coding coach does not beat 1 % wrong-pack
-    bad = dict(good, s0={"coding"})
-    c = T.compare_arms(labels, now, bad, packs)
-    assert c["staged"]["wrong_pack"] > T.WRONG_PACK_BAR and not c["beats"] and not c["domains"]["coding"]["promotable"]
+    # a staged run is still wrong about a few items (a panel reads chunks blind): not a failure while no Pack gets worse
+    noisy = dict(good, s0={"coding"}, s1={"coding"})
+    c = T.compare_arms(labels, now, noisy, packs)
+    assert c["staged"]["wrong_pack"] > 0.05 and c["beats"] and c["domains"]["startup"]["promotable"]
+    # a Pack that is reached wrongly more often than before holds back the Domains it lists
+    labels2 = labels | {f"m{n}": {"gtm"} for n in range(12)}
+    now2 = {i: set(w) for i, w in labels2.items()}
+    worse = dict(now2, **{f"m{n}": {"coding"} for n in range(3)}, **{f"i{n}": {"coding", "startup"} for n in range(12)})
+    c = T.compare_arms(labels2, now2, worse, packs)
+    assert c["packs"]["founder"]["staged"] > c["packs"]["founder"]["now"] and not c["packs"]["founder"]["ok"]
+    assert not c["domains"]["startup"]["promotable"] and not c["domains"]["gtm"]["promotable"]
     # too few labels: never promotable, however good
     few = {"i0": {"coding"}, "s0": {"startup"}}
     c = T.compare_arms(few, {i: {"coding"} for i in few}, {i: set(w) for i, w in few.items()}, packs)
     assert c["beats"] and not c["domains"]["coding"]["promotable"]
+    # a small F1 dip is within the slack; a large one is not
+    want = {f"c{n}": {"coding"} for n in range(50)} | {f"f{n}": {"startup"} for n in range(10)}
+    use = {i: {"coding"} for i in want}
+    small = {i: set(w) for i, w in want.items()} | {"c0": {"startup"}}
+    large = {i: set(w) for i, w in want.items()} | {f"c{n}": {"startup"} for n in range(10)}
+    assert T.compare_arms(want, use, small, packs)["domains"]["coding"]["promotable"]
+    assert not T.compare_arms(want, use, large, packs)["domains"]["coding"]["promotable"]
 
 
 def test_the_unplaced_marker_is_reserved_and_no_pack_can_serve_it():

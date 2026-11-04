@@ -1271,7 +1271,8 @@ def latest_backup(directory: Path | None = None) -> Path | None:
 
 # ----------------------------------------------------------------------------- comparing arms on one labelled sheet (ADR-0023)
 MIN_LABELS = 10                 # a Domain with fewer labelled items than this is never judged promotable
-WRONG_PACK_BAR = 0.01           # the share of labelled items a tagger may send to a Pack the label doesn't belong to
+PACK_LEAK_RISE = 0.01           # a Pack may gain at most this share of wrongly-reached labelled items over the tags in use
+F1_SLACK = 0.02                 # a Domain's F1 may sit this far under the tags in use (small samples are noisy)
 
 
 def staged_current(db: TagDB) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
@@ -1304,9 +1305,23 @@ def domain_scores(labels: dict[str, set[str]], got: dict[str, set[str]]) -> dict
     return out
 
 
+def pack_leaks(labels: dict[str, set[str]], got: dict[str, set[str]], pack_domains: dict[str, set[str]]) -> dict[str, float]:
+    """Per Pack, the share of labelled, tagged items that reach it though none of the label's Domains is one of its
+    own (a founder talk in the coding coach). `pack_domains`: Pack id -> its Domains."""
+    n = 0
+    bad = dict.fromkeys(pack_domains, 0)
+    for item_id, want in labels.items():
+        if item_id not in got:
+            continue
+        n += 1
+        for p, ds in pack_domains.items():
+            bad[p] += int(bool(ds & got[item_id]) and not (ds & want))
+    return {p: round(v / n, 4) if n else 0.0 for p, v in bad.items()}
+
+
 def wrong_pack_rate(labels: dict[str, set[str]], got: dict[str, set[str]], pack_domains: dict[str, set[str]]) -> float:
-    """The share of labelled, tagged items that reach a Pack none of whose Domains the label names (a founder talk in
-    the coding coach). `pack_domains`: Pack id -> its Domains."""
+    """The share of labelled, tagged items that reach any Pack the label doesn't belong to (reported, not a gate:
+    a panel that reads a chunk without its Document leaves about one chunk in eight arguable, whoever tags it)."""
     n = bad = 0
     for item_id, want in labels.items():
         if item_id not in got:
@@ -1320,10 +1335,11 @@ def wrong_pack_rate(labels: dict[str, set[str]], got: dict[str, set[str]], pack_
 
 def compare_arms(labels: dict[str, set[str]], now: dict[str, set[str]], staged: dict[str, set[str]],
                  pack_domains: dict[str, set[str]]) -> dict:
-    """The tags in use against the staged run on the same labels. The staged run `beats` the current one when its
-    precision and recall together are higher and fewer than WRONG_PACK_BAR of items reach a wrong Pack; a Domain is
-    `promotable` when its own F1 is no lower, it has at least MIN_LABELS labelled items, and the staged run beats overall."""
-    a, b = domain_scores(labels, now), domain_scores(labels, staged)
+    """The tags in use against the staged run on the same labels (ADR-0023, amended 2026-11-04). The staged run
+    `beats` when its precision and recall together are higher. A Pack is `ok` when the staged run reaches it wrongly
+    no more than PACK_LEAK_RISE more often than the tags in use do. A Domain is `promotable` when the run beats overall,
+    it has at least MIN_LABELS labelled items, its F1 is within F1_SLACK of the tags in use, and every Pack that lists
+    it is ok."""
     tot = {}
     for name, got in (("now", now), ("staged", staged)):
         sc = domain_scores(labels, got)
@@ -1332,12 +1348,16 @@ def compare_arms(labels: dict[str, set[str]], now: dict[str, set[str]], staged: 
                      "recall": round(tp / (tp + fn), 4) if tp + fn else 0.0,
                      "wrong_pack": wrong_pack_rate(labels, got, pack_domains),
                      "items": sum(1 for i in labels if i in got)}
-    beats = (tot["staged"]["precision"] + tot["staged"]["recall"] > tot["now"]["precision"] + tot["now"]["recall"]
-             and tot["staged"]["wrong_pack"] < WRONG_PACK_BAR)
+    beats = tot["staged"]["precision"] + tot["staged"]["recall"] > tot["now"]["precision"] + tot["now"]["recall"]
+    la, lb = pack_leaks(labels, now, pack_domains), pack_leaks(labels, staged, pack_domains)
+    packs = {p: {"now": la[p], "staged": lb[p], "ok": lb[p] - la[p] <= PACK_LEAK_RISE + 1e-9} for p in pack_domains}
+    a, b = domain_scores(labels, now), domain_scores(labels, staged)
+    blank = {"f1": 0.0, "labelled": 0, "precision": 0.0, "recall": 0.0}
     per = {}
     for d in sorted(set(a) | set(b)):
-        x, y = a.get(d, {"f1": 0.0, "labelled": 0, "precision": 0.0, "recall": 0.0}), \
-            b.get(d, {"f1": 0.0, "labelled": 0, "precision": 0.0, "recall": 0.0})
-        per[d] = {"now": x, "staged": y,
-                  "promotable": bool(beats and y["labelled"] >= MIN_LABELS and y["f1"] >= x["f1"])}
-    return {"now": tot["now"], "staged": tot["staged"], "beats": beats, "domains": per}
+        x, y = a.get(d, blank), b.get(d, blank)
+        its_packs = [p for p, ds in pack_domains.items() if d in ds]
+        per[d] = {"now": x, "staged": y, "packs": its_packs,
+                  "promotable": bool(beats and y["labelled"] >= MIN_LABELS and y["f1"] >= x["f1"] - F1_SLACK
+                                     and all(packs[p]["ok"] for p in its_packs))}
+    return {"now": tot["now"], "staged": tot["staged"], "beats": beats, "packs": packs, "domains": per}

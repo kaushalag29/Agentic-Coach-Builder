@@ -2515,12 +2515,17 @@ def _eval_tags(args) -> int:
               f"({db.meta('staged_check_mode') or 'off'}) against the tags in use")
         for label, e in (("in use", c["now"]), ("staged", c["staged"])):
             print(f"  {label:7} precision {e['precision']:.1%}  recall {e['recall']:.1%}  to a wrong Pack {e['wrong_pack']:.1%}")
-        print(f"  staged run {'BEATS' if c['beats'] else 'does not beat'} the tags in use (precision + recall higher, "
-              f"under {T.WRONG_PACK_BAR:.0%} to a wrong Pack)")
+        print(f"  staged run {'BEATS' if c['beats'] else 'does not beat'} the tags in use (precision + recall higher)")
+        for p, e in c["packs"].items():
+            print(f"  Pack {p:9} reached wrongly: {e['now']:.1%} -> {e['staged']:.1%}  "
+                  + ("ok" if e["ok"] else f"worse by more than {T.PACK_LEAK_RISE:.0%}: its Domains are held back"))
         for d, e in c["domains"].items():
-            print(f"  {d:16} F1 {e['now']['f1']:.2f} -> {e['staged']['f1']:.2f}  ({e['staged']['labelled']} labelled)  "
-                  + ("promotable" if e["promotable"] else
-                     ("too few labels" if e["staged"]["labelled"] < T.MIN_LABELS else "not promotable")))
+            why = ("promotable" if e["promotable"] else
+                   "too few labels" if e["staged"]["labelled"] < T.MIN_LABELS else
+                   "does not beat overall" if not c["beats"] else
+                   "F1 lower" if e["staged"]["f1"] < e["now"]["f1"] - T.F1_SLACK else
+                   "a Pack of it got worse")
+            print(f"  {d:16} F1 {e['now']['f1']:.2f} -> {e['staged']['f1']:.2f}  ({e['staged']['labelled']} labelled)  {why}")
         ok = [d for d, e in c["domains"].items() if e["promotable"]]
         if ok:
             print(f"eval tags --compare: ytbrain domains promote {' '.join(ok)}   (or one at a time)")

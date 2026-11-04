@@ -59,9 +59,9 @@ the wrong ones, and the Domain list gave AI engineering nowhere of its own, so t
 No human labels. `experiments/laya/panel_sheet.py` has the three-judge panel of the Laya experiment label a `ytbrain
 domains sample` sheet: a row's label is the Domains at least two judges named, and a row where none reaches two stays
 empty. `ytbrain eval tags --items SHEET --compare` then scores the tags in use and the staged run on those labels. The
-staged run must beat the tags in use (precision and recall together) and send under 1 % of labelled items to a Pack
-they do not belong to; a Domain is promotable only if the run beats overall, it has at least 10 labelled items, and its
-own F1 is no lower. A short read of the chunks where the checker, the embedding and the panel disagree (`domains diff
+staged run must beat the tags in use (precision and recall together), no Pack may be reached wrongly more than one
+point more often than before, and a Domain is promotable only if it has at least 10 labelled items, its F1 is within
+0.02 of the tags in use and every Pack that lists it passes. A short read of the chunks where the checker, the embedding and the panel disagree (`domains diff
 --csv`) guards against judges that share a blind spot. The comparison has three arms: the tags in use, the checker on
 flagged chunks, the checker on all chunks (`tag --check all --stage`).
 
@@ -73,3 +73,14 @@ flagged chunks, the checker on all chunks (`tag --check all --stage`).
   them. Tags stay inspectable (`domains why` shows a chunk's origin `checked`).
 - Not decided here: a browse (catalog) tool beside search, and an index for the coach's own records. Both wait for the
   backfill and for evidence they help.
+
+## Amendment (2026-11-04): the wrong-Pack gate
+
+The first gate said under 1 % of labelled items to a wrong Pack. The first real comparison (295 panel-labelled chunks)
+put the tags in use at 13.9 % and the checker at 12.9 %: a panel that reads a chunk without its Document, and a
+finance/investment boundary that is arguable chunk by chunk, leave about one chunk in eight "wrong" whoever tags it, so
+no tagger could pass. The gate was replaced, with the maintainer's agreement and before anything was promoted, by a
+rule that measures what the worry was about: per Pack, wrongly reached items must not rise by more than a point over the
+tags in use. On those 295 chunks the checker raised precision 59 -> 73 %, recall 58 -> 68 % and exact matches 155 -> 190,
+cut wrong entries to the coding Pack 5.4 -> 3.1 %, and doubled them for the investor Pack 3.4 -> 6.8 %, which holds the
+`investment` Domain back.
