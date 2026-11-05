@@ -38,6 +38,7 @@ INVOCATION = {
     "setup": {"disable-model-invocation": "true"},
     "status": {"disable-model-invocation": "true"},
     "export": {"disable-model-invocation": "true"},
+    "vault": {"disable-model-invocation": "true"},
     "forget": {"disable-model-invocation": "true"},
     "feedback": {"disable-model-invocation": "true"},
 }

@@ -1701,7 +1701,7 @@
       "title": "Before",
       "type": "object"
      },
-     "carried_weeks": {
+     "carried_periods": {
       "anyOf": [
        {
         "type": "integer"
@@ -1711,7 +1711,7 @@
        }
       ],
       "default": null,
-      "title": "Carried Weeks"
+      "title": "Carried Periods"
      },
      "id": {
       "title": "Id",

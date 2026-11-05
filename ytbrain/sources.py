@@ -205,10 +205,29 @@ def book_files(src: dict, root: Path) -> list[Path]:
     return sorted(found, key=lambda f: (f.name.lower(), str(f)))
 
 
+def read_yaml(path: Path) -> dict:
+    """sources.yaml as a mapping. A syntax error is a SourceConfigError that names the line and says what usually
+    causes it, never a traceback: a name or title containing `: ` is the usual one and needs quotes."""
+    import yaml
+    try:
+        doc = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark is not None else ""
+        problem = getattr(e, "problem", None) or str(e).splitlines()[0]
+        hint = (" A value containing ': ' needs quotes, e.g. name: \"Talks: 2026\"."
+                if "mapping values are not allowed" in problem else "")
+        raise SourceConfigError(f"{path.name} is not valid YAML{where}: {problem}.{hint}") from e
+    if doc is None:
+        return {}
+    if not isinstance(doc, dict):
+        raise SourceConfigError(f"{path.name} must be a mapping with `defaults` and `sources`, not a {type(doc).__name__}")
+    return doc
+
+
 def load(path: Path) -> list[dict]:
     """Every Source in sources.yaml, normalized (enabled or not); ids are unique."""
-    import yaml
-    doc = yaml.safe_load(path.read_text()) or {}
+    doc = read_yaml(path)
     defaults = doc.get("defaults") or {}
     out, seen = [], set()
     for entry in doc.get("sources") or []:

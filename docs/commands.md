@@ -170,6 +170,7 @@ founder-coach serve --pack data/pack              # stdio MCP server (the host s
 npx @modelcontextprotocol/inspector founder-coach serve --pack data/pack   # try the 9 tools by hand
 echo '{}' | founder-coach hook session-start      # prints SessionStart JSON only when something is due
 founder-coach export [--out DIR]
+founder-coach vault build [--out DIR]     # the Project vault, as plain Markdown (Obsidian, Foam, Quartz, Logseq open it); reads a copy of the database
 founder-coach restore --list ; founder-coach restore            # put back the newest good backup
 founder-coach forget [--confirm "<company>"] [--no-backup]
 founder-coach forget --all [--confirm "forget all"]   # every Project and the Common profile

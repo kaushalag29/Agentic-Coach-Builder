@@ -104,6 +104,7 @@ founder-coach forget --confirm "Acme"        # the same without a prompt (requir
 founder-coach forget --all                   # every Project and the Common profile (type 'forget all')
 founder-coach notes lint [--json]               # report-only: Notes past their revisit date, broken links, duplicates, drift of the derived files
 founder-coach notes rebuild                      # regenerate the search index and the notes/ folder (INDEX.md, one file per Note) from the store
+founder-coach vault build [--out DIR]             # the Project vault (plain Markdown for Obsidian): every coach's folder, from a read-only copy of the database
 founder-coach restore --list                 # backups, newest first, each with its integrity check
 founder-coach restore [LABEL]                # restore a backup (default: newest good one); old file set aside
 founder-coach feedback list|export [--out D] # the Founder's Feedback; export writes only that, to send
@@ -131,10 +132,18 @@ ytbrain gaps --replay                                                # the weak 
 - **Also served:** 4 prompts (`ask`, `weekly-focus`, `check-in`, `setup`) and the resources
   `founder://profile`, `founder://this-week`, `founder://notes` (the Notes index), `corpus://status` and
   `corpus://item/{id}`.
+- **The Project vault** (`vault/` in the Project's folder, ADR-0020 amendment 2026-11-05) is the same memory as plain
+  Markdown a graph viewer can open: one file per Note, Decision, Goal and Commitment, `[[links]]` between them (a Note
+  to what it is about, a Commitment to its Goal), tags and a hub note. `shared/` holds what the coaches of a Project
+  share; each coach has its own folder, and a coach that keeps everything private (the investor) never appears in
+  `shared/`. Every save refreshes the part its coach may read; `founder-coach vault build` (or `/founder-coach:vault`)
+  rebuilds all of it from a read-only copy of the database. Open the folder as a vault in Obsidian (free, not open
+  source) and the graph view; Foam, Quartz and Logseq read the same files. It is a read-only view: an edit is
+  overwritten, and Holdings never enter it.
 - **Founder data** lives in one folder per Project, `~/.ytbrain/projects/<id>/`, shared by every coach with each record
   stamped by the coach that made it (ADR-0016, ADR-0019; every coach reads the shared core, Goals, Commitments, Decisions and the profile fields they both declare, each record showing the coach behind it; Notes, Check-ins and Holdings stay with their coach, and the investor reads and is read by nobody; `PROJECT.md` in the folder lists the shared core;
   `YTBRAIN_HOME` moves `~/.ytbrain`, and `FOUNDER_COACH_HOME` pins one folder with no Projects, as before them).
-  A session works on one Project: with one it is chosen by itself, with several the coach asks. Facts true in
+  A session works on one Project: the app's work folder chooses it, and when the app names no folder the coach asks (even with only one Project). Facts true in
   every Project (name, role, timezone, answer style) go to the Common profile `~/.ytbrain/you.db` only on a yes.
   The first start after the update copies `~/.founder-coach/` into a Project once and leaves it as it was. Each
   Project folder holds:

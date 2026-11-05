@@ -883,6 +883,62 @@ def test_ops_handles_each_stop_reason_asks_for_a_version_and_keeps_references():
         runstatus.clear()
 
 
+def test_a_malformed_sources_yaml_is_named_and_stops_ops_first_and_a_crash_without_a_record_is_not_the_network():
+    import contextlib
+    import io
+    import json as _json
+    from ytbrain import cli, config, ops, runstatus
+    from ytbrain import sources as S
+    tmp = Path(tempfile.mkdtemp())
+    bad = tmp / "sources.yaml"
+    bad.write_text("sources:\n- id: a\n  name: Pitching: raising money\n  kind: playlist\n  playlist_id: PLx\n")
+    try:
+        S.read_yaml(bad)
+        raise AssertionError("a name with ': ' must not parse")
+    except S.SourceConfigError as e:
+        assert "line 3" in str(e) and "needs quotes" in str(e), str(e)
+    real = (config.SOURCES_FILE, cli.SOURCES, runstatus.STATUS, ops.STATE, ops.LAST_RUN)
+    config.SOURCES_FILE, cli.SOURCES = bad, bad
+    runstatus.STATUS, ops.STATE, ops.LAST_RUN = tmp / "stop.json", tmp / "state.json", tmp / "last.md"
+    try:
+        # a command reads it: one line, no traceback, and the stop record says configuration, not network
+        try:
+            cli._sources()
+            raise AssertionError("a malformed sources.yaml must stop the command")
+        except SystemExit as e:
+            assert str(e.code).startswith("sources.yaml: ") and "line 3" in str(e.code), e.code
+        assert _json.loads(runstatus.STATUS.read_text())["reason"] == "config"
+        # ops: nothing runs, the line is named, the run is not retried
+        calls: list = []
+        slept: list = []
+        o = ops.Ops(ops.Options(plan="ingest", notify=False), call=lambda a: calls.append(a[0]) or 0, say=print,
+                    sleep=slept.append)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = o.run()
+        assert code == ops.EXIT_FAIL and calls == [] and slept == [] and "line 3" in out.getvalue(), out.getvalue()
+        assert "nothing was run" in out.getvalue() and not ops.STATE.exists()
+        # a plan that doesn't sync (or --no-sync) is not held up by it
+        o = ops.Ops(ops.Options(plan="ingest", sync=False, notify=False), call=lambda a: calls.append(a[0]) or 0,
+                    say=print, sleep=slept.append)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert o.run() == 0 and calls and "sync" not in calls
+        # fixed, then a sync that crashes without leaving a stop record (a traceback, a bug) is not the network:
+        # it stops once, is not retried and does not go on "with what is already fetched"
+        bad.write_text('sources:\n- id: a\n  name: "Pitching: raising money"\n  kind: playlist\n  playlist_id: PLx\n')
+        calls.clear()
+        ops.STATE.unlink(missing_ok=True)
+        runstatus.clear()
+        o = ops.Ops(ops.Options(plan="ingest", notify=False), call=lambda a: calls.append(a[0]) or (1 if a[0] == "sync" else 0),
+                    say=print, sleep=slept.append)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = o.run()
+        assert code == 1 and calls == ["sync"] and slept == [], (calls, slept, out.getvalue())
+        assert "network problem" not in out.getvalue() and "continuing with what is already" not in out.getvalue()
+        assert "stopped at ingest:sync" in out.getvalue()
+    finally:
+        config.SOURCES_FILE, cli.SOURCES, runstatus.STATUS, ops.STATE, ops.LAST_RUN = real
+
+
 def test_ops_offers_to_declare_a_stray_book_folder_and_stops_when_no_one_answers():
     import contextlib
     import io
@@ -1561,7 +1617,7 @@ def test_coach_eval_grades_gates_resumes_and_checks_memory_state():
 def test_coach_eval_case_files_are_well_formed():
     from ytbrain.eval import coach as C
     syc, dec, per = (C.load_cases(g) for g in ("g4", "g6", "g5"))
-    assert len(syc) == 10 and 6 <= len(dec) <= 12 and len(per) == 3
+    assert len(syc) == 10 and 6 <= len(dec) <= 12 and len(per) == 4
     assert len({c["id"] for c in syc + dec + per}) == len(syc) + len(dec) + len(per)
     assert all(len(c["parts"]) >= 2 for c in dec)
     for p in per:
@@ -1571,6 +1627,32 @@ def test_coach_eval_case_files_are_well_formed():
         assert p["no_write_turns"] == [0] and p["dictated"]
         first = p["weeks"][0]["turns"][0].lower()
         assert all(str(v).lower() in first for v in p["dictated"].values()), p["id"]   # what turn 1 says
+
+
+def test_the_loop_persona_cases_say_what_they_dictate_and_check_fields_the_pack_declares():
+    """ADR-0022: a founder who asks for a fortnightly rhythm, a coding persona who turns the loop on, and one who declines
+    it but still wants a Focus. Every dictated value is said somewhere in the persona's own turns, the weeks run
+    forward, and every profile field a check reads is one the Pack declares (a typo would fail the gate forever)."""
+    import json as _json
+    from ytbrain.eval import coach as C
+    from ytbrain.packs import load as load_pack
+    for pack, ids in (("founder", {"persona-fortnightly"}),
+                      ("coding", {"persona-loop-on", "persona-loop-declined"})):
+        folder = C.CASES if pack == "founder" else C.CASES / pack
+        cases = [_json.loads(x) for x in (folder / "personas.jsonl").read_text().splitlines() if x.strip()]
+        mine = [c for c in cases if c["id"] in ids]
+        assert {c["id"] for c in mine} == ids, pack
+        fields = {f["name"] if isinstance(f, dict) else f for f in (load_pack(pack).profile or [])} | {"loop", "loop_every"}
+        for c in mine:
+            weeks = [dt.datetime.fromisoformat(w["now"]) for w in c["weeks"]]
+            assert weeks == sorted(weeks) and all(w.tzinfo for w in weeks), c["id"]
+            said = " ".join(t for w in c["weeks"] for t in w["turns"]).lower()
+            assert all(str(v).lower() in said for v in c["dictated"].values()), c["id"]
+            assert c["no_write_turns"] == [0] and c["checks"], c["id"]
+            for chk in c["checks"]:
+                if chk["check"] == "profile":
+                    assert chk["field"] in fields, (c["id"], chk["field"])
+        assert any(chk.get("field") in ("loop", "loop_every") for c in mine for chk in c["checks"]), pack
 
 
 def test_coach_eval_before_a_yes_only_the_founders_dictated_values_may_be_saved():

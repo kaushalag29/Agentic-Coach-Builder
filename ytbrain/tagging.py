@@ -186,15 +186,7 @@ def candidates(scores: dict[str, float], hints: set[str], s: Settings) -> list[s
 
 
 # ----------------------------------------------------------------------------- the store
-class TagDB:
-    """data/tags/tags.db: the last run's tags with their origin, the tie-break cache and confirmations."""
-
-    def __init__(self, path: Path | None = None):
-        self.path = Path(path) if path else TAGS_DB
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(self.path), timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.executescript("""
+SCHEMA = """
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS item_tags (item_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL,
@@ -218,7 +210,20 @@ class TagDB:
             CREATE TABLE IF NOT EXISTS staged_doc_tags (doc_id TEXT PRIMARY KEY, source_id TEXT NOT NULL,
                 domains TEXT NOT NULL, suggested TEXT NOT NULL, origin TEXT NOT NULL, shares TEXT NOT NULL,
                 hints TEXT NOT NULL);
-        """)
+            CREATE TABLE IF NOT EXISTS staged_auto_tags (doc_id TEXT NOT NULL, domain TEXT NOT NULL,
+                PRIMARY KEY (doc_id, domain));
+        """
+
+
+class TagDB:
+    """data/tags/tags.db: the last run's tags with their origin, the tie-break cache and confirmations."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = Path(path) if path else TAGS_DB
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(str(self.path), timeout=30)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(SCHEMA)
 
     def meta(self, key: str) -> str | None:
         r = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -265,6 +270,11 @@ class TagDB:
             self.db.executemany("INSERT INTO staged_doc_tags VALUES (?,?,?,?,?,?,?)", [
                 (d, t.source_id, json.dumps(list(t.domains)), json.dumps(list(t.suggested)), t.origin,
                  json.dumps(t.shares), json.dumps(list(t.hints))) for d, t in docs.items()])
+            self.db.execute("DELETE FROM staged_auto_tags")        # high-tier Domains the `auto` policy applied: kept so
+            self.db.executemany("INSERT INTO staged_auto_tags VALUES (?,?)",      # `domains review` still lists
+                                [(d, dom) for d, t in docs.items() for dom in getattr(t, "auto", ())])   # them after a promote
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('staged_auto_recorded', '1')")   # (a run staged before
+                                                                      # this existed has none: promote leaves auto_tags be)
             self.db.executemany("INSERT OR REPLACE INTO meta VALUES (?,?)",
                                 [(f"staged_{k}", str(v)) for k, v in meta.items()])
 
@@ -296,6 +306,7 @@ class TagDB:
             src.backup(self.db)
         finally:
             src.close()
+        self.db.executescript(SCHEMA)          # a backup from before a table existed (checked, staged_*) has none of it
 
     def confirmations(self) -> set[tuple[str, str]]:
         return {(r["scope"], r["domain"]) for r in self.db.execute("SELECT scope, domain FROM confirmations")}
@@ -1256,9 +1267,18 @@ def promote(db: TagDB, domains: list[str]) -> tuple[dict[str, tuple[str, ...]], 
         if tuple(sorted(cur)) != tuple(sorted(before)) or tuple(sorted(sug)) != tuple(sorted(sug_b)):
             doc_sql.append((json.dumps(list(cur)), json.dumps(list(sug)), st["origin"] if took else r["origin"],
                             st["shares"] if took else r["shares"], r["doc_id"]))
+    take_auto = db.meta("staged_auto_recorded") == "1"
+    staged_auto = [(r["doc_id"], r["domain"]) for r in db.db.execute("SELECT * FROM staged_auto_tags")
+                   if r["domain"] in domains and r["doc_id"] in staged_docs] if take_auto else []
     with db.db:
         db.db.executemany("UPDATE item_tags SET domains=?, suggested=?, origin=? WHERE item_id=?", item_sql)
         db.db.executemany("UPDATE doc_tags SET domains=?, suggested=?, origin=?, shares=? WHERE doc_id=?", doc_sql)
+        # the high-tier tags the `auto` policy applied (what `domains review` lists to check): taken for the promoted
+        # Domains, for every Document the staged run covers, so a promoted Domain never keeps the old run's list
+        if take_auto:
+            db.db.executemany("DELETE FROM auto_tags WHERE domain=? AND doc_id=?",
+                              [(d, doc) for doc in staged_docs for d in domains])
+            db.db.executemany("INSERT OR IGNORE INTO auto_tags VALUES (?,?)", staged_auto)
         db.db.execute("INSERT OR REPLACE INTO meta VALUES ('promoted', ?)", (",".join(domains),))
     return want, len(doc_sql)
 

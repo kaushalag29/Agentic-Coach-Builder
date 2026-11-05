@@ -18,7 +18,7 @@ Each Project keeps its own memory: {{memory}}. A session works on one active Pro
 
 ## Gotchas
 
-- With several Projects and none active, ask which one before reading or saving anything about the {{person}}. A question that needs no memory can be answered first.
+- With no Project active (several, or one and the app named no work folder), ask which one before reading or saving anything about the {{person}}. A question that needs no memory can be answered first.
 - A work folder linked to no Project keeps no memory: say so, answer from the knowledge, and offer to link the folder to one of the Projects or make a new one. Never pick one for them because it is the only one or the last used.
 - Another coach in this conversation may already have chosen a Project (its `coach_project` result, or the same folder): switch to that one so the {{person}} is asked once.
 - A fact true for every Project (their name, role, time zone, how they like answers) may go to the Common profile their coaches share: ask "Use this for all your Projects and coaches?" and save with `scope: "common"` only on a yes.

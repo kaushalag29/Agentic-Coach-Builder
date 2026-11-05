@@ -84,3 +84,32 @@ a weekly Check-in is too coarse to carry it.
 query be left out. A record's date is when it was made (a Decision: when it was decided); a Note still carries no
 validity interval. A markdown vault with `[[wikilinks]]` already opens in Obsidian, which draws the graph; a generated
 graph or diagram of Notes, Decisions and Goals is deferred until a person asks for it.
+
+## Amendment 2026-11-05: the Project vault
+
+The graph the amendment above left for later is a folder of plain Markdown that a graph viewer opens, not a viewer of
+our own. The goal is to trace your own thinking (what led to a Decision), read-only; it does not feed retrieval, and
+SQLite stays the source of truth (point 2).
+
+- **One vault per Project, a folder per coach.** `vault/` in the Project's folder: `shared/` holds the Goals,
+  Commitments and Decisions the coaches of a Project share, each stamped with its coach; `<coach>/` holds that coach's
+  Notes, its Check-ins as a dated list, and everything it keeps to itself (ADR-0019: the investor keeps all). A coach
+  whose privacy is unknown (not in the installed registry) is taken to keep everything. The per-coach `notes/` folders
+  above stay as they are.
+- **Nodes and links.** Notes, Decisions, Goals and Commitments, plus one hub note per scope that lists the profile facts
+  as the person stated them. The links are written into the files as `[[wikilinks]]`: the Note links, a Commitment to
+  its Goal and to the Commitment it carried over, a Goal or Decision to the hub. Frontmatter tags (`kind/…`, `coach/…`)
+  and a starting `.obsidian/graph.json` with colour groups per kind, written once and never overwritten. There is no node
+  for a person or a company (a wrongly extracted entity becomes a prior nothing contradicts), and Holdings, positions
+  and account data never enter the vault.
+- **Two writers, one renderer.** After a save a coach refreshes only what ADR-0019 lets it read (its own folder and the
+  shared records its `readers()` name) through the same best-effort hook as the notes folder, and removes only generated
+  files it may read. `<coach> vault build [--out DIR]` is the person's command: it reads a COPY of the database
+  (the original and its -wal/-shm are only read as bytes, so nothing migrates, backs up or rewrites there) and writes
+  every coach's folder, with a top-level `INDEX.md`. A database from an older or newer coach is refused, not migrated.
+- **New links.** The coach skills propose the Note that holds the thinking behind a Decision in the same message and
+  link it `about` that Decision; a Note names the Goal, Decision or earlier Note it relates to from retrieved ids.
+  Existing records are not linked retroactively.
+- **Viewer.** Obsidian is the tested viewer. It is free for personal and work use but not open source; the files are
+  plain Markdown, so Foam (MIT), Quartz (MIT) and Logseq (AGPL) read the same folder. The colour file is Obsidian's.
+

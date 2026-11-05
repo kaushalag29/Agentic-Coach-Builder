@@ -108,6 +108,17 @@
      "action"
     ]
    },
+   "vault": {
+    "options": [
+     "--engine-home",
+     "--home",
+     "--out",
+     "--project"
+    ],
+    "positionals": [
+     "action"
+    ]
+   },
    "warmup": {
     "options": [
      "--home",

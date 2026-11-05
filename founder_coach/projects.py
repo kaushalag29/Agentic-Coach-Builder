@@ -13,8 +13,8 @@ has its own memory store, in its own folder, so nothing said about one ever show
         project.json                  its display name and when it was made (more keys are kept as they are)
       <pack>/                         what is left of the layout before ADR-0019 (read once by the move, never written)
 
-A session works on one active Project (R1). With one Project it is chosen by itself; with several the coach
-asks which one before reading or saving memory. Setting <PREFIX>HOME (or --home) keeps the single-folder
+A session works on one active Project (R1). The app's work folder chooses it; when the app names no folder
+the coach asks which one (even when there is only one) before reading or saving memory. Setting <PREFIX>HOME (or --home) keeps the single-folder
 layout from before Projects: that folder is the store, and there is no Common profile (tests, evals and
 people who pinned their data folder see no change).
 
@@ -346,9 +346,10 @@ class Workspace:
 
     # -- choosing ---------------------------------------------------------------------------
     def choose(self, requested: str | None = None, use_last: bool = False, folder: str | Path | None = None) -> str | None:
-        """The Project to work on: the one asked for (by id or name), else the only one, else (for the command
-        line and the hook) the last one used, else <PREFIX>PROJECT. None: there are several and nothing says
-        which, or none yet. Single mode has no Projects (None)."""
+        """The Project to work on: the one asked for (by id or name), else the one the work folder is linked to, else
+        <PREFIX>PROJECT. The command line (`use_last`) goes on to the only Project and then the last one used; a
+        session never does. None: nothing says which, so the coach asks (or there is none yet). Single mode has no
+        Projects (None)."""
         if self.single:
             if requested:
                 raise ProjectError(f"Projects aren't used while {product.env_name('HOME')} (or --home) names one "
@@ -364,13 +365,18 @@ class Workspace:
             if not use_last:                           # a session: a folder linked to nothing gets no memory, no fallback
                 return None
         ps = self.projects.list()
-        if len(ps) == 1:
-            return ps[0]["id"]
         env = product.env("PROJECT")
+        if use_last:                                   # the command line: the only one, else the last one used
+            if len(ps) == 1:
+                return ps[0]["id"]
+            if env and self.projects.get(env):
+                return self.projects.get(env)["id"]
+            return self.projects.last()
+        # a session with no folder to go by: only <PREFIX>PROJECT (a choice the person made) decides. Never the only
+        # Project and never the last one used: with no folder, nothing says this conversation is about it, so the
+        # coach asks (ADR-0019 point 4, amended 2026-11-05).
         if env and self.projects.get(env):
             return self.projects.get(env)["id"]
-        if use_last:
-            return self.projects.last()
         return None
 
     def store_home(self, pid: str | None) -> Path:

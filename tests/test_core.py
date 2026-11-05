@@ -3464,6 +3464,49 @@ def test_a_staged_backfill_is_compared_promoted_one_domain_at_a_time_and_restore
         db.close()
 
 
+def test_a_promote_takes_the_auto_tags_of_its_domains_and_a_restore_recreates_what_an_old_backup_lacks():
+    """Review of ADR-0023 (2026-11-05): `domains review` lists the high-tier Domains the `auto` policy applied; a promoted
+    Domain must show the staged run's list, not the old run's. A run staged before this was recorded changes nothing there.
+    A backup made before a table existed (checked, staged_*) restores into a database that still works."""
+    import sqlite3
+
+    from ytbrain import tagging as T
+    item = lambda *dom: T.ItemTag("d1", tuple(dom))                                    # noqa: E731
+    doc = lambda *dom, auto=(): T.DocTag("src", tuple(dom), (), "passages", {}, (), tuple(auto))   # noqa: E731
+    with tempfile.TemporaryDirectory() as d:
+        db = T.TagDB(Path(d) / "tags.db")
+        db.replace({"i1": item("startup")}, {"d1": doc("startup"), "d2": doc("startup")}, {"applied": "1"})
+        db.db.executemany("INSERT INTO auto_tags VALUES (?,?)", [("d1", "finance"), ("d2", "finance"), ("d9", "finance"),
+                                                                 ("d1", "gtm")])
+        db.db.commit()
+        db.stage({"i1": item("startup", "finance")}, {"d1": doc("startup", "finance", auto=("finance",)), "d2": doc("startup")},
+                 {"tagged_at": "t", "unchecked": 0})
+        T.promote(db, ["finance"])
+        auto = sorted(tuple(r) for r in db.db.execute("SELECT doc_id, domain FROM auto_tags"))
+        assert auto == [("d1", "finance"), ("d1", "gtm"), ("d9", "finance")], \
+            "d1 keeps finance (staged says auto), d2 loses it, d9 (outside the staged run) and the unpromoted gtm are left alone"
+        # a run staged before the auto tags were recorded: promote leaves auto_tags as they are
+        db.db.execute("DELETE FROM meta WHERE key='staged_auto_recorded'")
+        db.db.execute("DELETE FROM staged_auto_tags")
+        db.db.commit()
+        T.promote(db, ["finance"])
+        assert sorted(tuple(r) for r in db.db.execute("SELECT doc_id, domain FROM auto_tags")) == auto
+        # a backup from before the checker existed: the tables it lacks come back with the restore
+        old = Path(d) / "old.db"
+        con = sqlite3.connect(str(old))
+        con.executescript("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                          "CREATE TABLE item_tags (item_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, domains TEXT NOT NULL,"
+                          " suggested TEXT NOT NULL, origin TEXT NOT NULL, scores TEXT NOT NULL);"
+                          "CREATE TABLE doc_tags (doc_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, domains TEXT NOT NULL,"
+                          " suggested TEXT NOT NULL, origin TEXT NOT NULL, shares TEXT NOT NULL, hints TEXT NOT NULL);")
+        con.close()
+        db.restore(old)
+        assert db.checked(["k"]) == {} and not db.staged() and db.confirmations() == set()
+        db.cache_checked([("k", ["coding"])], "m")
+        assert db.checked(["k"]) == {"k": ["coding"]}
+        db.close()
+
+
 def test_the_staged_run_is_compared_with_the_tags_in_use_per_domain_and_a_worse_pack_holds_its_domains_back():
     from ytbrain import tagging as T
     packs = {"founder": {"startup", "gtm"}, "coding": {"coding"}}

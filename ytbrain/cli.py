@@ -49,12 +49,16 @@ SYNC_TYPES = {"youtube": "youtube_playlist", "website": "website", "book": "pdf_
 
 
 def _sources() -> dict:
-    import yaml
     if not SOURCES.exists():
         sys.exit("sources.yaml not found. Start from the template:\n"
                  "  cp sources.example.yaml sources.yaml\n"
                  "or build one with: ytbrain discover --method ytdlp --channel @SomeChannel")
-    return yaml.safe_load(SOURCES.read_text()) or {}
+    from . import runstatus, sources as S
+    try:
+        return S.read_yaml(SOURCES)
+    except S.SourceConfigError as e:
+        runstatus.record("config", str(e))        # `ytbrain ops` reads this: a typo is not the network
+        sys.exit(f"sources.yaml: {e}")
 
 
 def _series_for(src: dict) -> str | None:
@@ -87,6 +91,8 @@ def _all_sources() -> list[dict]:
         D.check_sources(D.load(), srcs)
         return srcs
     except (S.SourceConfigError, D.DomainConfigError) as e:
+        from . import runstatus
+        runstatus.record("config", str(e))
         sys.exit(f"sources.yaml: {e}")
 
 

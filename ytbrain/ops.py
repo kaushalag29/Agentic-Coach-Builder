@@ -71,7 +71,7 @@ FIX = {"budget": "the spend cap is used up: re-run with a higher --max-cost",
        "auth": "the Claude host is not signed in (its login expired): run `claude`, type /login, then re-run the same `ytbrain ops` command, which resumes at the coach eval",
        "interrupted": "interrupted: re-run to continue",
        "books": "a PDF was refused or failed to parse (see the sync output): fix or `skip: true` it, then re-run",
-       "config": "a configuration problem (see the warning above). A book folder that is not a Domain: `ytbrain domains add NAME --risk ... --description ...` or `ytbrain domains ignore FOLDER` (ops asks when you're at the terminal), then re-run",
+       "config": "a configuration problem (see the message above): a typo in sources.yaml or domains.yaml, or a book folder that is not a Domain: `ytbrain domains add NAME --risk ... --description ...` or `ytbrain domains ignore FOLDER` (ops asks when you're at the terminal), then re-run",
        "gate": "the regression gate: read the per-kind lines (`ytbrain eval rescore --config full --compare full`)",
        "unknown": "see the output above"}
 
@@ -245,7 +245,9 @@ class Ops:
                 self.last_reason = ""
                 return 0
             stop = runstatus.read() or {}
-            self.last_reason = stop.get("reason") or ("network" if argv[:1] == ["sync"] else "unknown")
+            # no stop record means the child crashed before it could say why (a traceback, a bug): that is not the
+            # network, so it is neither retried nor carried past. A real network stop writes its own record.
+            self.last_reason = stop.get("reason") or "unknown"
             self.last_detail = stop.get("detail", "")
             if self.last_reason != "network" or wait is None:
                 return code
@@ -735,8 +737,25 @@ class Ops:
         return False, "nothing changed since the last build"
 
     # ------------------------------------------------------------------ run
+    def preflight(self) -> str | None:
+        """Why the run can't start, or None: a sources.yaml that doesn't parse, or one that names a Domain that isn't
+        declared. Checked before the first step, so a typo costs seconds and not a long ingest. A machine with no
+        sources.yaml is left to `sync`, which says how to make one."""
+        from . import config, domains as D, sources as S
+        if not self.opts.sync or self.opts.plan not in ("all", "ingest") or not config.SOURCES_FILE.exists():
+            return None
+        try:
+            D.check_sources(D.load(), S.load(config.SOURCES_FILE))
+        except (S.SourceConfigError, D.DomainConfigError) as e:
+            return f"sources.yaml: {e}"
+        return None
+
     def run(self) -> int:
         self.load()
+        if (why := self.preflight()) is not None:
+            self.say(f"ops: {why}\nops: nothing was run: fix it, then re-run `ytbrain ops {self.opts.plan}`")
+            self.notify("ytbrain ops did not start", why)
+            return EXIT_FAIL
         cur = self.state.get("run")
         if cur and (self.opts.restart or cur.get("plan") != self.opts.plan):
             cur = None

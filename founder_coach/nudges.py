@@ -181,7 +181,7 @@ def render_markdown(store: FounderStore) -> str:
     for c in cs:
         box = {"open": "[ ]", "done": "[x]", "dropped": "[-]", "carried": "[>]"}[c["status"]]
         when = f"{c['cue']}: " if c.get("cue") else ""
-        carried = f" _(carried {c['carried_weeks']} week(s))_" if c.get("carried_weeks") else ""
+        carried = f" _(carried {c['carried_periods']} period(s) in a row)_" if c.get("carried_periods") else ""
         lines.append(f"- {box} `{c['id']}` {when}{c['action']} → {c['outcome']}{carried}"
                      + (f" — {c['result_note']}" if c.get("result_note") else "") + _cite(store, c["citations"]))
     if not cs:

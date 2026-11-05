@@ -185,11 +185,11 @@ def test_carrying_a_commitment_links_a_copy_and_counts_the_streak():
                                                       "outcome": "5 calls booked"}]})["ids"][0]
     c.advance(days=7)
     r1 = s.update(cid, status="carried", note="only 2 calls")
-    assert r1["carried_weeks"] == 1 and r1["after"]["status"] == "carried" and r1["after"]["result_note"] == "only 2 calls"
+    assert r1["carried_periods"] == 1 and r1["after"]["status"] == "carried" and r1["after"]["result_note"] == "only 2 calls"
     new = s.get(r1["new_id"])
     assert new["week"] == iso_week(dt.date(2026, 9, 28)) and new["carried_from"] == cid and new["status"] == "open"
     c.advance(days=7)
-    assert s.update(new["id"], status="carried")["carried_weeks"] == 2
+    assert s.update(new["id"], status="carried")["carried_periods"] == 2
     _raises(lambda: s.update(cid, status="carried"), "only an open Commitment")
     _raises(lambda: s.update(cid, status="met"), "status is one of")
     _raises(lambda: s.update("c-nope", status="done"), "no record")

@@ -135,9 +135,11 @@ G7 rewrite follow. The read rules and `PROJECT.md` are built too (below).
   work folder decides. A checkout whose remote is linked to exactly one Project at another path is re-linked and the
   coach tells the person (`folder_note`).
 - **What the app gives:** only `CLAUDE_PROJECT_DIR`. MCP roots are not read: the tools are synchronous and listing roots
-  is a request to the client. If the app gives no folder, the previous rule stands (the only Project is chosen; with
-  several the coach asks); that convenience deviates from point 4's "never a fallback to the only Project" and is the
-  one place this build is looser than the ADR. A folder the app did give, linked to nothing, has no fallback at all.
+  is a request to the client. If the app gives no folder the coach asks which Project (or whether it is the only
+  one), as point 4 says: a session never falls back to the only Project or the last one used (amended 2026-11-05;
+  until then the only Project was chosen by itself, which let a company's memory reach unrelated work). Only
+  `<PREFIX>PROJECT`, a choice the person made, decides without a folder. A folder the app did give, linked to
+  nothing, has no fallback either. The command line still goes on to the only Project and then the last one used.
 - **Hook and command line:** the hook uses the app's folder, never the last Project used, and says when a folder is
   linked to nothing. The command line uses the folder it runs in, then the shared last Project.
 - **F4 stays open:** the active Project is per server process. If the app shares one process between conversations

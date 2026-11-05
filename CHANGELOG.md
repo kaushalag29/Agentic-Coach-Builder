@@ -5,6 +5,30 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **A Project vault for Obsidian (or any graph viewer).** `vault/` in a Project's folder is a read-only folder of
+  plain Markdown: one file per Note, Decision, Goal and Commitment, `[[links]]` between them, tags and a hub note per
+  scope, with the investor's records in its own folder. Each coach refreshes the part it may read after every save;
+  `founder-coach vault build [--out DIR]` (also `/founder-coach:vault`) rebuilds all of it from a read-only copy of the
+  database. The coach skills now link a Note to the Decision, Goal or Note it is about. See ADR-0020 (amendment
+  2026-11-05).
+- **Bug fixes after the checker and loop work:**
+  - A malformed `sources.yaml` is named (its line, and the usual cause: a name containing `: ` needs quotes) instead
+    of a traceback, and `ytbrain ops` checks it, and the Domains it names, before the first step. A sync that crashed
+    without leaving a stop record was reported as "a network problem" and retried; it is now `unknown`, stops once and
+    says to read the output above.
+  - A session with no work folder from the app no longer picks the only Project by itself: the coach asks which Project
+    this conversation is about (ADR-0019 point 4; only `<PREFIX>PROJECT`, a choice the person made, decides without a
+    folder; the command line still goes on to the only or last Project).
+  - `weekly-focus` run again in a period that already has a Focus no longer refuses or stacks a second set: it shows the
+    open Commitments and offers to keep or swap them, and a person who declines the recurring loop still gets a Focus
+    for the period (the switch governs reminders and the Check-in rhythm, not whether a Focus can be planned).
+  - `coach_update` returns `carried_periods` (was `carried_weeks`): the streak counts periods of the loop, not weeks.
+  - `domains promote` takes the `auto`-applied high-tier tags of the promoted Domains from the staged run, so `domains
+    review` lists the right Documents afterwards; `domains restore` from a backup made before a table existed leaves a
+    database that still works.
+  - Persona cases for the recurring loop (a founder on a fortnightly rhythm, a coding persona who turns it on, one who
+    declines it but still plans a week) join the G5 memory gate.
+
 - **A model checks each chunk with its Document before it is tagged (ADR-0023, off by default):** a chunk read alone
   scored almost the same for a talk that mentions code and one that teaches it, so founder talks were tagged `coding`.
   `ytbrain tag --check flagged` has a model read the chunks the embedding can't place, with the Document's title and
@@ -57,7 +81,7 @@ released benchmark carries its version in `eval/VERSION`.
   (`CLAUDE_PROJECT_DIR`) the deepest linked folder decides; a folder linked to nothing gets no memory and the coach
   offers to link it or make a Project (the first save in an unlinked folder makes one and links it). The session
   hook uses the folder and never the last Project used; the command line uses the folder, then the shared last
-  Project. Without a folder from the app the only Project is still chosen by itself, and with several the coach asks.
+  Project. Without a folder from the app the coach asks which Project (even when there is only one; see below).
   The skills and instructions tell a coach to switch to the Project another coach in the conversation already chose.
   Reading MCP roots is not built (it needs asynchronous tools); the folder comes from `CLAUDE_PROJECT_DIR` only.
 - **Coaches read each other's shared core (slice C1 of ADR-0019):** in a Project several coaches share, each reads the

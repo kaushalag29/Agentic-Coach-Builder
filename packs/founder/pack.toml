@@ -13,7 +13,7 @@ modules = ["goals", "commitments", "checkins", "decisions", "notes"]
 common_fields = ["timezone", "name", "role", "answer_style"]
 # the profile facts setup must fill before the coach stops offering it
 required = ["company", "stage"]
-skills = ["ask", "coach", "setup", "project", "status", "export", "forget", "feedback", "weekly-focus", "check-in"]
+skills = ["ask", "coach", "setup", "project", "status", "export", "vault", "forget", "feedback", "weekly-focus", "check-in"]
 prompts = ["ask", "weekly-focus", "check-in", "setup"]     # also served as MCP prompts (hosts without skills)
 builds = ["private", "release"]
 

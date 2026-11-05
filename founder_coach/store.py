@@ -1232,7 +1232,7 @@ class FounderStore:
                                 (new, self.fid, self.coach, week, rec["action"], rec["cue"], rec["outcome"], rec["goal_id"],
                                  _j(rec["citations"]), "open", rid, now))
                 self._change("commitment", new, "create", None, {"carried_from": rid, "week": week}, source)
-                out.update(new_id=new, carried_weeks=self._carry_streak(new))
+                out.update(new_id=new, carried_periods=self._carry_streak(new))
             out["warnings"] = self._warnings(week=rec.get("week"))
             return out
         return apply()
@@ -1297,7 +1297,7 @@ class FounderStore:
         rows = self._rows(sql + " ORDER BY week, created_at", *args, shared="commitments")
         for r in rows:
             if r.get("carried_from"):
-                r["carried_weeks"] = self._carry_streak(r["id"])
+                r["carried_periods"] = self._carry_streak(r["id"])
         return rows
 
     def loop(self) -> dict | None:
@@ -1487,8 +1487,9 @@ class FounderStore:
             self.md_path.unlink(missing_ok=True)
             self._write_project_md()                   # what the other coaches left (or the file's end)
             try:
-                from . import notes_view
+                from . import notes_view, vault
                 notes_view.clear_vault(self)
+                vault.clear(self)
             except OSError as e:
                 import logging
                 logging.getLogger("founder_coach").warning("forget: the notes folder was not cleared (%s)", e)
@@ -1506,17 +1507,25 @@ class FounderStore:
         return render_markdown(self) if self.name == "founder" else render_common_markdown(self)
 
     def _write_vault(self) -> None:
-        """The Notes index and files beside the store (a derived, read-only view, ADR-0020). Only a Project store whose
-        Pack keeps Notes has them, and a store with no Notes gets no folder."""
-        if self.name != "founder" or not product.has("notes"):
+        """The derived, read-only views beside the store (ADR-0020): the notes/ folder (a Pack that keeps Notes, none
+        when there are no Notes) and this coach's slice of the Project vault (what ADR-0019 lets it read)."""
+        if self.name != "founder":
             return
-        try:
-            from . import notes_view
+        if product.has("notes"):
+            try:
+                from . import notes_view
+                with self._lock:
+                    notes_view.sync_vault(self)
+            except Exception as e:            # noqa: BLE001 -- a view; never fail a write for it
+                import logging
+                logging.getLogger("founder_coach").warning("the notes folder was not updated: %s", e)
+        try:                                  # the Project vault (ADR-0020 amendment): the slice this coach may read
+            from . import vault
             with self._lock:
-                notes_view.sync_vault(self)
+                vault.sync_slice(self)
         except Exception as e:                # noqa: BLE001 -- a view; never fail a write for it
             import logging
-            logging.getLogger("founder_coach").warning("the notes folder was not updated: %s", e)
+            logging.getLogger("founder_coach").warning("the vault was not updated: %s", e)
 
     def _write_project_md(self) -> None:
         try:

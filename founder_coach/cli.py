@@ -186,6 +186,34 @@ def _open_or_explain(home):
         return None
 
 
+def _vault(args) -> int:
+    """`vault build` writes the whole Project vault (every coach's folder) from a read-only copy of the database. It
+    never opens the store, so nothing migrates, backs up or rewrites there; `--out` puts the files elsewhere."""
+    from pathlib import Path
+    from . import installed, vault
+    from .projects import ProjectError, Workspace
+    try:
+        ws = Workspace.open(args.home, migrate=False)
+        pid = None if ws.single else ws.choose(args.project, use_last=True,
+                                               folder=os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    except ProjectError as e:
+        print(f"{product.ID}: {e}", file=sys.stderr)
+        return 2
+    home = ws.root if ws.single else (ws.store_home(pid) if pid else None)
+    if home is None:
+        print(f"{product.ID}: {_which_project()}", file=sys.stderr)
+        return 1
+    engine = Path(args.engine_home).expanduser() if args.engine_home else installed.engine_home()
+    try:
+        res = vault.build(home, Path(args.out).expanduser() if args.out else None, engine)
+    except (vault.VaultError, OSError) as e:
+        print(f"{product.ID}: {e}", file=sys.stderr)
+        return 1
+    print(f"{product.ID}: vault of {home.name} at {res['path']} ({res['files']} file(s): {res['written']} written, "
+          f"{res['removed']} removed). The database was read from a copy. Open the folder in Obsidian.")
+    return 0
+
+
 def _notes(args) -> int:
     """`notes rebuild` regenerates the derived views (search index, INDEX.md, the files); `notes lint` reports what
     needs attention and changes nothing (ADR-0020)."""
@@ -527,7 +555,7 @@ def _resolve(args) -> int | None:
     try:
         folder = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()    # the work folder first, then the shared last Project
         hook = getattr(args, "cmd", None) == "hook"
-        if hook:                                       # the hook never guesses: the app's folder, or the only Project
+        if hook:                                       # the hook never guesses: only the app's folder decides
             folder = os.environ.get("CLAUDE_PROJECT_DIR")
         pid = ws.choose(getattr(args, "project", None), use_last=not hook, folder=folder)
     except ProjectError as e:
@@ -570,6 +598,11 @@ def main(argv: list[str] | None = None) -> int:
     u.add_argument("--json", action="store_true")
     u.add_argument("--out", default=None, help=f"folder for the export (default ~/.{product.ID}/exports)")
     u.add_argument("--yes", action="store_true", help="confirm clear")
+    vl = sub.add_parser("vault", help="the Project vault: plain Markdown for a graph viewer such as Obsidian (read-only view)")
+    vl.add_argument("action", choices=["build"])
+    vl.add_argument("--out", default=None, help="folder for the vault (default: vault/ inside the Project's folder)")
+    vl.add_argument("--engine-home", default=None, help="the engine home whose installed/ registry says which coaches "
+                                                         "keep their records private (default ~/.ytbrain)")
     nt = sub.add_parser("notes", help="the Notes folder beside the store: rebuild it, or lint the Notes (report-only)")
     nt.add_argument("action", choices=["lint", "rebuild"])
     nt.add_argument("--json", action="store_true", help="lint: the findings as JSON")
@@ -590,10 +623,10 @@ def main(argv: list[str] | None = None) -> int:
         x.add_argument("--pack", default=None, help="Knowledge pack folder or file "
                                                      f"(default ${product.ENV_PREFIX}PACK, then the plugin's pack/, the "
                                                      f"repo's data/pack, then ~/.{product.ID}/pack)")
-    for x in (s, h, w, st, e, f, fb, u, nt, r, pj, hd):
+    for x in (s, h, w, st, e, f, fb, u, nt, r, pj, hd, vl):
         x.add_argument("--home", default=None, help=f"one data folder, without Projects (default "
                                                     f"${product.ENV_PREFIX}HOME; unset: the Projects in ~/.ytbrain)")
-    for x in (h, st, e, f, fb, u, nt, r, hd):
+    for x in (h, st, e, f, fb, u, nt, r, hd, vl):
         x.add_argument("--project", default=None, help="the Project's id or name (default: the only one, else the "
                                                        f"last used, else ${product.ENV_PREFIX}PROJECT)")
     args = p.parse_args(argv)
@@ -609,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
         from .server import serve
         serve(pack=args.pack, home=args.home)
         return 0
+    if args.cmd == "vault":
+        return _vault(args)                            # resolves its own Project, without any migration
     if args.cmd != "warmup":
         try:
             stop = _resolve(args)

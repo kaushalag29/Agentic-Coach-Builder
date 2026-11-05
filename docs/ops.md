@@ -48,7 +48,8 @@ interrupted, auth, books, config); the runner acts on it:
 
 | Reason | What happens |
 |---|---|
-| network (sync, a slow provider) | the step is retried twice, after 1 and 5 minutes; a sync that still fails is skipped and the run goes on with what is fetched |
+| network (sync, a slow provider) | the step is retried twice, after 1 and 5 minutes; a sync that still fails is skipped and the run goes on with what is fetched. Only a command that wrote its own `network` record is retried: a crash that left no record is `unknown`, stops the run once and is never taken for the network |
+| config (a typo in sources.yaml or domains.yaml, an undeclared Domain) | `ytbrain ops` reads sources.yaml and the Domains it names before the first step and stops at once with the line (a name containing `: ` needs quotes); nothing runs and nothing is retried |
 | YouTube HTTP 429 (sync) | not a stop and never retried: sync ends its YouTube pass at the first 429, the run goes on, and later runs skip YouTube for 24 h (doubling after a pause, up to 7 days; websites and Books still sync). The summary says `YouTube paused until …`; `ytbrain sync --ignore-pause` tries sooner |
 | auth (the Claude host's login expired) | the run stops at once with `run claude, /login`; the plugin is already built, and the next `ytbrain ops plugin` resumes at the coach eval |
 | books (a PDF refused or unparsable) | not retried: the run goes on with the Books that registered and names the files (`skip: true` in sources.yaml silences one) |

@@ -191,7 +191,14 @@ def test_the_first_save_makes_a_project_and_a_pinned_folder_has_none():
             assert out["active"]["id"] == "my-project" and len(out["projects"]) == 1
         _serve(user, go)
 
-        async def again(call):                           # one Project: chosen by itself next time
+        async def again(call):          # one Project and the app names no folder: nothing says it is this conversation's
+            ctx, _, _ = await call("coach_get_context")
+            assert [n["kind"] for n in ctx["nudges"]] == ["choose_project"] and "my-project" in ctx["nudges"][0]["message"]
+            assert "no work folder" in ctx["nudges"][0]["message"] and ctx["goals"] == [] and ctx["profile"].get("stage") is None
+            _, text, err = await call("coach_update_profile", {"changes": {"stage": "mvp"}, "request_id": _rid()})
+            assert err and "Which Project is this about?" in text and "my-project" in text, "nothing is saved before the answer"
+            out, _, err = await call("coach_project", {"action": "switch", "project": "my-project"})
+            assert not err and out["active"]["id"] == "my-project"
             ctx, _, _ = await call("coach_get_context")
             assert ctx["project"]["id"] == "my-project" and ctx["profile"]["stage"] == "idea" and ctx["projects"] is None
         _serve(user, again)
@@ -292,7 +299,7 @@ def test_the_old_store_moves_into_a_project_once_and_is_left_as_it_was():
         assert ws.migration["status"] == "migrated" and ws.migration["project"] == "acme"
         assert ws.migration["timezone_to_common"] == "Europe/Berlin"
         assert _digest(old / "founder.db") == before, "the old store is the backup: never changed"
-        assert [p["name"] for p in ws.projects.list()] == ["Acme"] and ws.choose() == "acme"
+        assert [p["name"] for p in ws.projects.list()] == ["Acme"] and ws.choose() is None and ws.choose(use_last=True) == "acme"
         home = ws.store_home("acme")
         assert (home / "backups" / "founder-migrated.db").exists() and (home / "FOUNDER.md").exists()
         common = ws.open_common()
@@ -652,6 +659,31 @@ def _checkout(parent: Path, name: str, remote: str | None = None) -> Path:
     return d
 
 
+def test_a_session_with_no_folder_asks_which_project_even_when_there_is_only_one():
+    with _machine() as user:
+        ws = Workspace.open()
+        only = ws.projects.create("Acme")["id"]
+        repo = user / "work" / "acme"
+        repo.mkdir(parents=True)
+        # the app names no folder: nothing says this conversation is about the only Project, so none is chosen
+        assert ws.choose() is None and ws.choose(folder=None) is None
+        # a folder linked to nothing gets no memory and no fallback, as before
+        assert ws.choose(folder=repo) is None
+        # the command line may go on to the only Project, then the last one used
+        assert ws.choose(use_last=True) == only
+        # a linked folder chooses it
+        ws.projects.link(only, repo)
+        assert ws.choose(folder=repo) == only
+        # a person's own choice (<PREFIX>PROJECT) is not a guess
+        second = ws.projects.create("Beta")["id"]
+        assert ws.choose() is None
+        os.environ[product.env_name("PROJECT")] = second
+        try:
+            assert ws.choose() == second
+        finally:
+            os.environ.pop(product.env_name("PROJECT"), None)
+
+
 def test_a_folder_is_linked_to_one_project_and_the_deepest_link_wins():
     with _machine() as user:
         ps = Projects(user / ".ytbrain")
@@ -868,6 +900,190 @@ def test_the_persons_own_facts_are_saved_only_in_their_own_words():
                                                               "request_id": _rid()})
             assert not err, "fields about the company need no quote"
         _serve(user, go)
+
+
+# ---- the Project vault (ADR-0020 amendment): plain Markdown a graph viewer opens --------------------------------------
+
+def _vault_links_resolve(root: Path) -> None:
+    """Every [[link]] in the vault names a file in it (Obsidian links by file name)."""
+    import re
+    stems = {p.stem for p in root.rglob("*.md")}
+    for p in root.rglob("*.md"):
+        for target in re.findall(r"\[\[([^\]|#]+)", p.read_text(encoding="utf-8")):
+            assert target in stems, f"{p.relative_to(root)} links to [[{target}]], which is not in the vault"
+
+
+def _vault_text(root: Path) -> str:
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.rglob("*.md")))
+
+
+def _seed(home: Path, coach: str | None = None, **kw) -> tuple[FounderStore, dict]:
+    s = FounderStore(home, clock=kw.get("clock"), **({"coach": coach} if coach else {}))
+    g = s.record({"kind": "goal", "text": "Ten paying design partners", "measure": "ten signed"})["ids"][0]
+    d = s.record({"kind": "decision", "text": "Charge from day one", "reasoning": "paying users tell the truth"})["ids"][0]
+    c1 = s.record({"kind": "commitments", "items": [{"action": "Email 20 dentists", "outcome": "5 calls booked",
+                                                      "goal_id": g}]})["ids"][0]
+    n = s.record({"kind": "note", "title": "Why charge early", "summary": "Five clinics said the price is fine.",
+                  "type": "discussion", "origin": "user",
+                  "links": [{"to": d, "type": "about"}, {"to": g, "type": "supports"}]})["ids"][0]
+    return s, {"goal": g, "decision": d, "commitment": c1, "note": n}
+
+
+def test_a_save_writes_the_vault_slice_with_linked_tagged_files():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, ids = _seed(home)
+        root = home / "vault"
+        try:
+            names = {p.relative_to(root).as_posix() for p in root.rglob("*.md")}
+            assert any(n.startswith(f"shared/{ids['goal']}-") for n in names), names
+            assert any(n.startswith(f"shared/{ids['decision']}-") for n in names), names
+            assert any(n.startswith(f"founder/{ids['note']}-") for n in names), names
+            assert "shared/project.md" in names, "the hub note"
+            _vault_links_resolve(root)
+            note = next(p for p in root.glob(f"founder/{ids['note']}-*.md")).read_text()
+            assert "tags: [kind/note, coach/founder]" in note and f"[[{ids['decision']}-charge-from-day-one]]" in note
+            goal = next(p for p in root.glob(f"shared/{ids['goal']}-*.md")).read_text()
+            assert f"[[{ids['commitment']}-email-20-dentists]]" in goal and "[[project]]" in goal
+            assert f"[[{ids['note']}-why-charge-early]]" in goal, "a Note about the Goal is listed on it"
+            hub = (root / "shared" / "project.md").read_text()
+            dec = next(p for p in root.glob(f"shared/{ids['decision']}-*.md")).read_text()
+            assert f"[[{ids['goal']}-ten-paying-design-partners]]" in hub, "the hub links the Goals"
+            assert ids["decision"] not in hub and ids["commitment"] not in hub and "[[project]]" not in dec, \
+                "only Goals link to the hub: a star of Decisions around it says nothing"
+            com = next(p for p in root.glob(f"shared/{ids['commitment']}-*.md")).read_text()
+            assert f"goal [[{ids['goal']}-ten-paying-design-partners]]" in com
+            # the same data gives the same files, and the colour file is written once and left alone after
+            assert vault.sync_slice(s)["written"] == 0
+            colours = root / ".obsidian" / "graph.json"
+            assert "tag:#kind/decision" in colours.read_text()
+            colours.write_text("{}")
+            vault.sync_slice(s)
+            assert colours.read_text() == "{}", "Obsidian rewrites this file itself; the coach must not"
+            # the Notes folder of ADR-0020 is untouched by the vault
+            assert (home / "notes" / "INDEX.md").exists()
+        finally:
+            s.close()
+
+
+def test_a_full_build_reads_a_copy_and_keeps_each_private_coach_apart():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        engine = Path(tempfile.mkdtemp(prefix="engine-"))
+        (engine / "installed").mkdir()
+        for pack, owned in (("founder", []), ("investor", ["*"])):
+            (engine / "installed" / f"{pack}-coach.json").write_text(json.dumps({"pack": pack, "owned": owned}))
+        s, ids = _seed(home)
+        inv = FounderStore(home, coach="investor")
+        ig = inv.record({"kind": "goal", "text": "Retire at 55 with ACME-secret fund", "measure": "x"})["ids"][0]
+        inv.record({"kind": "note", "title": "Rebalance thinking", "summary": "Bonds drifted.", "type": "insight",
+                    "origin": "user", "links": [{"to": ig, "type": "about"}]})
+        inv.db.execute("INSERT INTO holdings_snapshots (id, founder_id, coach, account, as_of, imported_at, broker, "
+                       "sha256, source, total_cents) VALUES ('h-1','me','investor','ACCT-9876','2026-10-01','2026-10-01',"
+                       "'b','x','s',100)")
+        inv.db.execute("INSERT INTO positions (snapshot_id, symbol, value_cents) VALUES ('h-1','ZZTOPSYM',100)")
+        inv.close()
+        s.close()
+        before = {p.relative_to(home).as_posix(): p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
+        out = Path(tempfile.mkdtemp(prefix="vault-out-"))
+        res = vault.build(home, out, engine)
+        after = {p.relative_to(home).as_posix(): p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
+        assert before == after, "the Project folder was touched by a build"
+        assert res["files"] > 0 and (out / "INDEX.md").exists()
+        shared = _vault_text(out / "shared")
+        assert "ACME-secret" not in shared and "Rebalance" not in shared, "a private coach's record reached shared/"
+        assert any((out / "investor").glob(f"{ig}-*.md")), "the investor's Goal sits in its own folder"
+        assert any((out / "investor").glob("n-*.md"))
+        everything = _vault_text(out)
+        assert "ACCT-9876" not in everything and "ZZTOPSYM" not in everything, "holdings must never enter the vault"
+        _vault_links_resolve(out)
+        # a coach not in the registry is taken to keep everything to itself
+        (engine / "installed" / "founder-coach.json").unlink()
+        out2 = Path(tempfile.mkdtemp(prefix="vault-out-"))
+        vault.build(home, out2, engine)
+        assert not (out2 / "shared").exists() and any((out2 / "founder").glob(f"{ids['goal']}-*.md"))
+
+
+def test_a_slice_reads_only_what_the_coach_may_and_never_removes_another_coachs_files():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        other = FounderStore(home, coach="coding")
+        og = other.record({"kind": "goal", "text": "Ship the importer", "measure": "merged"})["ids"][0]
+        other.close()
+        inv = FounderStore(home, coach="investor")
+        inv.owned = ("*",)                          # as the investor's own server runs: it keeps everything private
+        ig = inv.record({"kind": "goal", "text": "Private money goal", "measure": "x"})["ids"][0]
+        inv.close()
+        s = FounderStore(home)
+        s.peers = {"coding": [], "investor": ["*"]}
+        try:
+            s.record({"kind": "goal", "text": "Find ten customers", "measure": "ten"})
+            root = home / "vault"
+            assert list(root.glob(f"shared/{og}-*.md")), "a shared Goal of a peer coach is in the slice"
+            assert not list(root.glob(f"shared/{ig}-*.md")) and not list(root.glob(f"founder/{ig}-*.md")), \
+                "a private coach's Goal is never read by another coach"
+            keep = next(root.glob(f"investor/{ig}-*.md"))          # the investor's own save wrote it in its own folder
+            (root / "investor" / "NOTES-by-hand.md").write_text("mine, not generated", encoding="utf-8")
+            vault.sync_slice(s)
+            assert keep.exists() and (root / "investor" / "NOTES-by-hand.md").exists(), \
+                "another coach's slice must not remove files it may not read"
+        finally:
+            s.close()
+
+
+def test_forget_clears_the_vault_and_a_newer_or_older_database_is_refused():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, _ = _seed(home)
+        try:
+            assert any((home / "vault").rglob("*.md"))
+            s.forget()
+            assert not any((home / "vault").rglob("*.md")), "forget must leave no record behind in the vault"
+        finally:
+            s.close()
+        import sqlite3
+        db = Path(tempfile.mkdtemp(prefix="vault-db-")) / "founder.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        con.execute("INSERT INTO meta VALUES ('schema_version', '99')")
+        con.commit()
+        con.close()
+        try:
+            vault.build(db.parent, Path(tempfile.mkdtemp()), None)
+        except vault.VaultError as e:
+            assert "newer" in str(e)
+        else:
+            raise AssertionError("a newer database must be refused")
+        con = sqlite3.connect(db)
+        con.execute("UPDATE meta SET value='3'")
+        con.commit()
+        con.close()
+        try:
+            vault.build(db.parent, Path(tempfile.mkdtemp()), None)
+        except vault.VaultError as e:
+            assert "older" in str(e) and "Nothing was changed" in str(e)
+        else:
+            raise AssertionError("an older database must be refused, not migrated")
+
+
+def test_the_vault_command_never_opens_the_store():
+    from founder_coach import cli
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, _ = _seed(home)
+        s.close()
+        digest = {p.name: hashlib.sha1(p.read_bytes()).hexdigest() for p in home.glob("founder.db*")}
+        backups = sorted(p.name for p in (home / "backups").glob("*")) if (home / "backups").exists() else []
+        out = Path(tempfile.mkdtemp(prefix="vault-out-"))
+        rc = cli.main(["vault", "build", "--home", str(home), "--out", str(out), "--engine-home", str(home)])
+        assert rc == 0 and (out / "INDEX.md").exists()
+        assert digest == {p.name: hashlib.sha1(p.read_bytes()).hexdigest() for p in home.glob("founder.db*")}, \
+            "the database files changed"
+        assert backups == (sorted(p.name for p in (home / "backups").glob("*")) if (home / "backups").exists() else [])
 
 
 if __name__ == "__main__":

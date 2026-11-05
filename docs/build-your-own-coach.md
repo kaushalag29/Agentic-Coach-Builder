@@ -66,7 +66,7 @@ only as education, from the hits, saying the evidence is partial).
 
 ## 4. Add or adapt skills
 
-Shared skills live in `plugin/skills/` (`ask`, `coach`, `setup`, `project`, `status`, `export`, `forget`,
+Shared skills live in `plugin/skills/` (`ask`, `coach`, `setup`, `project`, `status`, `export`, `vault`, `forget`,
 `feedback`, …). A Pack's own `packs/<id>/skills/<name>/SKILL.md` replaces a shared one or adds a new one, like the
 coding coach's `design-review` and `decision-record`.
 
