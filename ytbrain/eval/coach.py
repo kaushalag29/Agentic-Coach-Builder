@@ -362,6 +362,9 @@ def host_supports(claude: str, flag: str) -> bool:
     return _FLAGS[(claude, flag)]
 
 
+FOLDER_ENV = "ACB_EVAL_FOLDER"      # an env key only the harness reads: the work folder a session runs in (never reaches the host)
+
+
 def claude_runner(plugin: Path | list[Path], claude: str = "claude", model: str | None = None,
                   max_turns: int = MAX_TURNS, workdir: Path | None = None,
                   host_env: dict | None = None) -> Callable[..., Turn]:
@@ -378,6 +381,8 @@ def claude_runner(plugin: Path | list[Path], claude: str = "claude", model: str 
     isolate = host_supports(claude, "--setting-sources")
 
     def run(prompt: str, env: dict | None = None, resume: str | None = None) -> Turn:
+        env = dict(env or {})
+        cwd = env.pop(FOLDER_ENV, None) or str(workdir)       # a case may start a session in another work folder
         dirs = [a for x in plugins for a in ("--plugin-dir", str(x))]
         servers = [f"mcp__plugin_{plugin_id(x)}_coach" for x in plugins] if len(plugins) > 1 else \
             [f"mcp__plugin_{TARGET['id']}_coach"]
@@ -395,8 +400,8 @@ def claude_runner(plugin: Path | list[Path], claude: str = "claude", model: str 
         if fake:            # the host's own clock would contradict the coach's fake week otherwise
             cmd += ["--append-system-prompt", f"Today's date is {fake[:10]} (the Founder's local date)."]
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT_S, cwd=str(workdir),
-                               env={**os.environ, **(host_env or {}), **(env or {})})
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=CLAUDE_TIMEOUT_S, cwd=cwd,
+                               env={**os.environ, **(host_env or {}), **env})
         except subprocess.TimeoutExpired:
             return Turn(error=f"claude -p timed out after {CLAUDE_TIMEOUT_S}s")
         t = parse_stream(p.stdout.splitlines())
@@ -941,6 +946,8 @@ def _run_projects(case: dict, run, fresh_home, say=print) -> dict:
     done, t0 = 0, time.time()
     for si, sess in enumerate(case["sessions"], 1):
         env = {**env_base, host_env("FAKE_NOW"): sess["now"]}
+        if sess.get("new_folder"):      # the Founder opens the coach from a folder linked to no Project (the work folder chooses)
+            env[FOLDER_ENV] = tempfile.mkdtemp(prefix="coach-folder-")
         session = None
         for msg in sess["turns"]:
             t = run(msg, env=env, resume=session)
@@ -1347,11 +1354,14 @@ def _pool(todo: list, work: Callable, handle: Callable, workers: int, stop_reaso
 
 def run_gates(env, gates: list[str], plugin: Path, runner=None, limit: int | None = None,
               max_cost: float | None = None, say=print, model: str | None = None,
-              max_turns: int = MAX_TURNS, host: dict | None = None, workers: int | None = None) -> tuple[dict, int]:
+              max_turns: int = MAX_TURNS, host: dict | None = None, workers: int | None = None,
+              force: bool = False) -> tuple[dict, int]:
     """host: None runs on the maintainer's Claude account (their plan's limits); openrouter_host(...)
     runs it through OpenRouter, and then the host's cost counts toward the spend cap too."""
     """Run the gates; returns ({gate: summary}, exit code 0 pass / 1 fail / 2 stopped). `workers` host runs at a
-    time (default YTBRAIN_COACH_WORKERS or 1): each is a `claude -p` on your plan, so raise it with its limits in mind."""
+    time (default YTBRAIN_COACH_WORKERS or 1): each is a `claude -p` on your plan, so raise it with its limits in mind.
+    `force` runs every selected case again instead of reusing its saved result: the new result is appended to the same
+    file and supersedes the old one (a later run reads the last line of each case), so nothing is deleted."""
     from ..config import COACH_WORKERS
     from .llm import Budget
     workers = max(1, int(workers or COACH_WORKERS))
@@ -1401,7 +1411,7 @@ def run_gates(env, gates: list[str], plugin: Path, runner=None, limit: int | Non
             adopt_legacy(gate, plugin, cases, label, key, say)
             cache = OUT / cache_name(gate, key, label)
             have = {}
-            if cache.exists():
+            if cache.exists() and not force:
                 for line in cache.read_text().splitlines():
                     r = json.loads(line)
                     if "error" not in r:

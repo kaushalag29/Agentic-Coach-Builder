@@ -41,7 +41,7 @@ Every command is resumable: Ctrl+C keeps finished work, and re-running continues
 | `eval latency` | Search p95 the way the plugin runs it (its runtime, a Knowledge pack, ONNX models), on real Tuning questions after a warm-up; gate 1.5 s; writes data/eval/latency.json | `--pack PATH`, `--n`, `--no-rerank` |
 | `eval parity` | The subject-neutral extraction prompt against the startup one on ~30 startup talks (shadow extractions, the Library untouched): the neutral verifier pass rate within 2 points and at least 80 % of the Verified items; a pass makes new founder content use it | `--n`, `--max-cost` (default $1) |
 | `tag` | Tag Passages and items with Domains by what they say (ADR-0017): embedding scores, a cheap model for close calls only (cached), Document Domains by Passage share; nothing re-extracted or re-embedded | `--dry-run`, `--max-cost USD`, `--no-llm`, `--no-apply`, `--gated`, `--check off\|flagged\|all`, `--stage` |
-| `eval coach` | Gates G2 and G4–G8 (G8 for the investor coach) on the real host: the local Claude Code on your plan (Haiku, token-saving). Each gate is cached on what it reads (runtime, pack content, its skills, its cases) and how it is graded (rubric, judges, turn cap, the grading code), so only gates whose inputs changed run; a failed G4-G6 case gets up to three runs and a majority decides; stops if the plugin is reassembled mid-run with a change the gate reads | `--gate`, `--limit`, `--model`, `--max-turns`, `--host claude\|openrouter`, `--max-cost`, `--plugin DIR` (default `dist/plugin`) |
+| `eval coach` | Gates G2 and G4–G8 (G8 for the investor coach) on the real host: the local Claude Code on your plan (Haiku, token-saving). Each gate is cached on what it reads (runtime, pack content, its skills, its cases) and how it is graded (rubric, judges, turn cap, the grading code), so only gates whose inputs changed run; a failed G4-G6 case gets up to three runs and a majority decides; stops if the plugin is reassembled mid-run with a change the gate reads | `--gate`, `--limit`, `--model`, `--max-turns`, `--host claude\|openrouter`, `--max-cost`, `--force` (run the selected cases again instead of reusing their saved results), `--plugin DIR` (default `dist/plugin`) |
 | `claude [--model M] [--openrouter] -- <args>` | The local Claude Code for plugin work, on your plan with Haiku | `--model`, `--openrouter` (before `--`) |
 
 `--limit` counts Documents per Step (for `sync`, per Source). A Document that fails a Step 3 runs in a row is parked;
@@ -223,6 +223,7 @@ python scripts/assemble_plugin.py --pack data/pack --check
 ytbrain eval coach --limit 2                      # a quick end-to-end check first
 ytbrain eval coach                                # every gate of the plugin's Pack; resumable per plugin build and model
 ytbrain eval coach --gate g5                      # one gate (repeatable)
+ytbrain eval coach --gate g5 --force              # run its cases again even though a result is saved for these inputs
 ytbrain eval coach --max-turns 16                 # turns per host call (the default)
 ytbrain eval coach --model sonnet                 # sign a release off on the model founders use
 ytbrain eval coach --host openrouter              # optional: through OpenRouter, paid per token

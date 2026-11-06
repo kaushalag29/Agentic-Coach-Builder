@@ -1429,9 +1429,12 @@ def test_coach_eval_host_runs_are_cheap_isolated_and_counted():
         run = C.claude_runner(Path("/p"), model="haiku", max_turns=7, workdir=work)
         t1 = run("hello")
         run("again", resume="s")
+        other = Path(tempfile.mkdtemp())
+        run("elsewhere", env={C.FOLDER_ENV: str(other)})      # a session a case starts in another work folder
     finally:
         C.subprocess.run = real
-    (cmd1, cwd1), (cmd2, cwd2) = seen
+    (cmd1, cwd1), (cmd2, cwd2), (cmd3, cwd3) = seen
+    assert cwd3 == str(other), "the session runs in the folder the case named"
     assert cmd1[cmd1.index("--model") + 1] == "haiku" and cmd1[cmd1.index("--max-turns") + 1] == "7"
     assert cwd1 == cwd2 == str(work) and not str(work).startswith(str(Path(__file__).resolve().parents[1])), "same scratch folder, not the repo"
     assert t1.tokens == {"input": 1200, "output": 300, "cache_read": 9000, "cache_write": 500}
@@ -1951,6 +1954,13 @@ def test_coach_eval_reuses_a_gates_results_across_a_rebuild_that_changed_nothing
         calls.clear()
         plugin = _fake_plugin(tmp, version="0.1.1", file_sha="f2", checkin="reworded")   # G4 doesn't read check-in
         with contextlib.redirect_stdout(io.StringIO()) as out:
+            assert C.run_gates(env, ["g4"], plugin, runner=run)[1] == 0
+        assert calls == [] and "3 already done" in out.getvalue(), out.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()) as out:                 # --force: the saved results are not reused
+            assert C.run_gates(env, ["g4"], plugin, runner=run, force=True)[1] == 0
+        assert len(calls) == 3 and "0 already done" in out.getvalue(), out.getvalue()
+        calls.clear()
+        with contextlib.redirect_stdout(io.StringIO()) as out:                 # and the new result is the one a later run keeps
             assert C.run_gates(env, ["g4"], plugin, runner=run)[1] == 0
         assert calls == [] and "3 already done" in out.getvalue(), out.getvalue()
     finally:

@@ -350,6 +350,7 @@
      },
      "coach": {
       "options": [
+       "--force",
        "--gate",
        "--host",
        "--limit",

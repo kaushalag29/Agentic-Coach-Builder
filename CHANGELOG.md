@@ -11,6 +11,12 @@ released benchmark carries its version in `eval/VERSION`.
   `founder-coach vault build [--out DIR]` (also `/founder-coach:vault`) rebuilds all of it from a read-only copy of the
   database. The coach skills now link a Note to the Decision, Goal or Note it is about. See ADR-0020 (amendment
   2026-11-05).
+- **Coach evaluation:** `ytbrain eval coach --force` runs the selected cases again even when a result is saved for the
+  same inputs (the new result supersedes the old one). The G7 cases for two Projects now start the second session in a
+  work folder linked to no Project, as the work folder chooses the Project; the fortnightly persona lists `loop: on` as
+  dictated. The coach skills say a dictated free-text value (constraints, for example) is saved word for word, and the
+  coding and investor setup saves `loop: off` when the person declines the recurring loop (it saved nothing, so the
+  answer was not kept).
 - **Bug fixes after the checker and loop work:**
   - A malformed `sources.yaml` is named (its line, and the usual cause: a name containing `: ` needs quotes) instead
     of a traceback, and `ytbrain ops` checks it, and the Domains it names, before the first step. A sync that crashed

@@ -1123,6 +1123,12 @@ def test_every_pack_gives_an_opinion_when_asked_and_declines_only_its_declared_l
     assert "Never a security call" not in investor and "never pick, rate or time a security" not in investor
     assert "price target" in investor and "market-timing" in investor, "the hard limits stay"
 
+def test_the_vault_skill_names_the_project_it_builds_and_never_guesses():
+    """One Project at a time: the skill takes the id from the conversation's chosen Project and passes it to the command."""
+    text = (ROOT / "plugin" / "skills" / "vault" / "SKILL.md").read_text(encoding="utf-8")
+    assert "coach_get_context" in text and '--project "<id>"' in text and "vault build" in text and "guess" in text
+
+
 def test_every_coach_offers_assumption_notes_and_the_loop_skills_read_the_loop():
     """ADR-0022: the recurring loop is opt-in per Project, so its skills check `loop` first, use the Pack's questions
     and the period's Notes; every coach can keep an assumption Note (a belief behind a choice, with a revisit date);

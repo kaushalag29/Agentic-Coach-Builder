@@ -2620,7 +2620,7 @@ def cmd_eval(args) -> int:
                   + ("" if model != coach.HAIKU else " (sign a release off with --model sonnet)"))
         _, code = coach.run_gates(env, args.gate or ["g2", "g4", "g5", "g6", "g7", "g8"], plugin,
                                   limit=args.limit or None, max_cost=args.max_cost, model=model,
-                                  max_turns=args.max_turns, host=host, workers=args.workers)
+                                  max_turns=args.max_turns, host=host, workers=args.workers, force=args.force)
         return code
     if args.eval_cmd == "status":
         for label, path in (("benchmark", EVAL_DATA / "eval.db"), ("smoke", EVAL_DATA / "smoke" / "eval.db")):
@@ -3671,6 +3671,9 @@ def main(argv=None) -> int:
                          "(Haiku, turn cap, no repo context). openrouter: through OpenRouter, paid per token (key "
                          "YTBRAIN_COACH_HOST_KEY); --model is then an OpenRouter id (default anthropic/claude-haiku-5.5)")
     ec.add_argument("--max-cost", type=float, default=None, help="USD cap for judge calls (default 5)")
+    ec.add_argument("--force", action="store_true",
+                    help="run every selected case again instead of reusing its saved result (the new result supersedes "
+                         "the old; combine with --gate and --limit to redo only some)")
     ej = esub.add_parser("judge", help="grade the Moments a saved run retrieved that no judge has seen "
                                        "(pool extension); re-releases the labels as a new minor version")
     ej.add_argument("--set", choices=list(_eval_sets), default="all",
