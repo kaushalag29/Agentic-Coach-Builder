@@ -973,7 +973,8 @@ def test_the_coding_pack_builds_a_plugin_that_speaks_its_own_words():
         assert got["prompts"] == ["ask", "weekly-focus", "check-in", "setup", "design-review", "decision-record"]
         assert got["required"] == ["system", "stack"] and "lifecycle" in got["fields"] and "stage" not in got["fields"]
         record = next(x for x in got["tools"] if x["name"] == "coach_record")
-        assert sorted(record["input_schema"]["$defs"]) == ["CheckinIn", "CommitmentIn", "CommitmentsIn", "DecisionIn", "GoalIn", "NoteIn", "NoteLinkIn"], \
+        assert sorted(record["input_schema"]["$defs"]) == ["CheckinIn", "CommitmentIn", "CommitmentsIn", "DecisionIn", "GoalIn", "IssueIn", "LinkIn", "NoteIn", "NoteLinkIn",
+             "PersonIn"], \
             "only the Pack's record kinds"
         assert got["hook"].startswith("Coding coach: No system profile yet")
         founder = _dump_runtime(ROOT, tmp / "home-founder")            # the shared runtime as written
@@ -1161,6 +1162,20 @@ def test_the_investor_review_is_kept_as_a_note_and_a_rebalance_as_a_decision():
     assert "kind `decision`" in text and "coach_recall" in text
     assert "only on a yes" in text, "saved on a yes, never by itself"
     assert "Never put a recommendation in the Note" in text
+
+
+
+def test_every_coach_gets_the_memory_rules_from_the_server_not_from_a_copy():
+    """How a coach reads its memory (memory before files and tools, coach_graph for the past and for ties) is added
+    by the server to every Pack's instructions, so no Pack can lack it and none keeps its own copy."""
+    import tomllib
+    from founder_coach import server as SV
+    assert "Memory first:" in SV.MEMORY_RULES and "Memory first:" not in SV.INSTRUCTIONS
+    assert SV.server_instructions(None).endswith(SV.pack_text(SV.MEMORY_RULES))
+    for toml in sorted((ROOT / "packs").glob("*/pack.toml")):
+        rt = tomllib.loads(toml.read_text(encoding="utf-8")).get("runtime") or {}
+        assert "coach_graph" not in (rt.get("instructions") or ""), f"{toml}: a copy of the memory rules"
+        assert "Memory first:" in SV.server_instructions(rt), toml
 
 
 if __name__ == "__main__":

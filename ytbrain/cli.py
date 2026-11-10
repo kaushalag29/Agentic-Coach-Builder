@@ -2618,7 +2618,7 @@ def cmd_eval(args) -> int:
             print(f"eval coach: host model {model or 'your Claude Code default'} on your Claude plan, at most "
                   f"{args.max_turns} turns per call"
                   + ("" if model != coach.HAIKU else " (sign a release off with --model sonnet)"))
-        _, code = coach.run_gates(env, args.gate or ["g2", "g4", "g5", "g6", "g7", "g8"], plugin,
+        _, code = coach.run_gates(env, args.gate or ["g2", "g4", "g5", "g6", "g7", "g8", "g9"], plugin,
                                   limit=args.limit or None, max_cost=args.max_cost, model=model,
                                   max_turns=args.max_turns, host=host, workers=args.workers, force=args.force)
         return code
@@ -3654,9 +3654,9 @@ def main(argv=None) -> int:
     ech.add_argument("--model", default=None, metavar="MODEL", help="host model (default claude-haiku-5-5; 'default' for yours)")
     ech.add_argument("--workers", type=int, default=0,
                      help="host runs at a time (default: YTBRAIN_COACH_WORKERS or 1; each is a `claude -p` on your plan)")
-    ec = esub.add_parser("coach", help="gates G2/G4/G5/G6/G7: the coach's answers and memory through the real host "
+    ec = esub.add_parser("coach", help="gates G2/G4/G5/G6/G7/G8/G9: the coach's answers and memory through the real host "
                                         "(`claude -p` with the assembled plugin), graded by the judges")
-    ec.add_argument("--gate", action="append", choices=["g2", "g4", "g5", "g6", "g7", "g8"],
+    ec.add_argument("--gate", action="append", choices=["g2", "g4", "g5", "g6", "g7", "g8", "g9"],
                     help="repeatable (default: every gate of the plugin's Pack)")
     ec.add_argument("--plugin", default=None, metavar="DIR", help="assembled plugin (default dist/plugin)")
     ec.add_argument("--limit", type=int, default=0, help="first N cases per gate (a quick check)")

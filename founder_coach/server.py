@@ -9,6 +9,7 @@ no network calls except that one-time model download, and logs to stderr only.
 """
 from __future__ import annotations
 
+import datetime as dt
 import functools
 import inspect
 import json
@@ -90,18 +91,15 @@ MODULE_TEXT: list[tuple[str, str, str]] = [
     ("commitments", SENT_TEXT, SENT_SHORT),
     ("commitments", "Record a Goal, Commitments, a Decision or a Check-in", "Record a Goal or a Decision"),
     ("commitments", "this week's and overdue Commitments, the last Check-in, recent Decisions,", "recent Decisions,"),
-    ("commitments", "Close or correct a Goal, Commitment, Decision or Check-in.", "Close or correct a Goal or a Decision."),
-    ("commitments", " Commitments: open/done/dropped/carried (carried opens a linked copy in the next week)", ""),
+    ("commitments", " Planned items: open/done/dropped/carried (carried opens a linked copy in the next period).", ""),
     ("goals-commitments", "Record a Goal or a Decision", "Record a Decision"),
     ("goals-commitments", "Warnings flag\nmore than 3 active Goals. ", ""),
     ("goals-commitments", "active Goals,\nrecent Decisions,", "recent Decisions,"),
-    ("goals-commitments", "Close or correct a Goal or a Decision.", "Correct a Decision's text."),
-    ("goals-commitments", "Goals: active/met/dropped.", "Decisions have no status: leave it out."),
+    ("goals-commitments", "Goals: active/met/dropped. ", ""),
     # a Pack that keeps Commitments (the recurring loop) but no Goals: the commitments rules above did not apply
     ("goals+commitments", "Warnings flag\nmore than 3 open Commitments or Goals. ", "Warnings flag\nmore than 3 open Commitments. "),
     ("goals+commitments", "Record a Goal, Commitments, a Decision or a Check-in", "Record Commitments, a Decision or a Check-in"),
     ("goals+commitments", "active Goals,\nthis week's and overdue Commitments", "this week's and overdue Commitments"),
-    ("goals+commitments", "Close or correct a Goal, Commitment, Decision or Check-in.", "Close or correct a Commitment, Decision or Check-in."),
     ("goals+commitments", "Goals: active/met/dropped. ", ""),
 ]
 
@@ -113,6 +111,47 @@ def rule_applies(spec: str, has) -> bool:
     if has(base):
         return False
     return sign is None or (has(other) if sign == "+" else not has(other))
+
+
+# How every coach reads its memory, whatever its Pack's own instructions say: added by the server, so a new Pack can't
+# lack it (the G9 runs on Haiku took "the dentist emails" for an inbox and "the queue consumer" for code, and answered
+# questions about the past from records as they read now)
+MEMORY_RULES = (
+    "Memory first: when a question names something this Project may have recorded (a decision, a planned task, a "
+    "person, a blocker, something said or done), look in memory before files, the web or other tools: "
+    "coach_get_context, then coach_recall with the question's own words. Answer from memory when it holds the record; "
+    "look elsewhere only when it has nothing, and ask only when nothing anywhere fits. Memory reads show records as "
+    "they read now: for what a record said earlier, why or by whom it changed, what was believed on a date, how long "
+    "work has been carried, or how records connect, call coach_graph (history, as_of, thread or open_loops, why or "
+    "around) with the record's id before answering, and read it yourself rather than offering to. A record marked "
+    "`edited` has history; one with `ties` has ties to follow. Who decided something is only what a decided_by tie or "
+    "a change's `by` says: that the person saved a record (`recorded_by`) doesn't make them its decider, so say who "
+    "decided is not recorded when neither names anyone.")
+
+
+_TIE_SKIP = {"decided_in", "reviewed_in", "cites"}          # time and citations: not ties a person made
+
+
+def _mark_ties(store, hits: list[dict]) -> None:
+    """Say on each hit how many records it is tied to, and how to follow them (coach_graph around)."""
+    from . import graph as G
+    try:
+        g = G.for_store(store)
+    except (StoreError, sqlite3.Error, OSError):
+        return
+    for h in hits:
+        nid = g.resolve(h.get("id"))
+        if nid is None:
+            continue
+        n = sum(1 for e in g.out.get(nid, []) + g.into.get(nid, []) if e.type not in _TIE_SKIP)
+        if n:
+            h["ties"] = f"{n} tie(s) to other records: coach_graph around {h['id']}"
+
+
+def server_instructions(runtime: dict | None = None) -> str:
+    """The instructions the server sends: the Pack's own (or the shared default), then MEMORY_RULES."""
+    base = (runtime or {}).get("instructions") or pack_text(INSTRUCTIONS)
+    return f"{base}\n{pack_text(MEMORY_RULES)}"
 
 
 def pack_text(text: str | None) -> str | None:
@@ -329,8 +368,26 @@ class RecallOut(BaseModel):
     query: str
     hits: list[dict[str, Any]] = Field(description="best first (oldest first with timeline): id, kind, title, snippet, "
                                        "date, score (the share of the query's words found, when there was a query), week "
-                                       "(on a record kept by week); a Note also type, origin and superseded_by")
+                                       "(on a record kept by week), status; a Note also type, origin and superseded_by")
     total: int | None = Field(default=None, description="how many records matched, of which `hits` shows the first ones")
+    related: list[dict[str, Any]] | None = Field(default=None, description="with expand: records tied to the hits "
+                                                 "(not matching the words), best first, each with `how` it is tied")
+    note: str | None = None
+
+
+_GRAPH_TYPES = ("serves", "decided_in", "reviewed_in", "cites", "mentions", "supersedes", "about", "supports",
+                "related", "contradicts", "sub_goal_of", "changes_scope_of", "led_to", "assumes", "blocks",
+                "resolved_by", "owned_by", "decided_by")
+
+
+class GraphOut(BaseModel):
+    op: str
+    items: list[dict[str, Any]] = Field(default_factory=list, description="what the operation found, each with its "
+                                        "title first, then id, kind, date and status; around: also depth and `how` (the "
+                                        "edge that reached it, as a sentence); thread: its rows; history: the changes; "
+                                        "as_of: each record as it read then, with changed_since")
+    path: list[str] | None = Field(default=None, description="why: the steps from `id` to `to`, each edge as a sentence")
+    total: int | None = Field(default=None, description="how many there are, of which `items` shows the first ones")
     note: str | None = None
 
 
@@ -350,6 +407,7 @@ class ContextOut(BaseModel):
                                           "revisit_on); coach_recall finds older ones")
     notes_total: int | None = Field(None, description="Notes not superseded; present when this coach keeps Notes")
     nudges: list[dict[str, Any]]
+    follow_ties: str | None = Field(None, description="where the ties and the history of the records above are")
     library: dict[str, Any] | None = Field(None, description="the Domains the knowledge pack covers (name, items, what it is "
                                            "about); present only when there are several")
     other_coaches: list[dict[str, Any]] | None = Field(
@@ -392,12 +450,19 @@ class ProjectOut(BaseModel):
     note: str | None = None
 
 
+class LinkIn(BaseModel):
+    to: str = Field(description="the record it ties to, an id from coach_get_context, coach_recall or coach_graph")
+    type: Literal[tuple(D.LINK_PAIRS)] = Field(description="the tie, said by the person: " + "; ".join(
+        f"{t} ({'/'.join(a)} -> {'/'.join(b)})" for t, (a, b) in D.LINK_PAIRS.items()))
+
+
 class GoalIn(BaseModel):
     kind: Literal["goal"]
     text: str = Field(description="the outcome, e.g. '10 paying design partners'")
     measure: str | None = Field(None, description="how progress is measured")
     target_date: str | None = Field(None, description="YYYY-MM-DD")
     citations: list[str] = Field(default_factory=list, description="item_ids from coach_search/coach_read")
+    links: list[LinkIn] = Field(default_factory=list, max_length=D.MAX_LINKS_PER_RECORD)
 
 
 class CommitmentIn(BaseModel):
@@ -406,6 +471,7 @@ class CommitmentIn(BaseModel):
     outcome: str = Field(description="measurable result, e.g. '5 calls booked'")
     goal_id: str | None = None
     citations: list[str] = Field(default_factory=list)
+    links: list[LinkIn] = Field(default_factory=list, max_length=D.MAX_LINKS_PER_RECORD)
 
 
 class CommitmentsIn(BaseModel):
@@ -420,6 +486,30 @@ class DecisionIn(BaseModel):
     reasoning: str
     revisit_on: str | None = Field(None, description="YYYY-MM-DD to look at it again")
     citations: list[str] = Field(default_factory=list)
+    links: list[LinkIn] = Field(default_factory=list, max_length=D.MAX_LINKS_PER_RECORD,
+                                description="e.g. decided_by a person, serves or changes_scope_of a goal")
+    supersedes: str | None = Field(None, description="a change of mind: the id of the earlier decision this one "
+                                   "replaces (it is kept, marked superseded); needs `reason`")
+    reason: str | None = Field(None, description="why, in the person's words (required with `supersedes`)")
+    by: str | None = Field(None, description="who made this change: \"me\" (the default) or a person's id (pe-...) the "
+                           "person named")
+
+
+class PersonIn(BaseModel):
+    kind: Literal["person"]
+    name: str = Field(max_length=120, description="the name as the person uses it")
+    aliases: list[str] = Field(default_factory=list, description="other names for the same person, only ones the "
+                               "person confirmed")
+    role: str | None = Field(None, description="their role in the person's own words (e.g. 'cofounder, CTO'); only "
+                             "if they said it")
+    links: list[LinkIn] = Field(default_factory=list, max_length=D.MAX_LINKS_PER_RECORD)
+
+
+class IssueIn(BaseModel):
+    kind: Literal["issue"]
+    text: str = Field(description="the blocker or open question, in the person's words")
+    links: list[LinkIn] = Field(default_factory=list, max_length=D.MAX_LINKS_PER_RECORD,
+                                description="e.g. blocks a goal or a planned item, owned_by a person")
 
 
 class NoteLinkIn(BaseModel):
@@ -454,7 +544,7 @@ class CheckinIn(BaseModel):
 # coach_record takes only the kinds of record this Pack keeps (its memory modules), so the host is never shown a
 # record it can't save; the founder Pack keeps all four
 _KINDS = [m for m, mod in ((GoalIn, "goals"), (CommitmentsIn, "commitments"), (DecisionIn, "decisions"),
-                           (CheckinIn, "checkins"), (NoteIn, "notes")) if product.has(mod)] or [GoalIn]
+                           (CheckinIn, "checkins"), (NoteIn, "notes")) if product.has(mod)] + [PersonIn, IssueIn]
 Entry = (Annotated[Union[tuple(_KINDS)], Field(discriminator="kind")] if len(_KINDS) > 1 else _KINDS[0])
 
 
@@ -468,6 +558,7 @@ class UpdateOut(BaseModel):
     id: str
     before: dict[str, Any]
     after: dict[str, Any]
+    applied: dict[str, Any] | None = Field(None, description="an accepted proposal: what was saved")
     new_id: str | None = None
     carried_periods: int | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -946,7 +1037,7 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
             if pk is not None:
                 pk.close()
 
-    instructions = (product.PACK.get("runtime") or {}).get("instructions") or pack_text(INSTRUCTIONS)
+    instructions = server_instructions(product.PACK.get("runtime"))
     mcp = MCPServer(product.ID, title=product.DISPLAY_NAME, version=__version__, instructions=instructions,
                     lifespan=lifespan, cache_hints={"tools/list": CacheHint(ttl_ms=3_600_000, scope="private")})
 
@@ -1127,6 +1218,11 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
             shared = None
         else:
             store = _need_store(st)
+            try:                                           # what the link rules find now (ADR-0025); never blocks
+                from . import proposals
+                proposals.refresh(store)
+            except Exception as e:                         # noqa: BLE001
+                logging.getLogger("founder_coach").warning("proposals were not refreshed: %s", e)
             base = build_context(store, detailed=response_format == "detailed")
             shared = store.shared_fields() or None
         listed = _project_list(st)
@@ -1267,7 +1363,7 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
         more than 3 open Commitments or Goals. A Decision is a choice the Founder presents as decided ("I've decided", "we chose A over B"); a dropped Commitment, a shift of priorities or finished work is not one: it goes in the Commitment's note or the Check-in summary. A Note (kind "note") is a dated record of a discussion, research or an insight: a title, a summary, its type, and origin "user" when the Founder said it or "coach" when you concluded it; link it to the record it is about; give `supersedes` only after the Founder confirms the older Note no longer holds. Call only after the Founder has approved the exact text."""
         need = {"goal": "goals", "commitments": "commitments", "decision": "decisions", "checkin": "checkins",
                 "note": "notes"}
-        if not product.has(need.get(entry.kind, "")):
+        if entry.kind in need and not product.has(need[entry.kind]):
             raise ToolError(f"this coach doesn't keep {need.get(entry.kind, entry.kind)} (its Pack's memory modules: "
                             f"{', '.join(product.PACK.get('modules') or []) or 'none'})")
         try:
@@ -1285,21 +1381,31 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
         id: Annotated[str, Field(description="a record id from coach_get_context, e.g. c-1a2b")],
         request_id: RequestId,
         ctx: Context,
-        status: Annotated[Literal["active", "met", "dropped", "open", "done", "carried"] | None, Field(
-            description="Goals: active/met/dropped. Commitments: open/done/dropped/carried (carried opens a "
-                        "linked copy in the next week)")] = None,
+        status: Annotated[Literal["active", "met", "dropped", "open", "done", "carried", "reversed", "resolved",
+                                  "merged", "accepted", "rejected", "snoozed"] | None, Field(
+            description="Goals: active/met/dropped. Planned items: open/done/dropped/carried (carried opens a linked "
+                        "copy in the next period). Decisions: reversed (a change of mind is a new decision with "
+                        "`supersedes`). Issues: open/resolved. People: merged (with changes.merged_into). "
+                        "Proposals (p-): accepted/rejected/snoozed. A final status needs `reason`")] = None,
         changes: Annotated[dict[str, Any] | None, Field(description="fields to correct, e.g. {\"outcome\": \"3 calls\"}; "
                                                                                    "each text field at most 1000 characters")] = None,
         note: Annotated[str | None, Field(description="the evidence, e.g. 'shipped pricing page, 3 calls booked'; "
                                                       "a record with no note field (a Decision, for one) takes `changes` instead, "
                                                       "at most 1000 characters")] = None,
+        reason: Annotated[str | None, Field(description="why, in the person's words: required for a final status "
+                                            "and for correcting a decision's words; kept in the change log")] = None,
+        by: Annotated[str | None, Field(description="who made the change: \"me\" (default) or the id of a person "
+                                        "(pe-...) the person named")] = None,
+        links: Annotated[list[dict[str, str]] | None, Field(description="ties to add or end: [{to, type, action: "
+                                                             "add|end}], types as in coach_record links")] = None,
         project: ForProject = None,
     ) -> Annotated[CallToolResult, UpdateOut]:
-        """Close or correct a Goal, Commitment, Decision or Check-in. Every change is logged with its
-        before/after. Call only after the Founder has approved it."""
+        """Close or correct a record, tie it to others, or answer a proposal (p-). Every change is logged with its
+        before/after, when, why and by whom: nothing is lost. Call only after the Founder has approved it."""
         try:
             _guard(_state(ctx), project)
-            res = _need_store(_state(ctx)).update(id, status=status, changes=changes, note=note, request_id=request_id)
+            res = _need_store(_state(ctx)).update(id, status=status, changes=changes, note=note, request_id=request_id,
+                                                   reason=reason, by=by, links=links)
         except StoreError as e:
             raise ToolError(str(e)) from None
         except (sqlite3.Error, OSError) as e:
@@ -1329,6 +1435,9 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
                                 "query may then be left out to list every record in the window")] = False,
             id: Annotated[str | None, Field(description="instead of a search: the id of one record to read in full, "
                                             "with its links")] = None,
+            expand: Annotated[bool, Field(description="also return the records tied to the hits (a decision behind a "
+                                          "goal, the task a blocker stands in front of), ranked by how closely they are "
+                                          "tied")] = False,
         ) -> Annotated[CallToolResult, RecallOut]:
             """Look up what this Project's memory already holds: Notes (full-text, best match first) and the
             other records this coach keeps. Use it before answering about earlier work, decisions or research, and
@@ -1354,13 +1463,131 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
             except (sqlite3.Error, OSError) as e:
                 raise ToolError(_storage_error(e)) from None
             note = None
+            related = None
+            if expand and hits:
+                from . import graph as G
+                try:
+                    related = G.rank(G.for_store(store), {h["id"]: float(h.get("score") or 1.0) for h in hits},
+                                     store.today())
+                except (StoreError, sqlite3.Error, OSError):
+                    related = None
+            if hits:
+                _mark_ties(store, hits)
             if not hits:
                 note = ("nothing in this Project's memory matches" + (" in that period" if since or until else "")
                         + ": say so, don't guess what was said")
             elif total > len(hits):
                 note = (f"{total - len(hits)} more match" + (f"; to continue, ask again with since={hits[-1]['date']} "
                         f"(records from that day repeat)" if timeline else " (narrow the query, the kinds or the dates)"))
-            return _result(RecallOut(query=query or "", hits=hits, total=total, note=note))
+            return _result(RecallOut(query=query or "", hits=hits, total=total, related=related, note=note))
+
+    # 6d -----------------------------------------------------------------------------
+    # The Project graph (ADR-0024): computed from the records on every call, so it holds only what the person said
+    # yes to, and only what this coach may read (ADR-0019). Questions that follow ties or ask about time.
+    @_tool(name="coach_graph", title="Follow the ties and the history of this Project's records", annotations=READ)
+    def coach_graph(
+        ctx: Context,
+        op: Annotated[Literal["around", "why", "thread", "history", "as_of", "open_loops", "proposals"], Field(
+            description="around: what is tied to a record (`id`, `hops`); why: how two records are connected (`id`, "
+                        "`to`); thread: a planned item and every carry of it; history: what changed in a record and "
+                        "when; as_of: the records as they read at the end of `date`; open_loops: open planned items "
+                        "carried into `min_periods` or more periods; proposals: ties the rules found in the "
+                        "records, waiting for the person's yes (answer each with coach_update)")],
+        id: Annotated[str | None, Field(description="a record id (g-, c-, d-, n-, k-) from coach_get_context, "
+                                        "coach_recall or an earlier coach_graph answer, or a week like 2026-W44")] = None,
+        to: Annotated[str | None, Field(description="why: the other record")] = None,
+        hops: Annotated[int, Field(ge=1, le=3, description="around: how many steps out")] = 2,
+        types: Annotated[list[Literal[tuple(_GRAPH_TYPES)]] | None, Field(
+            description="follow only these ties (default all but cites)")] = None,
+        kinds: Annotated[list[Literal["goal", "thread", "decision", "note", "checkin", "person", "issue", "week",
+                                      "source"]] | None, Field(
+            description="around and as_of: return only these kinds")] = None,
+        date: Annotated[str | None, Field(pattern=r"^\d{4}-\d{2}-\d{2}$", description="as_of: the day, YYYY-MM-DD, "
+                                          "in the Project's time zone")] = None,
+        min_periods: Annotated[int, Field(ge=1, le=52, description="open_loops: planned in at least this many "
+                                          "periods")] = 3,
+        limit: Annotated[int, Field(ge=1, le=20, description="most items to return")] = 20,
+        offset: Annotated[int, Field(ge=0, description="skip this many items (to read the rest)")] = 0,
+    ) -> Annotated[CallToolResult, GraphOut]:
+        """Answer questions that follow ties between saved records or ask about time: what hangs on a record, how
+        two records connect, what has been carried for several periods, what changed in a record, what was believed
+        on a date. coach_get_context and coach_recall show records as they read now: call this before answering about
+        the past. Use coach_recall to find a record by its words, then this to follow it. Every tie is a fact about
+        saved records (a planned item's goal, the week a decision was made, a carry, a note's links); nothing here
+        is inferred. Results are titles first; say the dates. Read-only."""
+        from . import graph as G
+        store = _need_store(_state(ctx))
+        try:
+            g = G.for_store(store)
+            if op in ("around", "why", "thread", "history"):
+                nid = g.resolve(id)
+                if nid is None:
+                    raise ToolError(f"no record {id!r} this coach can read; ids come from coach_get_context, "
+                                    "coach_recall or an earlier coach_graph answer" if id else f"{op} needs `id`")
+            items: list[dict] = []
+            path = None
+            note = None
+            if op == "around":
+                for f in g.around(nid, hops, tuple(types) if types else None, tuple(kinds) if kinds else None):
+                    e_src, e_dst = (f["via"], f["id"]) if f["direction"] == "out" else (f["id"], f["via"])
+                    items.append({**G.card(g, f["id"]), "depth": f["depth"],
+                                  "how": G.sentence(g, e_src, f["edge"], e_dst)})
+                if not items:
+                    note = "nothing is tied to this record yet"
+            elif op == "why":
+                other = g.resolve(to)
+                if other is None:
+                    raise ToolError(f"no record {to!r} this coach can read" if to else "why needs `to`")
+                steps = g.path(nid, other, G.MAX_PATH, tuple(types) if types else None)
+                if steps is None:
+                    note = (f"no connection within {G.MAX_PATH} steps: say so, don't invent one")
+                else:
+                    path = [G.sentence(g, s["from"], s["edge"], s["to"]) if s["direction"] == "out"
+                            else G.sentence(g, s["to"], s["edge"], s["from"]) for s in steps]
+                    items = [G.card(g, x) for x in [nid] + [s["to"] for s in steps]]
+            elif op == "thread":
+                n = g.nodes[nid]
+                if n.kind != "thread":
+                    raise ToolError(f"{id} is a {n.kind}, not a planned item (c-)")
+                items = [{"title": c.get("action"), "id": c["id"], "week": c.get("week"), "status": c.get("status"),
+                          **({"result": c["result_note"]} if c.get("result_note") else {})} for c in n.data["rows"]]
+                goal = g.nodes.get(n.data["goal_id"]) if n.data["goal_id"] else None
+                note = (f"{len(items)} period(s)" + (f"; serves Goal · {goal.title}" if goal else "; no Goal"))
+            elif op == "history":
+                items = G.history(store, g, nid)
+                if not items:
+                    note = "no change recorded for this record"
+                if g.nodes[nid].kind == "decision":            # who decided, said once and plainly
+                    note = ((note + "; ") if note else "") + G.decided_by_note(g, nid)
+            elif op == "as_of":
+                if not date:
+                    raise ToolError("as_of needs `date` (YYYY-MM-DD)")
+                rec_kinds = ("goal", "thread", "decision", "note", "person", "issue")
+                res = G.as_of(store, g, dt.date.fromisoformat(date), tuple(k for k in (kinds or ()) if k in rec_kinds)
+                              or rec_kinds)
+                items = res["items"]
+                note = (f"as the store read at the end of {date}; {res['made_later']} record(s) were made later"
+                        + ("" if items else ": nothing had been saved yet"))
+            elif op == "proposals":
+                from . import proposals as P
+                P.refresh(store)
+                items, total = P.pending(store, limit=P.REVIEW_BATCH, mark_shown=True)
+                note = (f"{total} waiting; show them numbered, the high ones pre-ticked, and save each answer with "
+                        "coach_update (status accepted, rejected or snoozed)" if items else "no proposal waiting")
+            else:                                              # open_loops
+                items = [G.card(g, t.id) for t in g.open_loops(min_periods)]
+                if not items:
+                    note = f"no open work planned in {min_periods} or more periods"
+        except StoreError as e:
+            raise ToolError(str(e)) from None
+        except (sqlite3.Error, OSError) as e:
+            raise ToolError(_storage_error(e)) from None
+        total = len(items)
+        page = items[offset:offset + limit]
+        if total > offset + len(page):
+            more = f"{total - offset - len(page)} more: ask again with offset={offset + len(page)}"
+            note = f"{note}; {more}" if note else more
+        return _result(GraphOut(op=op, items=page, path=path, total=total, note=note))
 
     # 6b -----------------------------------------------------------------------------
     # The investor Pack's Holdings (M6g): only a Pack that keeps them has these tools. Numbers are computed here,

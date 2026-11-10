@@ -1,0 +1,6 @@
+{"id": "h9-as-of-twice", "kind": "as of a date, changed twice", "prompt": "What price did we set for the pilot on 1 October?", "ids": ["d_price"], "graph": true, "ops": ["as_of", "history"], "expect": ["\\$?500"]}
+{"id": "h9-changed-twice", "kind": "what changed and why, twice", "prompt": "How has the pilot price changed, and why each time?", "ids": ["d_price"], "graph": true, "ops": ["history"], "expect": ["balked", "trial month"]}
+{"id": "h9-two-step", "kind": "two-step tie", "prompt": "Who owns the work that is blocked right now, and what is blocking it?", "ids": ["i_travel", "p_omar"], "graph": true, "expect": ["\\bOmar\\b", "travel"]}
+{"id": "h9-ambiguous", "kind": "ambiguous wording", "prompt": "Did the Marco call happen?", "ids": ["c_call|c_call2|c_call3"], "expect": ["not yet|hasn't|has not|still open|carried|no\\b", "travel"]}
+{"id": "h9-trap", "kind": "current text vs history", "prompt": "Is the dashboard still out of the MVP, and is that still the right call?", "ids": ["d_dash"], "expect": ["export"]}
+{"id": "h9-abstain", "kind": "nothing recorded", "prompt": "What did Marco think of the $500 price?", "abstain": true, "forbid": ["\\bMarco (thought|said|felt|liked|agreed)"]}

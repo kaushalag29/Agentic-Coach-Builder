@@ -112,6 +112,7 @@
     "options": [
      "--engine-home",
      "--home",
+     "--html",
      "--out",
      "--project"
     ],

@@ -3054,6 +3054,133 @@ def test_the_keyword_config_sends_each_question_as_keywords_and_reports_the_clos
                                                    "summary": scored["summary"], "by": {}})
 
 
+def test_g9_runs_on_the_made_up_project_and_grades_graph_use_the_right_records_and_abstention(tmp_path):
+    """G9 (ADR-0024/0025): each case runs in a fresh home seeded with the made-up Project, on its week-three
+    Wednesday; it passes only when coach_graph was called, the records it names came back from the tools, the answer
+    says what the case expects and nothing it forbids, and an abstention case says nothing was recorded."""
+    from ytbrain.eval import coach as C
+    from ytbrain.eval import graph_seed
+    cases = C.load_cases("g9")
+    assert len(cases) >= 10 and sum(bool(c.get("abstain")) for c in cases) >= 2
+    s, ids = graph_seed.seed("founder", tmp_path / "seed")
+    s.close()
+    for c in cases:                                      # every record a case names exists in the seed
+        assert {n for alt in c.get("ids", []) for n in alt.split("|")} <= set(ids), c["id"]
+        assert c.get("expect") or c.get("abstain"), c["id"]
+    homes, envs = [], []
+
+    def fresh():
+        homes.append(tmp_path / f"h{len(homes)}")
+        return homes[-1]
+
+    def run_with(answer, result=lambda ids: "", op="around"):
+        def run(prompt, env=None, resume=None):
+            envs.append(env)
+            from founder_coach.store import FounderStore
+            st = FounderStore(homes[-1])
+            have = {r["text"]: r["id"] for r in st.decisions(50)}
+            st.close()
+            tools = [{"name": C.GRAPH, "input": {"op": op}, "result": result(have)}] if op else []
+            return C.Turn(text=answer, tools=tools)
+        return run
+    who = next(c for c in cases if c["id"] == "g9-decided-by")
+    r = C._run_case("g9", who, run_with("Neha decided it.", lambda have: f"{have['Charge from day one']} decided_by"),
+                    None, None, fresh)
+    assert r["passed"], r
+    assert envs[-1][C.host_env("FAKE_NOW")] == graph_seed.TODAY and (homes[-1] / "founder.db").exists()
+    r = C._run_case("g9", who, run_with("Neha decided it.", lambda h: h["Charge from day one"], op=None), None, None,
+                    fresh)
+    assert not r["passed"], "no tool returned the record"
+    as_of = next(c for c in cases if c["id"] == "g9-as-of")
+    assert as_of.get("graph") and as_of.get("ops")
+    def ctx_run(answer, have_key):                       # the answer from coach_get_context alone
+        def run(prompt, env=None, resume=None):
+            from founder_coach.store import FounderStore
+            st = FounderStore(homes[-1])
+            have = {r["text"]: r["id"] for r in st.decisions(50)}
+            st.close()
+            return C.Turn(text=answer, tools=[{"name": C.CONTEXT, "input": {}, "result": have[have_key]}])
+        return run
+    assert C._run_case("g9", who, ctx_run("Neha decided it.", "Charge from day one"), None, None, fresh)["passed"], \
+        "a right answer from the context passes where the graph isn't needed"
+    r = C._run_case("g9", as_of, ctx_run("We said dental clinics first.", "Sell to independent dental clinics first"),
+                    None, None, fresh)
+    assert not r["passed"] and r["graph_calls"] == 0, "what was believed on a date must come through coach_graph"
+    r = C._run_case("g9", who, run_with("Neha decided it."), None, None, fresh)
+    assert not r["passed"] and r["missing_ids"] == ["d_charge"], "the record must come back from the tools"
+    r = C._run_case("g9", who, run_with("Your cofounder did.", lambda h: h["Charge from day one"]), None, None, fresh)
+    assert not r["passed"] and r["missing"], "the answer must name what the case expects"
+    hire = next(c for c in cases if c["id"] == "g9-abstain-hire")
+    assert C._run_case("g9", hire, run_with("Nothing about hiring a salesperson is recorded."), None, None,
+                       fresh)["passed"]
+    assert not C._run_case("g9", hire, run_with("We decided to hire one in October."), None, None, fresh)["passed"]
+    # a private case: a read-only copy of your own Project; the original is never opened for writing
+    db = tmp_path / "seed" / "founder.db"
+    before = db.read_bytes()
+    mine = {"id": "own-1", "prompt": "Who decided to charge?", "store": str(tmp_path / "seed"),
+            "ids": [ids["d_charge"]], "expect": ["Neha"], "now": "2026-10-08T09:00:00+00:00"}
+    r = C._run_case("g9", mine, run_with("Neha.", lambda h: h["Charge from day one"]), None, None, fresh)
+    assert r["passed"] and envs[-1][C.host_env("FAKE_NOW")] == mine["now"], r
+    assert db.read_bytes() == before and (homes[-1] / "founder.db").exists()
+    for text in ("I don't have anything recorded about that.", "There's no record of who made that call.",
+                 "Nothing in memory says who decided it.", "The Decision doesn't say who made it."):
+        assert C.ABSTAIN.search(text), text
+    assert not C.ABSTAIN.search("Neha decided it on 21 September.")
+
+
+def test_g9_has_cases_for_every_pack_on_its_own_made_up_project(tmp_path):
+    """The coding coach asks about a made-up system, the investor coach about a made-up retirement goal (no Goals):
+    every record a case names exists in that Pack's seed, the seed's records carry that coach's stamp, and the cases
+    use the Pack's own words."""
+    from ytbrain.eval import coach as C
+    from ytbrain.eval import graph_seed
+    from founder_coach import graph as G
+    old = dict(C.TARGET)
+    try:
+        for pack, banned in (("coding", ("Founder", "company")), ("investor", ("Founder", "company", "Goal"))):
+            C.TARGET["pack"] = pack
+            cases = C.load_cases("g9")
+            assert len(cases) >= 8 and sum(bool(c.get("abstain")) for c in cases) >= 2, pack
+            assert sum(bool(c.get("graph") or c.get("ops")) for c in cases) >= 2, pack
+            s, ids = graph_seed.seed(pack, tmp_path / pack)
+            try:
+                g = G.for_store(s)
+                assert {n.coach for n in g.nodes.values() if n.kind not in ("week", "source")} == {pack}
+                assert pack != "investor" or not any(n.kind == "goal" for n in g.nodes.values())
+                for c in cases:
+                    assert {n for alt in c.get("ids", []) for n in alt.split("|")} <= set(ids), (pack, c["id"])
+                    assert not any(w in c["prompt"] for w in banned), (pack, c["id"])
+                    for pat in c.get("expect", []) + c.get("forbid", []):
+                        re.compile(pat)
+            finally:
+                s.close()
+    finally:
+        C.TARGET.clear()
+        C.TARGET.update(old)
+
+
+def test_g9_scores_each_set_on_its_own_and_passes_only_when_every_set_does():
+    """The held-out cases (never changed after a run) and your own Project's are scored apart from the tuned ones: a
+    gate that passes on the tuned cases but not on the held-out ones fails."""
+    from ytbrain.eval import coach as C
+    cases = [{"id": f"c{i}"} for i in range(5)] + [{"id": f"h{i}", "holdout": True} for i in range(5)]
+    res = [{"id": f"c{i}", "passed": True} for i in range(5)] + [{"id": f"h{i}", "passed": i < 3} for i in range(5)]
+    s = C.score("g9", res, cases)
+    assert s["sets"]["cases"]["rate"] == 1.0 and s["sets"]["holdout"]["rate"] == 0.6 and not s["passed"]
+    res[-1]["passed"] = res[-2]["passed"] = True
+    assert C.score("g9", res, cases)["passed"]
+    for pack in ("founder", "coding", "investor"):
+        old = dict(C.TARGET)
+        C.TARGET["pack"] = pack
+        try:
+            hold = [c for c in C.load_cases("g9") if c.get("holdout")]
+            assert len(hold) >= 6 and any(c.get("abstain") for c in hold), pack
+            assert {"two-step tie", "ambiguous wording", "current text vs history"} <= {c["kind"] for c in hold}
+        finally:
+            C.TARGET.clear()
+            C.TARGET.update(old)
+
+
 def test_a_current_build_still_runs_every_packs_coach_gates_and_the_choice_check(tmp_path):
     """The founder coach having passed must not hide a Pack whose gates never ran or failed: the retry covers every
     coach step and P12, and is due while any Pack's gates are unfinished."""

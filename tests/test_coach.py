@@ -195,7 +195,7 @@ def test_carrying_a_commitment_links_a_copy_and_counts_the_streak():
     _raises(lambda: s.update("c-nope", status="done"), "no record")
     _raises(lambda: s.update(new["id"], changes={"week": "2020-W01"}), "can't change week")
     d = s.record({"kind": "decision", "text": "Charge from day one", "reasoning": "paying users tell the truth"})["ids"][0]
-    _raises(lambda: s.update(d, status="done"), "has no status")
+    _raises(lambda: s.update(d, status="done"), "a decision's status is one of")
     _raises(lambda: s.update(d, note="x"), "a decision has no note")
     assert s.update(d, changes={"revisit_on": "2026-12-01"})["after"]["revisit_on"] == "2026-12-01"
 
@@ -464,7 +464,7 @@ def test_a_goal_past_its_target_date_is_a_nudge_until_the_founder_says_met_dropp
     s.update(gid, changes={"target_date": (s.today() + dt.timedelta(days=30)).isoformat()})   # a new date
     assert "goal_past_target" not in [n["kind"] for n in N.nudges(s)]
     c.advance(days=31)
-    s.update(gid, status="met")
+    s.update(gid, status="met", reason="signed the tenth")
     assert "goal_past_target" not in [n["kind"] for n in N.nudges(s)], "a met Goal is not late"
     ctx = N.context(s)
     stale = ctx["profile"]["company"]
@@ -552,10 +552,10 @@ def test_tools_keep_their_order_schemas_and_annotations():
                  "description": t.description} for t in tools]
         assert [t["name"] for t in snap] == ["coach_search", "coach_read", "coach_get_context", "coach_update_profile",
                                              "coach_project", "coach_record", "coach_update", "coach_recall",
-                                             "coach_corpus_status", "coach_feedback"]
+                                             "coach_graph", "coach_corpus_status", "coach_feedback"]
         assert all(t["annotations"]["open_world_hint"] is False for t in snap)
         assert [t["name"] for t in snap if t["annotations"]["read_only_hint"]] == \
-            ["coach_search", "coach_read", "coach_get_context", "coach_recall", "coach_corpus_status"]
+            ["coach_search", "coach_read", "coach_get_context", "coach_recall", "coach_graph", "coach_corpus_status"]
         text = json.dumps(snap, indent=1, sort_keys=True)
         if os.environ.get("UPDATE_GOLDEN") or not GOLDEN.exists():
             GOLDEN.write_text(text + "\n")
@@ -1694,7 +1694,7 @@ def test_a_v5_store_migrates_to_notes_with_a_backup_first():
     s.close()
     s = _store(home=home)
     from founder_coach.store import SCHEMA_VERSION
-    assert s._version() == SCHEMA_VERSION == 7 and s.profile()["company"]["value"] == "Acme"
+    assert s._version() == SCHEMA_VERSION == 8 and s.profile()["company"]["value"] == "Acme"
     assert list((home / "backups").glob("*pre-migration-v5*"))
     assert s.has_fts() and s.record(_note())["ids"] and s.recall("setup")
 
@@ -1914,7 +1914,7 @@ def test_a_v6_store_migrates_to_the_coach_stamp_with_a_backup_first():
     assert "coach" not in cols
     s = FounderStore(home, clock=Clock(), coach="coding")
     from founder_coach.store import SCHEMA_VERSION, COACH_TABLES
-    assert s._version() == SCHEMA_VERSION == 7
+    assert s._version() == SCHEMA_VERSION == 8
     assert list((home / "backups").glob("*pre-migration-v6*")), "a backup is taken before migrating"
     assert s.profile()["company"]["value"] == "Acme" and s.get(gid)["text"] == "ship v1" and s.get(nid)
     db = sqlite3.connect(home / "founder.db")
@@ -1977,7 +1977,7 @@ def test_coaches_of_one_project_read_each_others_goals_decisions_and_commitments
                                                     "goal_id": g1}]})["ids"][0]
     assert a.get(m2)["goal_id"] == g1
     # and an update reaches it, keeping the stamp of the coach that made it
-    b.update(g1, status="met")
+    b.update(g1, status="met", reason="all signed")
     assert a.get(g1)["status"] == "met" and b.get(g1)["coach"] == "founder"
 
 
@@ -1993,7 +1993,8 @@ def test_a_rejected_update_says_where_the_text_belongs():
     except StoreError as e:
         msg = str(e)
     assert "text, reasoning, revisit_on" in msg and "`changes`" in msg and f"Note (coach_record kind note, linked to {d})" in msg
-    assert a.update(d, changes={"reasoning": "runway and the pilot"})["after"]["reasoning"] == "runway and the pilot"
+    assert a.update(d, changes={"reasoning": "runway and the pilot"}, reason="the pilot was part of it")["after"][
+        "reasoning"] == "runway and the pilot"
     assert a.update(g, note="3 calls booked")["after"]["note"] == "3 calls booked"
     ck = a.record({"kind": "checkin", "summary": "good week"})["ids"][0]
     _raises(lambda: a.update(ck, note="x"), "summary, wins, blockers")

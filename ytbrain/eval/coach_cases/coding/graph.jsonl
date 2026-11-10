@@ -1,0 +1,9 @@
+{"id": "g9c-carried", "kind": "carried work", "prompt": "How long have we been carrying the tracing work, which goal is it for, and what came of it each week?", "ids": ["c_trace|c_trace2|c_trace3"], "expect": ["p99|latency", "\\b(three|3)\\b|21 Sep|W39", "payment call", "staging"], "graph": true, "ops": ["thread", "open_loops", "around"]}
+{"id": "g9c-why", "kind": "why, multi-hop", "prompt": "Why did we cache product reads in Redis, and what have the benchmarks shown since?", "ids": ["d_cache"], "expect": ["90 ?%", "82 ?%"]}
+{"id": "g9c-as-of", "kind": "what we believed on a date", "prompt": "Back on 28 September, what exactly had we decided about caching product reads?", "ids": ["d_cache"], "ops": ["as_of", "history"], "expect": ["Redis"]}
+{"id": "g9c-changed", "kind": "what changed and why", "prompt": "Why did the caching decision change?", "ids": ["d_cache"], "graph": true, "ops": ["history"], "expect": ["stale price"]}
+{"id": "g9c-decided-by", "kind": "who decided", "prompt": "Who decided we would keep Postgres as the only database?", "ids": ["d_pg"], "expect": ["\\bMei\\b"]}
+{"id": "g9c-blocker", "kind": "what blocks", "prompt": "What is holding up the tracing work?", "ids": ["i_staging"], "expect": ["staging"]}
+{"id": "g9c-path", "kind": "how two records connect", "prompt": "How is the queue consumer task connected to the feature-flag decision?", "ids": ["g_queue"], "expect": ["new queue|billing events"], "graph": true, "ops": ["why", "around"]}
+{"id": "g9c-abstain-who", "kind": "nothing recorded", "prompt": "Who decided we would cache product reads in Redis?", "abstain": true, "forbid": ["\\bMei (decided|made|chose)[^.]{0,40}(cache|Redis)"], "expect": []}
+{"id": "g9c-abstain-k8s", "kind": "nothing recorded", "prompt": "What did we decide about moving to Kubernetes?", "abstain": true, "forbid": ["\\bwe decided to (move|use|adopt)"], "expect": []}

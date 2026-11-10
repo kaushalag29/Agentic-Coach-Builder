@@ -66,7 +66,8 @@ def _hook(args) -> int:
                 text = ""                                  # anything else: stay quiet
         else:
             try:
-                text = hook_text(store)
+                from .nudges import memory_index
+                text = " ".join(t for t in (hook_text(store), memory_index(store)) if t)
                 many = args.workspace and args.workspace.projects and len(args.workspace.projects.list()) > 1
                 if text and many:
                     name = args.workspace.describe(args.project_id)["name"]
@@ -205,7 +206,8 @@ def _vault(args) -> int:
         return 1
     engine = Path(args.engine_home).expanduser() if args.engine_home else installed.engine_home()
     try:
-        res = vault.build(home, Path(args.out).expanduser() if args.out else None, engine)
+        res = vault.build(home, Path(args.out).expanduser() if args.out else None, engine,
+                          with_html=bool(getattr(args, "html", False)))
     except (vault.VaultError, OSError) as e:
         print(f"{product.ID}: {e}", file=sys.stderr)
         return 1
@@ -603,6 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     vl.add_argument("--out", default=None, help="folder for the vault (default: vault/ inside the Project's folder)")
     vl.add_argument("--engine-home", default=None, help="the engine home whose installed/ registry says which coaches "
                                                          "keep their records private (default ~/.ytbrain)")
+    vl.add_argument("--html", action="store_true", help="also write _meta/graph.html, one page that shows the graph "
+                                                        "in a browser, offline")
     nt = sub.add_parser("notes", help="the Notes folder beside the store: rebuild it, or lint the Notes (report-only)")
     nt.add_argument("action", choices=["lint", "rebuild"])
     nt.add_argument("--json", action="store_true", help="lint: the findings as JSON")

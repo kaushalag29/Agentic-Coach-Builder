@@ -27,7 +27,7 @@ from . import domain as D
 from . import product
 
 RECENT_ERRORS = 10                     # usage_summary lists this many of the newest tool errors
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MIGRATIONS: dict[int, list[str]] = {
     1: [
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
@@ -91,16 +91,38 @@ MIGRATIONS: dict[int, list[str]] = {
     7: [f"ALTER TABLE {t} ADD COLUMN coach TEXT NOT NULL DEFAULT ''" for t in (
         "profile_facts", "goals", "commitments", "decisions", "checkins", "changes", "feedback", "usage",
         "holdings_snapshots", "asset_classes", "notes", "links")],
+    # v8 (ADR-0025): nothing about a change is lost (why and by whom, on every change-log row); a Decision has a
+    # status and the newer Decision that superseded it; links between any records, ended instead of deleted; the
+    # People and Issues the person names; and the links the coach proposes, with the person's verdict on each.
+    8: ["ALTER TABLE changes ADD COLUMN reason TEXT",
+        "ALTER TABLE changes ADD COLUMN actor TEXT",
+        "ALTER TABLE decisions ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'",
+        "ALTER TABLE decisions ADD COLUMN superseded_by TEXT",
+        "ALTER TABLE decisions ADD COLUMN superseded_at TEXT",
+        "ALTER TABLE links ADD COLUMN ended_at TEXT",
+        "CREATE INDEX IF NOT EXISTS links_src ON links (founder_id, src)",
+        """CREATE TABLE people (id TEXT PRIMARY KEY, founder_id TEXT NOT NULL, coach TEXT NOT NULL DEFAULT '',
+             name TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]', role TEXT, status TEXT NOT NULL DEFAULT 'active',
+             merged_into TEXT, created_at TEXT NOT NULL, closed_at TEXT)""",
+        """CREATE TABLE issues (id TEXT PRIMARY KEY, founder_id TEXT NOT NULL, coach TEXT NOT NULL DEFAULT '',
+             text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', note TEXT, created_at TEXT NOT NULL,
+             closed_at TEXT)""",
+        """CREATE TABLE proposals (id TEXT PRIMARY KEY, founder_id TEXT NOT NULL, coach TEXT NOT NULL DEFAULT '',
+             fingerprint TEXT NOT NULL, rule TEXT NOT NULL, tier TEXT NOT NULL, payload TEXT NOT NULL,
+             why TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', shown INTEGER NOT NULL DEFAULT 0,
+             snoozed_until TEXT, created_at TEXT NOT NULL, decided_at TEXT, UNIQUE (founder_id, fingerprint))"""],
 }
-SHARED_KINDS = ("goals", "commitments", "decisions", "profile")      # what coaches in one Project read from each other
+COACH_TABLES_V7 = ("profile_facts", "goals", "commitments", "decisions", "checkins", "changes", "feedback", "usage",
+                   "holdings_snapshots", "asset_classes", "notes", "links")
+SHARED_KINDS = ("goals", "commitments", "decisions", "profile", "people", "issues")  # what the coaches of a Project share
 COACH_TABLES = ("profile_facts", "goals", "commitments", "decisions", "checkins", "changes", "feedback", "usage",
-                "holdings_snapshots", "asset_classes", "notes", "links")
+                "holdings_snapshots", "asset_classes", "notes", "links", "people", "issues", "proposals")
 # The Notes keyword index. A derived structure: it is rebuilt from `notes` (reindex_notes) and can be dropped without
 # losing a Note. A SQLite build without FTS5 skips it and search falls back to LIKE.
 FTS_STATEMENT = ("CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(id UNINDEXED, title, summary, "
                  "tokenize='porter unicode61')")
 TABLES = ("profile_facts", "goals", "commitments", "decisions", "checkins", "feedback", "changes",
-          "holdings_snapshots", "positions", "asset_classes", "notes", "links")
+          "holdings_snapshots", "positions", "asset_classes", "notes", "links", "people", "issues", "proposals")
 # the usage log is kept apart from TABLES: it isn't coaching memory, so it never makes the store
 # "have data" (daily backups) and never shows in FOUNDER.md; forget, export and restore still cover it
 USAGE_OUTCOMES = ("ok", "empty", "gap", "error")
@@ -195,6 +217,7 @@ class FounderStore:
         self.cite_check: Callable[[list[str]], list[str]] | None = None    # -> unknown ids
         self.cite_lookup: Callable[[str], dict | None] | None = None       # id -> {title, deep_link}
         self._lock = threading.RLock()
+        self._why: tuple[str | None, str | None] = (None, None)   # why and by whom, for the write running now
         self._open()
 
     def _open(self) -> None:
@@ -275,7 +298,7 @@ class FounderStore:
                     if n == 6:
                         self._create_fts()
                     if n == 7 and existed and self.coach:
-                        for t in COACH_TABLES:         # the rows that were here belong to the coach that owns this store
+                        for t in COACH_TABLES_V7:      # the rows that were here belong to the coach that owns this store
                             self.db.execute(f"UPDATE {t} SET coach=?", (self.coach,))
                     self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(n),))
                 self.db.execute("COMMIT")
@@ -319,18 +342,23 @@ class FounderStore:
         return iso_week(self.today())
 
     def _new_id(self, kind: str) -> str:
-        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
-                 "feedback": "feedback", "holdings": "holdings_snapshots", "note": "notes"}[kind]
+        table = {**D.TABLE_OF, "feedback": "feedback", "holdings": "holdings_snapshots"}[kind]
         while True:
             rid = f"{D.ID_PREFIX[kind]}-{secrets.token_hex(2)}"
             if not self.db.execute(f"SELECT 1 FROM {table} WHERE id=?", (rid,)).fetchone():
                 return rid
 
-    def _change(self, entity: str, entity_id: str, op: str, before, after, source: str) -> None:
-        self.db.execute("INSERT INTO changes (at, founder_id, coach, entity, entity_id, op, before, after, source) "
-                        "VALUES (?,?,?,?,?,?,?,?,?)",
+    def _change(self, entity: str, entity_id: str, op: str, before, after, source: str, reason: str | None = None,
+                actor: str | None = None) -> None:
+        """One change-log row, in the transaction of the write it logs: when, what, the whole record before and
+        after, which tool and coach, and (ADR-0025) why and by whom, as the person said it. `reason` and `actor`
+        default to the ones the current write was given (`self._why`)."""
+        why, who = self._why
+        self.db.execute("INSERT INTO changes (at, founder_id, coach, entity, entity_id, op, before, after, source, reason, "
+                        "actor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (self._iso(), self.fid, self.coach, entity, entity_id, op,
-                         None if before is None else _j(before), None if after is None else _j(after), source))
+                         None if before is None else _j(before), None if after is None else _j(after), source,
+                         reason if reason is not None else why, actor or who))
 
     def _transact(self, request_id: str | None, fn: Callable[[], dict], what: object = None) -> dict:
         """Run `fn` -- validation and write together -- in one write transaction. A repeated
@@ -674,12 +702,28 @@ class FounderStore:
         return self._transact(request_id, lambda: self._record(entry, source), what=("record", entry))
 
     def _record(self, entry: dict, source: str) -> dict:
-        if not isinstance(entry, dict) or entry.get("kind") not in ("goal", "commitments", "decision", "checkin", "note"):
-            raise StoreError("entry.kind must be goal, commitments, decision, checkin or note")
+        kinds = ("goal", "commitments", "decision", "checkin", "note", "person", "issue")
+        if not isinstance(entry, dict) or entry.get("kind") not in kinds:
+            raise StoreError("entry.kind must be one of: " + ", ".join(kinds))
         kind = entry["kind"]
+        reason = self._text(entry.get("reason"), "reason", False)
+        actor = self._actor(entry.get("by"))
         if kind == "note":
-            return self._record_note(entry, source)
+            self._why = (reason, actor)
+            try:
+                return self._record_note(entry, source)
+            finally:
+                self._why = (None, None)
+        if kind in ("person", "issue"):
+            return self._record_entity(entry, source, reason, actor)
         now_week = self.this_week()
+        top_links = self._clean_links(entry.get("links"), "links")
+        supersedes = str(entry.get("supersedes") or "").strip() or None
+        if supersedes and kind != "decision":
+            raise StoreError("`supersedes` on a new record applies to a Decision (a Note takes it as a Note field)")
+        if supersedes and not reason:
+            raise StoreError("a Decision that supersedes another needs `reason`: why the earlier one no longer holds, "
+                             "in the person's words")
         if kind == "goal":
             rows = [{"text": self._text(entry.get("text"), "text"), "measure": self._text(entry.get("measure"), "measure", False),
                      "target_date": self._date(entry.get("target_date"), "target_date"),
@@ -700,7 +744,8 @@ class FounderStore:
                 rows.append({"week": week, "action": self._text(it.get("action"), f"commitment {i} action"),
                              "cue": self._text(it.get("cue"), f"commitment {i} cue", False),
                              "outcome": self._text(it.get("outcome"), f"commitment {i} outcome (measurable)"),
-                             "goal_id": gid or None, "citations": self._check_citations(it.get("citations"))})
+                             "goal_id": gid or None, "citations": self._check_citations(it.get("citations")),
+                             "_links": self._clean_links(it.get("links"), f"commitment {i} links")})
         elif kind == "decision":
             rows = [{"text": self._text(entry.get("text"), "text"),
                      "reasoning": self._text(entry.get("reasoning"), "reasoning"),
@@ -711,8 +756,26 @@ class FounderStore:
                      "wins": self._list(entry.get("wins"), "wins"), "blockers": self._list(entry.get("blockers"), "blockers")}]
 
         def apply() -> dict:
+            self._why = (reason, actor)
+            try:
+                return write()
+            finally:
+                self._why = (None, None)
+
+        def write() -> dict:
             now, ids = self._iso(), []
+            old = None
+            if supersedes:
+                old = self.get(supersedes, links=False)
+                if old is None or old["kind"] != "decision":
+                    raise StoreError(f"no Decision {supersedes!r} to supersede; ids come from coach_get_context or "
+                                     "coach_recall")
+                if old.get("status", "accepted") != "accepted":
+                    raise StoreError(f"{old['id']} is already {old['status']}"
+                                     + (f" (by {old['superseded_by']}): supersede that one instead"
+                                        if old.get("superseded_by") else ""))
             for r in rows:
+                links = r.pop("_links", None) or top_links
                 if kind == "goal":
                     rid = self._new_id("goal")
                     self.db.execute("INSERT INTO goals (id, founder_id, coach, text, measure, target_date, status, "
@@ -739,7 +802,13 @@ class FounderStore:
                                     "VALUES (?,?,?,?,?,?,?,?)",
                                     (rid, self.fid, self.coach, r["week"], r["summary"], _j(r["wins"]), _j(r["blockers"]), now))
                     self._change("checkin", rid, "create", None, r, source)
+                for to, typ in links:
+                    self._link(rid, to, typ, now, source)
                 ids.append(rid)
+            if old is not None:
+                self.db.execute("UPDATE decisions SET status='superseded', superseded_by=?, superseded_at=? WHERE id=?",
+                                (ids[0], now, old["id"]))
+                self._change("decision", old["id"], "supersede", old, self.get(old["id"], links=False), source)
             warnings = self._warnings(week=rows[0].get("week") if kind == "commitments" else None)
             if kind == "checkin":
                 left = self.overdue_commitments()
@@ -751,6 +820,145 @@ class FounderStore:
             return {"ids": ids, "warnings": warnings}
         return apply()
 
+
+    # ------------------------------------------------------------------ People, Issues, links (ADR-0025)
+    def _actor(self, by) -> str | None:
+        """Who made a change or decision, only as the person said it: "self" when they said it was them, a Person
+        they named, or None when nobody said (the change is still recorded by them, through the coach: that is not
+        who decided). Rows written before this rule say "me" for every change, said or not: read as not said."""
+        by = str(by or "").strip()
+        if not by:
+            return None
+        if by.lower() in ("me", "self", "i"):
+            return "self"
+        if D.KIND_OF_PREFIX.get(by.split("-", 1)[0]) != "person" or self.get(by, links=False) is None:
+            raise StoreError(f"`by` is \"me\" or the id of a Person in this Project (pe-...), not {by!r}")
+        return by
+
+    def _clean_links(self, links, label: str) -> list[tuple[str, str]]:
+        if links in (None, []):
+            return []
+        if not isinstance(links, list) or len(links) > D.MAX_LINKS_PER_RECORD:
+            raise StoreError(f"{label} must be a list of up to {D.MAX_LINKS_PER_RECORD} {{to, type}} objects")
+        out = []
+        for ln in links:
+            if not isinstance(ln, dict) or not ln.get("to") or ln.get("type") not in D.LINK_PAIRS:
+                raise StoreError(f"each of {label} needs `to` (a record id) and `type`, one of: "
+                                 + ", ".join(D.LINK_PAIRS))
+            out.append((str(ln["to"]).strip(), ln["type"]))
+        return out
+
+    def _kind(self, rid: str) -> str | None:
+        return D.KIND_OF_PREFIX.get((rid or "").split("-", 1)[0])
+
+    def _link(self, src: str, dst: str, typ: str, now: str, source: str) -> None:
+        """Save one link the person said, checked against the closed vocabulary (domain.LINK_PAIRS). Linking again a
+        link that was ended restores it; both are logged."""
+        sk, dk = self._kind(src), self._kind(dst)
+        allowed = D.LINK_PAIRS.get(typ)
+        if allowed is None or sk not in allowed[0] or dk not in allowed[1]:
+            ok = ", ".join(f"{t}: {'/'.join(a)} -> {'/'.join(b)}" for t, (a, b) in D.LINK_PAIRS.items()
+                           if sk in a)
+            raise StoreError(f"a {typ} link can't go from a {sk} to a {dk}"
+                             + (f"; from a {sk}: {ok}" if ok else ""))
+        if self.get(dst, links=False) is None:
+            raise StoreError(f"no record {dst!r} to link to; ids come from coach_get_context, coach_recall or "
+                             "coach_graph")
+        n = self.db.execute("SELECT COUNT(*) FROM links WHERE founder_id=? AND src=? AND ended_at IS NULL",
+                            (self.fid, src)).fetchone()[0]
+        row = self.db.execute("SELECT ended_at FROM links WHERE founder_id=? AND src=? AND dst=? AND type=?",
+                              (self.fid, src, dst, typ)).fetchone()
+        key = f"{src}|{typ}|{dst}"
+        if row is None:
+            if n >= D.MAX_LINKS_PER_RECORD:
+                raise StoreError(f"{src} already has {n} links (at most {D.MAX_LINKS_PER_RECORD}); end one first")
+            self.db.execute("INSERT INTO links (founder_id, coach, src, dst, type, created_at) VALUES (?,?,?,?,?,?)",
+                            (self.fid, self.coach, src, dst, typ, now))
+            self._change("link", key, "create", None, {"src": src, "dst": dst, "type": typ}, source)
+        elif row[0] is not None:
+            self.db.execute("UPDATE links SET ended_at=NULL WHERE founder_id=? AND src=? AND dst=? AND type=?",
+                            (self.fid, src, dst, typ))
+            self._change("link", key, "restore", {"ended_at": row[0]}, {"ended_at": None}, source)
+
+    def _end_link(self, src: str, dst: str, typ: str, now: str, source: str) -> None:
+        row = self.db.execute("SELECT ended_at, coach FROM links WHERE founder_id=? AND src=? AND dst=? AND type=?",
+                              (self.fid, src, dst, typ)).fetchone()
+        if row is None or row[0] is not None:
+            raise StoreError(f"no {typ} link from {src} to {dst} to end")
+        if not self._link_visible(src, row[1]):
+            raise StoreError(f"the {typ} link from {src} to {dst} belongs to another coach's private records")
+        self.db.execute("UPDATE links SET ended_at=? WHERE founder_id=? AND src=? AND dst=? AND type=?",
+                        (now, self.fid, src, dst, typ))
+        self._change("link", f"{src}|{typ}|{dst}", "end", {"ended_at": None}, {"ended_at": now}, source)
+
+    def _link_visible(self, src: str, coach: str) -> bool:
+        """A link is read by the coach that made it, and by every coach that reads its source's kind when that kind
+        is shared (a link between two shared records is part of the Project's shared core, ADR-0019)."""
+        if coach == self.coach:
+            return True
+        table = D.TABLE_OF.get(self._kind(src) or "")
+        return table in SHARED_KINDS and coach in self.readers(table)
+
+    def links_of(self, rid: str) -> tuple[list[dict], list[dict]]:
+        """(outgoing, incoming) active links of a record this coach may read."""
+        out, into = [], []
+        for r in self.db.execute("SELECT src, dst, type, coach FROM links WHERE founder_id=? AND (src=? OR dst=?) "
+                                 "AND ended_at IS NULL ORDER BY created_at, dst", (self.fid, rid, rid)):
+            if not self._link_visible(r["src"], r["coach"]):
+                continue
+            other = r["dst"] if r["src"] == rid else r["src"]
+            if self.get(other, links=False) is None:
+                continue
+            (out if r["src"] == rid else into).append(
+                {"to": r["dst"], "type": r["type"]} if r["src"] == rid else {"from": r["src"], "type": r["type"]})
+        return out, into
+
+    def visible_links(self) -> list[dict]:
+        """Every active link this coach may read (both ends are checked by whoever draws them)."""
+        with self._lock:
+            rows = [dict(r) for r in self.db.execute(
+                "SELECT src, dst, type, created_at, coach FROM links WHERE founder_id=? AND ended_at IS NULL",
+                (self.fid,))]
+        return [r for r in rows if self._link_visible(r["src"], r["coach"])]
+
+    def _record_entity(self, entry: dict, source: str, reason: str | None, actor: str) -> dict:
+        kind = entry["kind"]
+        links = self._clean_links(entry.get("links"), "links")
+        if kind == "person":
+            name = self._text(entry.get("name"), "name")
+            if len(name) > 120:
+                raise StoreError("name is longer than 120 characters")
+            aliases = [a for a in self._list(entry.get("aliases"), "aliases") if a.lower() != name.lower()]
+            row = {"name": name, "aliases": aliases, "role": self._text(entry.get("role"), "role", False)}
+        else:
+            row = {"text": self._text(entry.get("text"), "text")}
+
+        def apply() -> dict:
+            self._why = (reason, actor)
+            try:
+                now = self._iso()
+                if kind == "person":
+                    sql, who = self._in("people", "SELECT id, name, aliases FROM people WHERE founder_id=? AND coach=? "
+                                                  "AND status='active'")
+                    for r in self.db.execute(sql, (self.fid, *who)):
+                        names = {r["name"].lower(), *(a.lower() for a in json.loads(r["aliases"] or "[]"))}
+                        if name.lower() in names:
+                            raise StoreError(f"{r['id']} is already {r['name']!r}: link to it, or add an alias")
+                    rid = self._new_id("person")
+                    self.db.execute("INSERT INTO people (id, founder_id, coach, name, aliases, role, status, created_at) "
+                                    "VALUES (?,?,?,?,?,?,?,?)", (rid, self.fid, self.coach, row["name"],
+                                                                 _j(row["aliases"]), row["role"], "active", now))
+                else:
+                    rid = self._new_id("issue")
+                    self.db.execute("INSERT INTO issues (id, founder_id, coach, text, status, created_at) "
+                                    "VALUES (?,?,?,?,?,?)", (rid, self.fid, self.coach, row["text"], "open", now))
+                self._change(kind, rid, "create", None, row, source)
+                for to, typ in links:
+                    self._link(rid, to, typ, now, source)
+                return {"ids": [rid], "warnings": []}
+            finally:
+                self._why = (None, None)
+        return apply()
 
     # ------------------------------------------------------------------ Notes (ADR-0020)
     def _note_fields(self, entry: dict) -> dict:
@@ -797,11 +1005,11 @@ class FounderStore:
         def apply() -> dict:
             now = self._iso()
             for to, _ in r["links"]:
-                if self.get(to) is None:
+                if self.get(to, links=False) is None:
                     raise StoreError(f"no record {to!r} to link to; ids come from coach_get_context or coach_recall")
             old = None
             if r["supersedes"]:
-                old = self.get(r["supersedes"])
+                old = self.get(r["supersedes"], links=False)
                 if old is None or old["kind"] != "note":
                     raise StoreError(f"no Note {r['supersedes']!r} to supersede; ids come from coach_get_context "
                                      "or coach_recall")
@@ -883,7 +1091,7 @@ class FounderStore:
                     include_superseded: bool = False, since: str | None = None, until: str | None = None,
                     timeline: bool = False) -> tuple[list[dict], int]:
         """Keyword search over this Project's Notes, Decisions, Goals, Commitments and Check-ins, best first, as
-        ([{id, kind, title, snippet, date, score?, week?, superseded_by?}], how many matched). Notes use the FTS5 index
+        ([{id, kind, title, snippet, date, score?, week?, status?, superseded_by?}], how many matched). Notes use the FTS5 index
         (bm25); the other kinds are small and are scored by how many of the query's words they contain.
 
         `since` and `until` (YYYY-MM-DD, both inclusive) keep the records dated in that window: a Note by the day it
@@ -891,7 +1099,8 @@ class FounderStore:
         matches oldest first instead of best first, and then the query may be left out to list everything in the
         window."""
         text = (query or "").strip()
-        words = list(dict.fromkeys(w.lower() for w in self._WORD.findall(text)))[:12]
+        # a word matches its other forms ("caching" finds "Cache", "benchmarks" finds "benchmark")
+        words = list(dict.fromkeys(_stem(w.lower()) for w in self._WORD.findall(text)))[:12]
         if not words and (text or not timeline):
             raise StoreError("query needs at least one word of two or more letters (or timeline: true to list "
                              "records by date)")
@@ -911,7 +1120,12 @@ class FounderStore:
                     ("checkin", "checkins", ("summary",), "summary", "created_at")):
                 if kind not in want:
                     continue
-                for row in self.db.execute(f"SELECT * FROM {table} WHERE founder_id=? AND coach=?", (self.fid, self.coach,)):
+                # Goals, Commitments and Decisions are the Project's shared core (ADR-0019): read the coaches whose
+                # records of that kind this coach may read; Check-ins stay with the coach that ran them
+                sql, who = (self._in(table, f"SELECT * FROM {table} WHERE founder_id=? AND coach=?")
+                            if table in SHARED_KINDS else (f"SELECT * FROM {table} WHERE founder_id=? AND coach=?",
+                                                           [self.coach]))
+                for row in self.db.execute(sql, (self.fid, *who)):
                     hay = " ".join(str(row[c] or "") for c in cols).lower()
                     hit = sum(1 for w in words if w in hay) if words else 1
                     if hit:
@@ -921,6 +1135,8 @@ class FounderStore:
                             item["score"] = round(hit / len(words), 3)
                         if "week" in row.keys() and row["week"]:
                             item["week"] = row["week"]
+                        if "status" in row.keys() and row["status"]:        # open, done, dropped, carried, accepted ...
+                            item["status"] = row["status"]
                         out.append(item)
         out = [r for r in out if (not lo or r["date"] >= lo) and (not hi or r["date"] <= hi)]
         if timeline:
@@ -928,7 +1144,38 @@ class FounderStore:
         else:
             out.sort(key=lambda r: r["date"], reverse=True)          # newest first, then the best match first
             out.sort(key=lambda r: -r["score"])
-        return [{k: v for k, v in r.items() if k != "_t"} for r in out[:limit]], len(out)
+        page = [{k: v for k, v in r.items() if k != "_t"} for r in out[:limit]]
+        for kind in ("decision", "goal", "note"):
+            self.mark_edited([r for r in page if r["kind"] == kind], kind)
+        if hi:
+            self._as_it_read(page, hi)
+        return page, len(out)
+
+    _WORDS_OF = {"decision": "text", "goal": "text", "note": "title", "commitment": "action"}
+
+    def _as_it_read(self, page: list[dict], day: str) -> None:
+        """A search with `until` asks about a period: each hit that changed after it reads as it did at the end of
+        that day (`title`), with what it says now (`now`): the first G9 runs reported a Decision's current words as
+        what had been decided weeks earlier."""
+        from .graph import end_of_day_utc
+        try:
+            end = end_of_day_utc(dt.date.fromisoformat(day), self.tz())
+        except ValueError:
+            return
+        for r in page:
+            field = self._WORDS_OF.get(r["kind"])
+            if not field:
+                continue
+            with self._lock:
+                row = self.db.execute(
+                    "SELECT before FROM changes WHERE entity=? AND entity_id=? AND at>? AND op IN ('update','status',"
+                    "'supersede') ORDER BY seq LIMIT 1", (r["kind"], r["id"], end)).fetchone()
+            if not row or not row[0]:
+                continue
+            then = json.loads(row[0]).get(field)
+            if then and str(then)[:120] != r["title"]:
+                r["now"], r["title"] = r["title"], str(then)[:120]
+                r["as_of"] = f"as it read on {day}; `now` is what it says today"
 
     def _recall_notes(self, words: list[str], include_superseded: bool) -> list[dict]:
         sup = "" if include_superseded else " AND n.superseded_by IS NULL"
@@ -1144,56 +1391,88 @@ class FounderStore:
             out.append(f"{g} active Goals; suggest the Founder keeps at most {D.MAX_ACTIVE_GOALS}.")
         return out
 
-    def get(self, rid: str) -> dict | None:
+    def get(self, rid: str, links: bool = True) -> dict | None:
         kind = D.KIND_OF_PREFIX.get((rid or "").split("-", 1)[0])
         if not kind:
             return None
-        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
-                 "note": "notes"}[kind]
+        table = D.TABLE_OF[kind]
         with self._lock:
             sql, who = self._in(table, f"SELECT * FROM {table} WHERE id=? AND founder_id=? AND coach=?")
             row = self.db.execute(sql, (rid, self.fid, *who)).fetchone()
             if row is None:
                 return None
             out = {"kind": kind, **_row(row, self.coach)}
-            if kind == "note":
-                out["links"] = [{"to": r["dst"], "type": r["type"]} for r in self.db.execute(
-                    "SELECT dst, type FROM links WHERE founder_id=? AND coach=? AND src=? ORDER BY created_at, dst",
-                    (self.fid, self.coach, rid))]
-                out["linked_from"] = [{"from": r["src"], "type": r["type"]} for r in self.db.execute(
-                    "SELECT src, type FROM links WHERE founder_id=? AND coach=? AND dst=? ORDER BY created_at, src",
-                    (self.fid, self.coach, rid))]
-            return out
+            if links and kind != "proposal":
+                out["links"], out["linked_from"] = self.links_of(rid)
+        if links and kind in ("decision", "goal", "note", "person", "issue"):      # a read, never a change-log copy
+            self.mark_edited([out], kind)
+        if links and kind == "decision":                  # who decided, as recorded: a decided_by tie, or no one
+            names = []
+            for x in out.get("links") or []:
+                if x.get("type") == "decided_by":
+                    p = self.get(x["to"], links=False) or {}
+                    names.append(str(p.get("name") or x["to"]))
+            out["decided_by"] = ", ".join(names) if names else "not recorded (saving it isn't deciding it)"
+        return out
 
     def update(self, rid: str, status: str | None = None, changes: dict | None = None, note: str | None = None,
-               request_id: str | None = None, source: str = "coach_update") -> dict:
+               request_id: str | None = None, source: str = "coach_update", reason: str | None = None,
+               by: str | None = None, links: list | None = None) -> dict:
         # read, check and write in one BEGIN IMMEDIATE: two hosts carrying the same Commitment
         # can't both see it "open" and make two copies
-        return self._transact(request_id, lambda: self._update(rid, status, changes, note, source),
-                              what=("update", rid, status, changes, note))
+        return self._transact(request_id, lambda: self._update(rid, status, changes, note, source, reason, by, links),
+                              what=("update", rid, status, changes, note, reason, by, links))
 
-    def _update(self, rid: str, status: str | None, changes: dict | None, note: str | None, source: str) -> dict:
-        rec = self.get(rid)
+    def _update(self, rid: str, status: str | None, changes: dict | None, note: str | None, source: str,
+                reason: str | None = None, by: str | None = None, links: list | None = None) -> dict:
+        reason = self._text(reason, "reason", False)
+        actor = self._actor(by)
+        if self._kind(rid) == "proposal":
+            from . import proposals
+            self._why = (reason, actor)
+            try:
+                return proposals.decide(self, rid, status, source)
+            finally:
+                self._why = (None, None)
+        rec = self.get(rid, links=False)
         if rec is None:
             raise StoreError(f"no record {rid!r}; ids come from coach_get_context or coach_record")
         kind = rec["kind"]
         changes = dict(changes or {})
+        link_ops = []
+        for ln in links or []:
+            if not isinstance(ln, dict) or not ln.get("to") or ln.get("type") not in D.LINK_PAIRS \
+                    or ln.get("action", "add") not in ("add", "end"):
+                raise StoreError("each link needs `to`, `type` (one of: " + ", ".join(D.LINK_PAIRS)
+                                 + ") and `action` (add or end)")
+            link_ops.append((str(ln["to"]).strip(), ln["type"], ln.get("action", "add")))
         if status is not None:
             allowed = D.STATUSES.get(kind)
             if not allowed:
                 raise StoreError(f"a {kind} has no status; change its fields instead")
             if status not in allowed:
                 raise StoreError(f"a {kind}'s status is one of: {', '.join(allowed)}")
+            if kind == "decision" and status == "superseded":
+                raise StoreError("a Decision is superseded by the newer one: record the new Decision with "
+                                 f"`supersedes: {rid}` and `reason`")
+            if status in D.NEEDS_REASON and not reason and not (note and kind in ("goal", "commitment", "issue")):
+                raise StoreError(f"changing a {kind} to {status} needs `reason`: why, in the person's words "
+                                 "(nothing about a change is lost)")
+            if kind == "person" and status == "merged" and not changes.get("merged_into"):
+                raise StoreError("merging a Person needs changes.merged_into: the Person it is the same as")
+        if kind == "decision" and any(k in changes for k in D.DECISION_WORDS) and not reason:
+            raise StoreError("correcting a Decision's words needs `reason` (why the correction); a change of mind is "
+                             "a new Decision with `supersedes`")
         bad = [k for k in changes if k not in D.EDITABLE[kind]]
         if bad:
             raise StoreError(f"can't change {', '.join(bad)} on a {kind}; editable: {', '.join(D.EDITABLE[kind])}")
         if note is not None:
-            if kind not in ("goal", "commitment"):
+            if kind not in ("goal", "commitment", "issue"):
                 more = (f", or save the thinking around it as a Note (coach_record kind note, linked to {rid})"
                         if product.has("notes") and kind in ("decision", "checkin") else "")
                 raise StoreError(f"`note` applies to Goals and Commitments; a {kind} has no note: change "
                                  f"{', '.join(D.EDITABLE[kind])} with `changes`{more}")
-            changes["note" if kind == "goal" else "result_note"] = note
+            changes["result_note" if kind == "commitment" else "note"] = note
         clean = {}
         for k, v in changes.items():
             if k in ("target_date", "revisit_on"):
@@ -1204,25 +1483,46 @@ class FounderStore:
                 if v and not self.db.execute("SELECT 1 FROM goals WHERE id=?", (v,)).fetchone():
                     raise StoreError(f"no Goal {v}")
                 clean[k] = v or None
+            elif k == "aliases":
+                clean[k] = _j(self._list(v, k))
+            elif k == "merged_into":
+                other = self.get(str(v or ""), links=False)
+                if other is None or other["kind"] != "person" or other["id"] == rid:
+                    raise StoreError(f"merged_into must be another Person of this Project, not {v!r}")
+                clean[k] = other["id"]
             else:
                 clean[k] = self._text(v, k, required=k in ("text", "action", "outcome", "reasoning", "summary"))
-        if status is None and not clean:
-            raise StoreError("nothing to change: pass a status, changes or a note")
+        if status is None and not clean and not link_ops:
+            raise StoreError("nothing to change: pass a status, changes, a note or links")
         if status == "carried" and rec["status"] != "open":
             raise StoreError(f"only an open Commitment can be carried; {rid} is {rec['status']}")
-        table = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
-                 "note": "notes"}[kind]
+        table = D.TABLE_OF[kind]
 
         def apply() -> dict:
+            self._why = (reason, actor)
+            try:
+                return write()
+            finally:
+                self._why = (None, None)
+
+        def write() -> dict:
             now = self._iso()
             sets = dict(clean)
             if status is not None:
                 sets["status"] = status
-                sets["closed_at"] = now if status in D.TERMINAL else None
-            self.db.execute(f"UPDATE {table} SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?",
-                            (*sets.values(), rid))
-            after = self.get(rid)
-            self._change(kind, rid, "status" if status is not None else "update", rec, after, source)
+                if kind != "decision":
+                    sets["closed_at"] = now if status in D.TERMINAL else None
+            if sets:
+                self.db.execute(f"UPDATE {table} SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?",
+                                (*sets.values(), rid))
+                after = self.get(rid, links=False)
+                self._change(kind, rid, "status" if status is not None else "update", rec, after, source)
+            for to, typ, action in link_ops:
+                if action == "add":
+                    self._link(rid, to, typ, now, source)
+                else:
+                    self._end_link(rid, to, typ, now, source)
+            after = self.get(rid, links=False)
             out = {"id": rid, "before": rec, "after": after}
             if status == "carried":
                 week = max(self.this_week(), shift_week(rec["week"], self.loop_weeks()))
@@ -1245,6 +1545,40 @@ class FounderStore:
             if not row or not row[0]:
                 return n
             n, cur = n + 1, row[0]
+
+    def _first_week(self, rid: str) -> str | None:
+        """The week the first row of a carry chain was planned in."""
+        cur, week, seen = rid, None, set()
+        while cur and cur not in seen:
+            seen.add(cur)
+            with self._lock:
+                row = self.db.execute("SELECT carried_from, week FROM commitments WHERE id=?", (cur,)).fetchone()
+            if not row:
+                break
+            week, cur = row[1] or week, row[0]
+        return week
+
+    _EDIT_OPS = ("update", "supersede", "status")
+
+    def mark_edited(self, rows: list[dict], entity: str) -> list[dict]:
+        """Say on each record that changed after it was made when it last changed and how many times, and where the
+        before, the why and the who are (coach_graph history): a read shows a record only as it reads now, so an
+        answer about what it said earlier, or why it changed, needs its history (ADR-0025)."""
+        ids = [r["id"] for r in rows if r.get("id")]
+        if not ids:
+            return rows
+        with self._lock:
+            got = {r[0]: (r[1], r[2]) for r in self.db.execute(
+                f"SELECT entity_id, COUNT(*), MAX(at) FROM changes WHERE entity=? AND op IN "
+                f"({','.join('?' * len(self._EDIT_OPS))}) AND entity_id IN ({','.join('?' * len(ids))}) "
+                f"GROUP BY entity_id", (entity, *self._EDIT_OPS, *ids))}
+        for r in rows:
+            if r.get("id") in got:
+                n, at = got[r["id"]]
+                r["edited"] = (f"changed {n} time(s) since it was made, last on {str(at)[:10]}: for what it said "
+                               f"before or on a date, call coach_graph history (id) yourself before answering; "
+                               f"don't offer to")
+        return rows
 
     # ------------------------------------------------------------------ reads
     def readers(self, kind: str) -> list[str]:
@@ -1298,6 +1632,8 @@ class FounderStore:
         for r in rows:
             if r.get("carried_from"):
                 r["carried_periods"] = self._carry_streak(r["id"])
+                r["planned_since"] = (f"{self._first_week(r['id'])}, planned in {r['carried_periods'] + 1} periods "
+                                      f"(coach_graph thread lists every one)")
         return rows
 
     def loop(self) -> dict | None:
@@ -1329,8 +1665,8 @@ class FounderStore:
         return self._rows("SELECT * FROM checkins WHERE founder_id=? AND coach=? ORDER BY created_at DESC LIMIT ?", limit)
 
     def decisions(self, limit: int = 5) -> list[dict]:
-        return self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? ORDER BY decided_at DESC LIMIT ?",
-                          limit, shared="decisions")
+        return self.mark_edited(self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? ORDER BY decided_at "
+                                           "DESC LIMIT ?", limit, shared="decisions"), "decision")
 
     def decisions_to_revisit(self) -> list[dict]:
         return self._rows("SELECT * FROM decisions WHERE founder_id=? AND coach=? AND revisit_on IS NOT NULL AND revisit_on<=? "
@@ -1561,6 +1897,17 @@ def _day(value: str | None, name: str) -> str | None:
         return dt.date.fromisoformat(str(value).strip()[:10]).isoformat()
     except ValueError:
         raise StoreError(f"{name} must be a date like 2026-10-01") from None
+
+
+_SUFFIXES = ("ings", "ing", "ied", "ies", "ed", "es", "s", "e")
+
+
+def _stem(word: str) -> str:
+    """A crude stem for keyword recall: the word without a common English ending, never shorter than 4 letters."""
+    for suf in _SUFFIXES:
+        if word.endswith(suf) and len(word) - len(suf) >= 4:
+            return word[:-len(suf)]
+    return word
 
 
 def _snippet(text: str, words: list[str], width: int = 160) -> str:

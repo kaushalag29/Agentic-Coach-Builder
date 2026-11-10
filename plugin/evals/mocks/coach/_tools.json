@@ -637,6 +637,19 @@
    },
    "outputSchema": {
     "properties": {
+     "follow_ties": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "where the ties and the history of the records above are",
+      "title": "Follow Ties"
+     },
      "goals": {
       "description": "the Project's active Goals; one with a `coach` was made by another coach of this Project",
       "items": {
@@ -1234,6 +1247,14 @@
         "default": null,
         "title": "Goal Id"
        },
+       "links": {
+        "items": {
+         "$ref": "#/$defs/LinkIn"
+        },
+        "maxItems": 12,
+        "title": "Links",
+        "type": "array"
+       },
        "outcome": {
         "description": "measurable result, e.g. '5 calls booked'",
         "title": "Outcome",
@@ -1286,6 +1307,19 @@
      },
      "DecisionIn": {
       "properties": {
+       "by": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "who made this change: \"me\" (the default) or a person's id (pe-...) the person named",
+        "title": "By"
+       },
        "citations": {
         "items": {
          "type": "string"
@@ -1297,6 +1331,28 @@
         "const": "decision",
         "title": "Kind",
         "type": "string"
+       },
+       "links": {
+        "description": "e.g. decided_by a person, serves or changes_scope_of a goal",
+        "items": {
+         "$ref": "#/$defs/LinkIn"
+        },
+        "maxItems": 12,
+        "title": "Links",
+        "type": "array"
+       },
+       "reason": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "why, in the person's words (required with `supersedes`)",
+        "title": "Reason"
        },
        "reasoning": {
         "title": "Reasoning",
@@ -1314,6 +1370,19 @@
         "default": null,
         "description": "YYYY-MM-DD to look at it again",
         "title": "Revisit On"
+       },
+       "supersedes": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "a change of mind: the id of the earlier decision this one replaces (it is kept, marked superseded); needs `reason`",
+        "title": "Supersedes"
        },
        "text": {
         "title": "Text",
@@ -1342,6 +1411,14 @@
         "const": "goal",
         "title": "Kind",
         "type": "string"
+       },
+       "links": {
+        "items": {
+         "$ref": "#/$defs/LinkIn"
+        },
+        "maxItems": 12,
+        "title": "Links",
+        "type": "array"
        },
        "measure": {
         "anyOf": [
@@ -1380,6 +1457,70 @@
        "text"
       ],
       "title": "GoalIn",
+      "type": "object"
+     },
+     "IssueIn": {
+      "properties": {
+       "kind": {
+        "const": "issue",
+        "title": "Kind",
+        "type": "string"
+       },
+       "links": {
+        "description": "e.g. blocks a goal or a planned item, owned_by a person",
+        "items": {
+         "$ref": "#/$defs/LinkIn"
+        },
+        "maxItems": 12,
+        "title": "Links",
+        "type": "array"
+       },
+       "text": {
+        "description": "the blocker or open question, in the person's words",
+        "title": "Text",
+        "type": "string"
+       }
+      },
+      "required": [
+       "kind",
+       "text"
+      ],
+      "title": "IssueIn",
+      "type": "object"
+     },
+     "LinkIn": {
+      "properties": {
+       "to": {
+        "description": "the record it ties to, an id from coach_get_context, coach_recall or coach_graph",
+        "title": "To",
+        "type": "string"
+       },
+       "type": {
+        "description": "the tie, said by the person: about (note -> goal/commitment/decision/note/checkin/person/issue); supports (note -> decision/note/goal/issue); contradicts (note -> decision/note/goal/issue); related (note/decision -> goal/commitment/decision/note/checkin/person/issue); serves (decision/issue -> goal); sub_goal_of (goal -> goal); changes_scope_of (decision -> goal); led_to (decision -> decision/commitment/goal); assumes (decision/commitment -> note); blocks (issue -> commitment/goal); resolved_by (issue -> decision/commitment); owned_by (commitment/issue/goal -> person); decided_by (decision -> person)",
+        "enum": [
+         "about",
+         "supports",
+         "contradicts",
+         "related",
+         "serves",
+         "sub_goal_of",
+         "changes_scope_of",
+         "led_to",
+         "assumes",
+         "blocks",
+         "resolved_by",
+         "owned_by",
+         "decided_by"
+        ],
+        "title": "Type",
+        "type": "string"
+       }
+      },
+      "required": [
+       "to",
+       "type"
+      ],
+      "title": "LinkIn",
       "type": "object"
      },
      "NoteIn": {
@@ -1492,7 +1633,8 @@
         "enum": [
          "about",
          "supports",
-         "related"
+         "related",
+         "contradicts"
         ],
         "title": "Type",
         "type": "string"
@@ -1504,6 +1646,56 @@
       ],
       "title": "NoteLinkIn",
       "type": "object"
+     },
+     "PersonIn": {
+      "properties": {
+       "aliases": {
+        "description": "other names for the same person, only ones the person confirmed",
+        "items": {
+         "type": "string"
+        },
+        "title": "Aliases",
+        "type": "array"
+       },
+       "kind": {
+        "const": "person",
+        "title": "Kind",
+        "type": "string"
+       },
+       "links": {
+        "items": {
+         "$ref": "#/$defs/LinkIn"
+        },
+        "maxItems": 12,
+        "title": "Links",
+        "type": "array"
+       },
+       "name": {
+        "description": "the name as the person uses it",
+        "maxLength": 120,
+        "title": "Name",
+        "type": "string"
+       },
+       "role": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "description": "their role in the person's own words (e.g. 'cofounder, CTO'); only if they said it",
+        "title": "Role"
+       }
+      },
+      "required": [
+       "kind",
+       "name"
+      ],
+      "title": "PersonIn",
+      "type": "object"
      }
     },
     "properties": {
@@ -1514,7 +1706,9 @@
         "commitments": "#/$defs/CommitmentsIn",
         "decision": "#/$defs/DecisionIn",
         "goal": "#/$defs/GoalIn",
-        "note": "#/$defs/NoteIn"
+        "issue": "#/$defs/IssueIn",
+        "note": "#/$defs/NoteIn",
+        "person": "#/$defs/PersonIn"
        },
        "propertyName": "kind"
       },
@@ -1533,6 +1727,12 @@
        },
        {
         "$ref": "#/$defs/NoteIn"
+       },
+       {
+        "$ref": "#/$defs/PersonIn"
+       },
+       {
+        "$ref": "#/$defs/IssueIn"
        }
       ],
       "title": "Entry"
@@ -1604,9 +1804,22 @@
   },
   {
    "name": "coach_update",
-   "description": "Close or correct a Goal, Commitment, Decision or Check-in. Every change is logged with its\nbefore/after. Call only after the Founder has approved it.",
+   "description": "Close or correct a record, tie it to others, or answer a proposal (p-). Every change is logged with its\nbefore/after, when, why and by whom: nothing is lost. Call only after the Founder has approved it.",
    "inputSchema": {
     "properties": {
+     "by": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "who made the change: \"me\" (default) or the id of a person (pe-...) the person named",
+      "title": "By"
+     },
      "changes": {
       "anyOf": [
        {
@@ -1625,6 +1838,25 @@
       "description": "a record id from coach_get_context, e.g. c-1a2b",
       "title": "Id",
       "type": "string"
+     },
+     "links": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": {
+          "type": "string"
+         },
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "ties to add or end: [{to, type, action: add|end}], types as in coach_record links",
+      "title": "Links"
      },
      "note": {
       "anyOf": [
@@ -1653,6 +1885,19 @@
       "description": "the id of the Project this save was proposed for (coach_get_context `project`); a write for any other Project than the active one is refused, so a switch between proposal and yes never saves to the wrong one",
       "title": "Project"
      },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "why, in the person's words: required for a final status and for correcting a decision's words; kept in the change log",
+      "title": "Reason"
+     },
      "request_id": {
       "description": "A fresh unique id for this write (e.g. a UUID); reuse it only to retry the same write, which then returns the first result",
       "maxLength": 100,
@@ -1669,7 +1914,13 @@
          "dropped",
          "open",
          "done",
-         "carried"
+         "carried",
+         "reversed",
+         "resolved",
+         "merged",
+         "accepted",
+         "rejected",
+         "snoozed"
         ],
         "type": "string"
        },
@@ -1678,7 +1929,7 @@
        }
       ],
       "default": null,
-      "description": "Goals: active/met/dropped. Commitments: open/done/dropped/carried (carried opens a linked copy in the next week)",
+      "description": "Goals: active/met/dropped. Planned items: open/done/dropped/carried (carried opens a linked copy in the next period). Decisions: reversed (a change of mind is a new decision with `supersedes`). Issues: open/resolved. People: merged (with changes.merged_into). Proposals (p-): accepted/rejected/snoozed. A final status needs `reason`",
       "title": "Status"
      }
     },
@@ -1695,6 +1946,20 @@
       "additionalProperties": true,
       "title": "After",
       "type": "object"
+     },
+     "applied": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "an accepted proposal: what was saved",
+      "title": "Applied"
      },
      "before": {
       "additionalProperties": true,
@@ -1762,6 +2027,12 @@
    "description": "Look up what this Project's memory already holds: Notes (full-text, best match first) and the\nother records this coach keeps. Use it before answering about earlier work, decisions or research, and\nbefore proposing a Note, to link or supersede rather than repeat. Pass `id` to read one record whole\n(a Note's summary, citations as saved, and its links). For \"what happened when\", pass `since` and `until`\n(days, inclusive) and `timeline: true`: the records come oldest first, each with its date, and a query\nnarrows them. Results are the Founder's own words and the coach's earlier conclusions, dated: say when\nsomething was said, and treat an origin \"coach\" Note as a lead, not a fact. Read-only.",
    "inputSchema": {
     "properties": {
+     "expand": {
+      "default": false,
+      "description": "also return the records tied to the hits (a decision behind a goal, the task a blocker stands in front of), ranked by how closely they are tied",
+      "title": "Expand",
+      "type": "boolean"
+     },
      "id": {
       "anyOf": [
        {
@@ -1868,7 +2139,7 @@
    "outputSchema": {
     "properties": {
      "hits": {
-      "description": "best first (oldest first with timeline): id, kind, title, snippet, date, score (the share of the query's words found, when there was a query), week (on a record kept by week); a Note also type, origin and superseded_by",
+      "description": "best first (oldest first with timeline): id, kind, title, snippet, date, score (the share of the query's words found, when there was a query), week (on a record kept by week), status; a Note also type, origin and superseded_by",
       "items": {
        "additionalProperties": true,
        "type": "object"
@@ -1892,6 +2163,23 @@
       "title": "Query",
       "type": "string"
      },
+     "related": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "with expand: records tied to the hits (not matching the words), best first, each with `how` it is tied",
+      "title": "Related"
+     },
      "total": {
       "anyOf": [
        {
@@ -1911,6 +2199,236 @@
      "hits"
     ],
     "title": "RecallOut",
+    "type": "object"
+   },
+   "annotations": {
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "coach_graph",
+   "description": "Answer questions that follow ties between saved records or ask about time: what hangs on a record, how\ntwo records connect, what has been carried for several periods, what changed in a record, what was believed\non a date. coach_get_context and coach_recall show records as they read now: call this before answering about\nthe past. Use coach_recall to find a record by its words, then this to follow it. Every tie is a fact about\nsaved records (a planned item's goal, the week a decision was made, a carry, a note's links); nothing here\nis inferred. Results are titles first; say the dates. Read-only.",
+   "inputSchema": {
+    "properties": {
+     "date": {
+      "anyOf": [
+       {
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "as_of: the day, YYYY-MM-DD, in the Project's time zone",
+      "title": "Date"
+     },
+     "hops": {
+      "default": 2,
+      "description": "around: how many steps out",
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Hops",
+      "type": "integer"
+     },
+     "id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "a record id (g-, c-, d-, n-, k-) from coach_get_context, coach_recall or an earlier coach_graph answer, or a week like 2026-W44",
+      "title": "Id"
+     },
+     "kinds": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "goal",
+          "thread",
+          "decision",
+          "note",
+          "checkin",
+          "person",
+          "issue",
+          "week",
+          "source"
+         ],
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "around and as_of: return only these kinds",
+      "title": "Kinds"
+     },
+     "limit": {
+      "default": 20,
+      "description": "most items to return",
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "min_periods": {
+      "default": 3,
+      "description": "open_loops: planned in at least this many periods",
+      "maximum": 52,
+      "minimum": 1,
+      "title": "Min Periods",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "description": "skip this many items (to read the rest)",
+      "minimum": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "op": {
+      "description": "around: what is tied to a record (`id`, `hops`); why: how two records are connected (`id`, `to`); thread: a planned item and every carry of it; history: what changed in a record and when; as_of: the records as they read at the end of `date`; open_loops: open planned items carried into `min_periods` or more periods; proposals: ties the rules found in the records, waiting for the person's yes (answer each with coach_update)",
+      "enum": [
+       "around",
+       "why",
+       "thread",
+       "history",
+       "as_of",
+       "open_loops",
+       "proposals"
+      ],
+      "title": "Op",
+      "type": "string"
+     },
+     "to": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "why: the other record",
+      "title": "To"
+     },
+     "types": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "serves",
+          "decided_in",
+          "reviewed_in",
+          "cites",
+          "mentions",
+          "supersedes",
+          "about",
+          "supports",
+          "related",
+          "contradicts",
+          "sub_goal_of",
+          "changes_scope_of",
+          "led_to",
+          "assumes",
+          "blocks",
+          "resolved_by",
+          "owned_by",
+          "decided_by"
+         ],
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "follow only these ties (default all but cites)",
+      "title": "Types"
+     }
+    },
+    "required": [
+     "op"
+    ],
+    "title": "coach_graphArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "items": {
+      "description": "what the operation found, each with its title first, then id, kind, date and status; around: also depth and `how` (the edge that reached it, as a sentence); thread: its rows; history: the changes; as_of: each record as it read then, with changed_since",
+      "items": {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Note"
+     },
+     "op": {
+      "title": "Op",
+      "type": "string"
+     },
+     "path": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "why: the steps from `id` to `to`, each edge as a sentence",
+      "title": "Path"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "description": "how many there are, of which `items` shows the first ones",
+      "title": "Total"
+     }
+    },
+    "required": [
+     "op"
+    ],
+    "title": "GraphOut",
     "type": "object"
    },
    "annotations": {

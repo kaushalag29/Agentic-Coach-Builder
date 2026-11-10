@@ -104,7 +104,7 @@ founder-coach forget --confirm "Acme"        # the same without a prompt (requir
 founder-coach forget --all                   # every Project and the Common profile (type 'forget all')
 founder-coach notes lint [--json]               # report-only: Notes past their revisit date, broken links, duplicates, drift of the derived files
 founder-coach notes rebuild                      # regenerate the search index and the notes/ folder (INDEX.md, one file per Note) from the store
-founder-coach vault build [--out DIR]             # the Project vault (plain Markdown for Obsidian): every coach's folder, from a read-only copy of the database
+founder-coach vault build [--out DIR] [--html]   # the Project vault (plain Markdown for Obsidian): every coach's folder and a board per Goal, from a read-only copy of the database; --html adds an offline graph page
 founder-coach restore --list                 # backups, newest first, each with its integrity check
 founder-coach restore [LABEL]                # restore a backup (default: newest good one); old file set aside
 founder-coach feedback list|export [--out D] # the Founder's Feedback; export writes only that, to send
@@ -121,10 +121,18 @@ ytbrain gaps --replay                                                # the weak 
   - `coach_get_context`: profile, Goals, Commitments, last Check-in, Decisions, the newest Note titles, Nudges;
   - `coach_update_profile`, `coach_project`, `coach_record`, `coach_update`: every write needs a `request_id`
     and is logged, and names the Project it was proposed for (another Project's save is refused);
+    `coach_record` also saves a Person or an Issue and typed `links`, and `coach_update` adds or ends links, takes
+    `reason` and `by` (why and by whom; a reason is required to close a record for good), and answers a proposal
+    (`p-` id: accepted, rejected, snoozed) (ADR-0025);
     `coach_project` lists, switches, creates and renames Projects, or summarises one on request;
   - `coach_recall`: keyword search over the Project's own Notes, Decisions, Goals, Commitments and Check-ins (read-only;
     `id` reads one record whole, with its links; `since` and `until` (days) keep a window, and `timeline` lists the
-    matches oldest first, with the query optional); a Pack that keeps `notes` has it (ADR-0020);
+    matches oldest first, with the query optional; `expand` adds the records tied to the hits, off by default); a Pack
+    that keeps `notes` has it (ADR-0020);
+  - `coach_graph`: follows the ties between the Project's records and their history (read-only, ADR-0024): `around`
+    (what is tied to a record), `why` (how two records connect), `thread` (a Commitment and its carries), `history`,
+    `as_of` (the records as they read at the end of a day), `open_loops` (open work planned in N periods or more),
+    `proposals` (ties, People and Issues the coach may offer, ADR-0025); `history` says why and by whom;
   - `coach_corpus_status`: what the pack covers, the search models, where memory lives, and `host`: the coach's
     process id and start time, the folder the app started it in or named (`CLAUDE_PROJECT_DIR`), the app's name and
     whether it offers workspace roots;
@@ -132,14 +140,16 @@ ytbrain gaps --replay                                                # the weak 
 - **Also served:** 4 prompts (`ask`, `weekly-focus`, `check-in`, `setup`) and the resources
   `founder://profile`, `founder://this-week`, `founder://notes` (the Notes index), `corpus://status` and
   `corpus://item/{id}`.
-- **The Project vault** (`vault/` in the Project's folder, ADR-0020 amendment 2026-11-05) is the same memory as plain
-  Markdown a graph viewer can open: one file per Note, Decision, Goal and Commitment, `[[links]]` between them (a Note
-  to what it is about, a Commitment to its Goal), tags and a hub note. `shared/` holds what the coaches of a Project
-  share; each coach has its own folder, and a coach that keeps everything private (the investor) never appears in
-  `shared/`. Every save refreshes the part its coach may read; `founder-coach vault build` (or `/founder-coach:vault`)
-  rebuilds all of it from a read-only copy of the database. Open the folder as a vault in Obsidian (free, not open
-  source) and the graph view; Foam, Quartz and Logseq read the same files. It is a read-only view: an edit is
-  overwritten, and Holdings never enter it.
+- **The Project vault** (`vault/` in the Project's folder, ADR-0020 amendments 2026-11-05 and 2026-11-09) is the same
+  memory as plain Markdown a graph viewer can open, written from the Project graph (ADR-0024): a page per Goal,
+  Decision, Note and Check-in, one page per task with every week it was carried (a Thread), a week spine, typed links
+  (`serves`, `decided_in`, `reviewed_in`, `about` ...) as frontmatter properties and inline fields, and saved views for
+  Obsidian Bases in `_meta/views/`. `shared/` holds what the coaches of a Project share; each coach has its own folder,
+  and a coach that keeps everything private (the investor) never appears in `shared/`. Every save refreshes the part
+  its coach may read; `founder-coach vault build` (or `/founder-coach:vault`) rebuilds all of it from a read-only copy
+  of the database. Open the folder as a vault in Obsidian (free, not open source) and the graph view; hubs and the
+  index are in `_meta/`, which the graph view leaves out. Foam, Quartz and Logseq read the same files. It is a
+  read-only view: an edit is overwritten, and Holdings never enter it.
 - **Founder data** lives in one folder per Project, `~/.ytbrain/projects/<id>/`, shared by every coach with each record
   stamped by the coach that made it (ADR-0016, ADR-0019; every coach reads the shared core, Goals, Commitments, Decisions and the profile fields they both declare, each record showing the coach behind it; Notes, Check-ins and Holdings stay with their coach, and the investor reads and is read by nobody; `PROJECT.md` in the folder lists the shared core;
   `YTBRAIN_HOME` moves `~/.ytbrain`, and `FOUNDER_COACH_HOME` pins one folder with no Projects, as before them).

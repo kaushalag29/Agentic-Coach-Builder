@@ -5,6 +5,52 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **People, Issues, typed links, and no change lost (ADR-0025).** Store schema v8 (migrated with a backup first).
+  A Person and an Issue (a blocker) are records the person confirms; 13 link types join any two records (decided_by,
+  owned_by, blocks, resolved_by, led_to, …), written by `coach_record` and `coach_update` and ended, never deleted. A
+  Decision is accepted, superseded (a new Decision replaced it) or reversed. Every change keeps why and by whom; closing a
+  record for good or correcting a Decision's words needs a reason. Seven rules propose ties, People and Issues from
+  saved records; the coach offers a few, folded into a save or a Check-in, and saves only on a yes (`coach_graph
+  proposals`). `coach_recall expand` adds what is tied to the hits (off by default).
+- **Graph views.** A JSON Canvas board per Goal in the vault, and `founder-coach vault build --html` writes
+  `_meta/graph.html`: one page that works offline (Cytoscape.js inside), laid out as a timeline (a column per week, a
+  lane per kind), with kind filters, a week slider, search and "how do these two connect". Vault fixes found on a
+  real Project: a carry made twice and dropped again no longer marks its task dropped (it was missing from open work);
+  a Decision's History shows its edits on stores from before schema v8; page names drop a leading `[note]`, dangling
+  words and unclosed brackets, and a second Check-in in a week is named by its day; a coach's own hub lists its
+  Check-ins and Notes; key metrics read as bullets; a Goal's board keeps every week as a column.
+- **Reads say when a record changed.** `coach_recall`, `coach_get_context` and a record read by id mark a Decision,
+  Goal or Note that changed after it was made (`edited`: how often, when, and that `coach_graph history` has the before,
+  the why and the who); carried work says since when (`planned_since`); a
+  `coach_recall` hit says its status, and a word finds its other forms ("caching" finds "Cache"). The server instructions of every coach name
+  `coach_graph` for questions about the past: on Haiku the coach skill is often not loaded, and the first G9 run
+  answered from the current text.
+- **The session-start hook names what memory holds** (open work, Goals, newest Decisions, people, open blockers,
+  titles only), so a question about "the dentist emails" reaches memory before the inbox or the code. A
+  `coach_recall` with `until` shows each record as it read then (`now`: what it says today). A change records who
+  made it only when someone said so (`by`); otherwise history says only who recorded it (`recorded_by`), never taken
+  for who decided.
+- **Every coach reads memory the same way.** The server adds one block to every coach's instructions (no Pack keeps
+  a copy): look in memory before files, the web or other tools when a question names something the Project may
+  have recorded, and follow history and ties with `coach_graph`. A `coach_recall` hit with ties says so (`ties`).
+- **Gate G9** (`ytbrain eval coach --gate g9`): questions about a made-up Project's history on the real host, for every
+  coach (12 for the founder coach, 9 for the coding coach about a made-up system, 8 for the investor coach about a
+  made-up retirement goal),
+  graded on the right records (from any of the coach's reads), the answer, abstention, and coach_graph use where the
+  answer needs it (what changed, what was believed on a date, how long something was carried, how records connect); your own Project's questions go in the private overlay
+  (`data/eval/private/coach/graph.jsonl`).
+- **The Project graph and `coach_graph` (ADR-0024).** A typed graph computed from the store on every read: a Thread
+  per task and all its carries, Weeks as the time spine, and only ties that are facts about saved records (a task's
+  goal, the week a Decision was made, the weeks a task was planned in, citations, a Note's links). The new read tool
+  `coach_graph` answers `around`, `why` (a path as sentences), `thread`, `history`, `as_of` (what the store held at the
+  end of a day) and `open_loops` (open work planned in N periods or more). A coach sees only what it may read. A graph
+  benchmark on a made-up Project (25 questions) runs with the tests.
+- **Vault v2 (ADR-0020 amendment 2026-11-09).** One page per Thread with its history instead of one per Commitment row;
+  pages named by their words with the id in `aliases`; typed links as frontmatter properties and inline fields; a week
+  spine; hubs and the index in `_meta/` (left out of the graph view); `graph.json` merged instead of written once;
+  saved views for Obsidian Bases. A shared page no longer lists a coach's private Notes.
+- **`coach_recall` reads the shared core:** it found only its own coach's Goals, Commitments and Decisions; it now reads
+  the Project's other coaches' shared records too (ADR-0019).
 - **A Project vault for Obsidian (or any graph viewer).** `vault/` in a Project's folder is a read-only folder of
   plain Markdown: one file per Note, Decision, Goal and Commitment, `[[links]]` between them, tags and a hub note per
   scope, with the investor's records in its own folder. Each coach refreshes the part it may read after every save;

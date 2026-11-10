@@ -60,6 +60,16 @@ def nudges(store: FounderStore) -> list[dict]:
     if rev:
         out.append({"kind": "decision_revisit", "ids": [d["id"] for d in rev],
                     "message": f"{len(rev)} Decision(s) due for a revisit"})
+    try:                                             # ADR-0025: ties the link rules found, waiting for a yes
+        from . import proposals as P
+        _, waiting = P.pending(store, limit=1)
+        if waiting:
+            out.append({"kind": "review_links", "count": waiting,
+                        "message": f"{waiting} possible link(s) found in this Project's records: offer once, at a "
+                                   "natural pause, to review them now (about 2 minutes, coach_graph op proposals) or "
+                                   "at the next Check-in"})
+    except Exception:                                # noqa: BLE001 -- an older store or a busy one: no Nudge
+        pass
     if _p.has("notes"):
         due = store.notes_to_revisit()
         if due:
@@ -96,6 +106,13 @@ NUDGE_MODULE = {"checkin_overdue": "checkins", "open_past_commitments": "commitm
                 "holdings_missing": "holdings", "note_revisit": "notes"}
 
 
+# Read with every context: the records above read as they are now, and a host that skips the coach skill still learns
+# where their ties and history are (the first G9 runs answered "how are these connected" from the current text)
+FOLLOW_TIES = ("These records read as they are now. Before answering how two of them connect, what hangs on one, what "
+               "changed and why, or what was believed on a date, call coach_graph with their ids: why (id, to), "
+               "around (id), history (id), as_of (date).")
+
+
 def context(store: FounderStore, detailed: bool = False) -> dict:
     """Everything a Playbook needs to start, in one read: only the memory modules this Pack keeps."""
     from . import product
@@ -116,6 +133,7 @@ def context(store: FounderStore, detailed: bool = False) -> dict:
            "recent_decisions": store.decisions(5) if has("decisions") else [],
            **({"recent_notes": store.notes(D.RECENT_NOTES), "notes_total": store.note_count()} if has("notes") else {}),
            **({"loop": lp} if (lp := store.loop()) is not None else {}),
+           "follow_ties": FOLLOW_TIES,
            "nudges": [x for x in nudges(store) if x["kind"] not in NUDGE_MODULE or has(NUDGE_MODULE[x["kind"]])]}
     if not detailed:
         for c in ctx["this_week"] + ctx["overdue"]:
@@ -136,6 +154,52 @@ def hook_text(store: FounderStore, limit: int = 1500) -> str:
     text = (f"{D.COACH_NAME}: " + " · ".join(parts) + product.reword(
         ". If the Founder raises startup work, search and answer it first, then offer the matching Playbook (check-in "
         "or setup) once; otherwise don't interrupt."))
+    return text[:limit]
+
+
+def memory_index(store: FounderStore, limit: int = 600) -> str:
+    """What this Project's memory holds, titles only, for the SessionStart hook: a coach can't look in memory first
+    for a record it doesn't know exists (the G9 runs took "the dentist emails", an open task, for an inbox). Empty when
+    memory holds none of these."""
+    from . import product
+    has = product.has
+
+    def short(t, n=48) -> str:
+        t = " ".join(str(t or "").split())
+        return t if len(t) <= n else t[:n].rsplit(" ", 1)[0] + "…"
+    parts = []
+    if has("commitments"):
+        seen, work = set(), []
+        for c in store.overdue_commitments() + store.commitments(store.this_week()):
+            if c.get("status") == "open" and c["id"] not in seen:
+                seen.add(c["id"])
+                work.append(short(c.get("action")))
+        if work:
+            parts.append("open work: " + "; ".join(work[:6]))
+    if has("goals"):
+        goals = [short(g.get("text")) for g in store.goals("active")]
+        if goals:
+            parts.append("goals: " + "; ".join(goals[:3]))
+    if has("decisions"):
+        decs = [short(d.get("text")) for d in store.decisions(4)]
+        if decs:
+            parts.append("newest decisions: " + "; ".join(decs))
+    try:
+        people = [r["name"] for r in store._rows("SELECT name FROM people WHERE founder_id=? AND coach=? AND "
+                                                 "status='active' ORDER BY created_at", shared="people")][:6]
+        issues = [short(r["text"]) for r in store._rows("SELECT text FROM issues WHERE founder_id=? AND coach=? AND "
+                                                        "status='open' ORDER BY created_at", shared="issues")][:3]
+    except Exception:                                              # noqa: BLE001 -- an older store: no such tables
+        people, issues = [], []
+    if people:
+        parts.append("people: " + ", ".join(people))
+    if issues:
+        parts.append("open blockers: " + "; ".join(issues))
+    if not parts:
+        return ""
+    text = (f"{D.COACH_NAME}: this Project's memory holds " + " · ".join(parts)
+            + ". A question about any of these is answered from memory first (coach_get_context, coach_recall, "
+              "coach_graph), before files, the web or other tools.")
     return text[:limit]
 
 

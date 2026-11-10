@@ -1,0 +1,6 @@
+{"id": "h9i-as-of-twice", "kind": "as of a date, changed twice", "prompt": "On 1 October, how much was I keeping in cash?", "ids": ["d_cash"], "graph": true, "ops": ["as_of", "history"], "expect": ["\\b5 ?%"]}
+{"id": "h9i-changed-twice", "kind": "what changed and why, twice", "prompt": "Why is my cash in a money market fund now, and how did my cash rule change before that?", "ids": ["d_cash"], "graph": true, "ops": ["history"], "expect": ["bank sweep|pays more", "emergency fund"]}
+{"id": "h9i-two-step", "kind": "two-step tie", "prompt": "Who owns the task that is blocked right now, and what is blocking it?", "ids": ["i_form", "p_dana"], "graph": true, "expect": ["\\bDana\\b", "sign|paper"]}
+{"id": "h9i-ambiguous", "kind": "ambiguous wording", "prompt": "Did the rollover go through?", "ids": ["c_401k|c_401k2|c_401k3"], "expect": ["not|hasn't|still|carried|open", "sign|paper"]}
+{"id": "h9i-trap", "kind": "current text vs history", "prompt": "Am I still checking my rebalancing band every month?", "ids": ["d_band"], "expect": ["quarter"]}
+{"id": "h9i-abstain", "kind": "nothing recorded", "prompt": "What employer match rate did Dana tell me?", "abstain": true, "forbid": ["\\b\\d+ ?% (match|employer)"]}

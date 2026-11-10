@@ -1,0 +1,6 @@
+{"id": "h9c-as-of-twice", "kind": "as of a date, changed twice", "prompt": "On 1 October, how many times did we retry failed webhooks?", "ids": ["d_retry"], "graph": true, "ops": ["as_of", "history"], "expect": ["\\b(3|three)\\b"]}
+{"id": "h9c-changed-twice", "kind": "what changed and why, twice", "prompt": "Why do failed webhooks end up in a dead-letter table now, and what came before that?", "ids": ["d_retry"], "graph": true, "ops": ["history"], "expect": ["lost two events", "flapp|backoff"]}
+{"id": "h9c-two-step", "kind": "two-step tie", "prompt": "Who owns the work that is blocked right now, and what is blocking it?", "ids": ["i_staging", "p_mei"], "graph": true, "expect": ["\\bMei\\b", "staging"]}
+{"id": "h9c-ambiguous", "kind": "ambiguous wording", "prompt": "Is the tracing done?", "ids": ["c_trace|c_trace2|c_trace3"], "expect": ["not|still|carried|open", "staging"]}
+{"id": "h9c-trap", "kind": "current text vs history", "prompt": "Are we still caching product reads with no expiry?", "ids": ["d_cache"], "expect": ["60 ?s|60.second"]}
+{"id": "h9c-abstain", "kind": "nothing recorded", "prompt": "What did Ravi say about the load-test budget?", "abstain": true, "forbid": ["\\bRavi (said|approved|agreed|gave|offered)"]}

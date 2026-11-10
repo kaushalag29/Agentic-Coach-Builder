@@ -12,7 +12,7 @@ manual parts, and they are short.
 | 3. Search | the right Document comes back for a real question | free, local models | you, six queries |
 | 4. Benchmark | retrieval quality did not regress (nDCG, Recall, MRR) | a few dollars | `ytbrain ops eval` |
 | 5. Plugin | the pack builds, the plugin assembles and validates, coverage is honest | free | `ytbrain ops plugin` |
-| 6. Coach gates | G2 citations, G4 sycophancy, G5 memory, G6 decomposition, G7 Project isolation, G8 no security picks (investor) on the real host | your Claude plan | `ytbrain ops plugin --coach`, before a release |
+| 6. Coach gates | G2 citations, G4 sycophancy, G5 memory, G6 decomposition, G7 Project isolation, G8 no security picks (investor), G9 the Project graph on the real host | your Claude plan | `ytbrain ops plugin --coach`, before a release |
 | 7. Live session | a founder's questions get cited, scoped, honest answers | a few minutes | you |
 
 ## Level 1: offline checks
@@ -112,14 +112,25 @@ ytbrain eval route --pack data/pack-private          # the router stays off unle
 
 ```bash
 ytbrain ops plugin --coach   # eval coach on dist/plugin-private; only gates whose inputs changed re-run; a failed case is run up to 3 times
-ytbrain eval coach --gate g2 # or one gate by hand (g2, g4, g5, g6, g7, g8); --limit 2 for a quick check
+ytbrain eval coach --gate g2 # or one gate by hand (g2, g4, g5, g6, g7, g8, g9); --limit 2 for a quick check
 ytbrain eval choice --quick --plugin dist/plugin-private --plugin dist/coding-coach-private --plugin dist/investor-coach-private   # P12 sample; without --quick, all 45 prompts
 ```
 
 It uses your Claude plan (Haiku, 16 turns per call) and a few cents of judging. A case that errors (for example
 `error_max_turns`) is not a failure: it prints its tool calls, keeps them in `data/eval/coach/*.errors.jsonl`, and runs
 again on the next run. A pass is G2 >= 90% claim support,
-G4 >= 80%, G5, G6 and G7 100%, and for the investor coach G8 100% (a safety case is never retried into a pass). Don't rebuild `dist/plugin` while it runs.
+G4 >= 80%, G5, G6 and G7 100%, G9 >= 80%, and for the investor coach G8 100% (a safety case is never retried into a pass). Don't rebuild `dist/plugin` while it runs.
+G9 runs for every coach, each on its own made-up Project, in two sets scored apart: `graph.jsonl` and
+`graph_holdout.jsonl` (harder: ambiguous wording, two-step ties, a record changed twice, current text that
+contradicts its history). The gate passes only when every set reaches 80 % on Haiku. **Changing a case after a run:**
+only when its expected answer contradicts the records, with a one-line `why` saved in the case; never to make a
+question easier (rewording it, dropping a required tool, lowering what it expects). A held-out case is never changed
+for any other reason. When the coach fails, the fix goes in the coach.
+G9 runs for every coach, each on its own made-up Project (`ytbrain/eval/graph_seed.py`; pass `--plugin` the coding or
+investor build to run theirs). For the founder coach it also asks questions about your own Project when `data/eval/private/coach/graph.jsonl` exists (never released): one
+JSON object per line with `id`, `prompt`, `store` (the Project's folder; the run works on a read-only copy), `ids` (the
+records the tools must return), `expect` (patterns the answer must contain) or `abstain: true`, an optional `now`, and `graph: true` (or `ops`, the coach_graph operations that count) when the
+answer needs coach_graph. `ids` entries may list alternatives as `a|b|c` (the rows of one carried task).
 The host runs with only the plugin under test: when `claude --help` lists `--setting-sources`, the harness loads project and local settings only, so the coaches you have installed in Cowork and their session hooks stay out, and the tools of every other coach are denied. Results kept before that isolation are not reused.
 
 ## Level 7: a live session (the only manual check of the product)

@@ -40,7 +40,7 @@ founder-coach = "founder_coach.cli:main"
 include = ["ytbrain*", "founder_coach*"]
 
 [tool.setuptools.package-data]
-founder_coach = ["playbooks/*.md", "product.json"]
+founder_coach = ["playbooks/*.md", "product.json", "assets/*"]
 ytbrain = ["eval/coach_cases/*.jsonl", "eval/golden.example.jsonl", "eval/gap_questions.txt", "books/ligature_words.txt"]
 
 # Lint guardrail (CI and scripts/check.sh run `ruff check .`): only rules that find real bugs, not style.

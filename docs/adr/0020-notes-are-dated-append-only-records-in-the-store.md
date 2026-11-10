@@ -113,3 +113,29 @@ SQLite stays the source of truth (point 2).
 - **Viewer.** Obsidian is the tested viewer. It is free for personal and work use but not open source; the files are
   plain Markdown, so Foam (MIT), Quartz (MIT) and Logseq (AGPL) read the same folder. The colour file is Obsidian's.
 
+
+## Amendment 2026-11-09: the vault is written from the Project graph (ADR-0024)
+
+The 2026-11-05 vault drew one file per Commitment row, linked everything to one Goal and left Decisions unconnected.
+It is now written from the computed graph of ADR-0024, and the graph (not the vault) answers the coach's questions
+through `coach_graph`.
+
+- **Layout.** `shared/goals/`, `shared/threads/`, `shared/decisions/`, `shared/weeks/` for the shared core;
+  `<coach>/notes/`, `<coach>/checkins/` (one page per Check-in, with its wins and blockers) and, for a coach that keeps
+  everything, its own `goals/`, `threads/`, `decisions/`, `weeks/`. Hubs, the index and saved views live in `_meta/`,
+  which the graph view leaves out.
+- **Pages.** A file is named by the record's words (cut under 40 characters; two alike in one folder get the id); the
+  id is in the frontmatter `id` and `aliases`. Links carry their folder (`[[shared/goals/Ten partners|Ten partners]]`).
+  A Thread is one page with a History table of its periods. Typed links are written twice: as frontmatter properties
+  (`serves`, `decided_in`, `reviewed_in`, `about` ...) for Bases and plugins, and as inline fields (`serves:: [[…]]`)
+  that the core graph draws. The shared week pages form a continuous spine from the first to the last shared record.
+- **A shared page names shared records only.** Every coach writing `shared/` writes the same page; a coach's private
+  Notes and Check-ins reach a shared page only through Obsidian's backlinks.
+- **`graph.json` is merged, not written once:** our colour groups per kind, the `-path:_meta` filter when the person
+  has no search of their own, arrows on; every other setting is kept.
+- **Saved views:** `_meta/views/threads.base` (open, planned 3+ periods, by goal) and `decisions.base` (by week) for
+  Obsidian Bases. Start, end and group properties feed a timeline plugin (Chronos).
+- **Existing records:** the derived ties (a carry, a goal_id, the week of a Decision) appear for old records too; they
+  are facts about saved rows, not new claims. "Existing records are not linked retroactively" still holds for the links
+  a person makes.
+- `forget` now writes the slice again from what is left, so the other coaches' shared records stay.

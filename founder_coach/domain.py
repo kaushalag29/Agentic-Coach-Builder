@@ -73,8 +73,14 @@ SETUP_NUDGE = _RUNTIME.get("setup_nudge") or (
 STATUSES = {
     "goal": ("active", "met", "dropped"),
     "commitment": ("open", "done", "dropped", "carried"),
+    "decision": ("accepted", "superseded", "reversed"),       # superseded only by a newer Decision (ADR-0025)
+    "person": ("active", "merged"),
+    "issue": ("open", "resolved"),
 }
-TERMINAL = {"met", "dropped", "done", "carried"}
+TERMINAL = {"met", "dropped", "done", "carried", "superseded", "reversed", "merged", "resolved"}
+# a change to one of these statuses must say why (`reason`, the person's words); for a Goal or a Commitment the
+# evidence `note` counts as the reason (ADR-0025: nothing about a change is lost)
+NEEDS_REASON = {"met", "dropped", "done", "reversed", "resolved", "merged"}
 
 # fields coach_update may change, per record kind
 EDITABLE = {
@@ -83,18 +89,44 @@ EDITABLE = {
     "decision": ("text", "reasoning", "revisit_on"),
     "checkin": ("summary", "wins", "blockers"),
     "note": ("revisit_on",),         # a Note is append-only: a changed view is a new Note that supersedes it
+    "person": ("name", "role", "aliases", "merged_into"),
+    "issue": ("text",),
 }
+# a correction to these fields of a Decision must say why (a change of mind is a new Decision that supersedes it)
+DECISION_WORDS = ("text", "reasoning")
 
 ID_PREFIX = {"goal": "g", "commitment": "c", "decision": "d", "checkin": "k", "feedback": "f", "holdings": "h",
-             "note": "n"}
+             "note": "n", "person": "pe", "issue": "i", "proposal": "p"}
 KIND_OF_PREFIX = {v: k for k, v in ID_PREFIX.items() if k not in ("feedback", "holdings")}   # records coach_update may touch
+TABLE_OF = {"goal": "goals", "commitment": "commitments", "decision": "decisions", "checkin": "checkins",
+            "note": "notes", "person": "people", "issue": "issues", "proposal": "proposals"}
 
 # Notes (ADR-0020): dated, append-only memory of a discussion, a piece of research or an insight, linked to the
 # Goals and Decisions it is about. `origin` says who the content comes from: the person said it, or the coach
 # concluded it (a coach-concluded Note is a lead to check, never a fact about the person).
 NOTE_TYPES = ("discussion", "research", "insight")
 NOTE_ORIGINS = ("user", "coach")
-LINK_TYPES = ("about", "supports", "related")      # a Note's own links; "supersedes" is made only by superseding
+LINK_TYPES = ("about", "supports", "related", "contradicts")   # a Note's own links; "supersedes" only by superseding
+# The links a person may say between records (ADR-0025): type -> (source kinds, target kinds). The store refuses any
+# other pair. Ties that are facts about stored columns (serves from a Commitment's goal_id, decided_in, reviewed_in,
+# cites, mentions, a Decision's superseded_by) are computed by the graph and never stored as links.
+_ANY = ("goal", "commitment", "decision", "note", "checkin", "person", "issue")
+LINK_PAIRS = {
+    "about": (("note",), _ANY),
+    "supports": (("note",), ("decision", "note", "goal", "issue")),
+    "contradicts": (("note",), ("decision", "note", "goal", "issue")),
+    "related": (("note", "decision"), _ANY),
+    "serves": (("decision", "issue"), ("goal",)),
+    "sub_goal_of": (("goal",), ("goal",)),
+    "changes_scope_of": (("decision",), ("goal",)),
+    "led_to": (("decision",), ("decision", "commitment", "goal")),
+    "assumes": (("decision", "commitment"), ("note",)),
+    "blocks": (("issue",), ("commitment", "goal")),
+    "resolved_by": (("issue",), ("decision", "commitment")),
+    "owned_by": (("commitment", "issue", "goal"), ("person",)),
+    "decided_by": (("decision",), ("person",)),
+}
+MAX_LINKS_PER_RECORD = 12
 NOTE_TITLE_MAX, NOTE_SUMMARY_MAX, NOTE_QUOTE_MAX = 120, 4000, 300
 MAX_NOTE_LINKS = 8
 RECENT_NOTES = 5                                   # titles in the context digest

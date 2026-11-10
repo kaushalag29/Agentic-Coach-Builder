@@ -212,6 +212,26 @@ _Avoid_: business, org
 A piece of the person's work that every coach shares: a Company, a system or codebase, an investment goal (retirement, college) with all the accounts that serve it. A person can have several Projects; nothing saved in one appears in another unless they ask to compare them, and each session works in one at a time. Each record in it says which coach made it (its coach stamp).
 _Avoid_: workspace (the Workspace is where the person keeps their data), context, session
 
+**Thread**:
+A Commitment and every carry of it, read as one piece of work across the periods it was planned in (the Project graph, ADR-0024). Its id is the first Commitment's.
+_Avoid_: task chain, duplicate
+
+**Project graph**:
+The ties between a Project's records, computed from the store on every read (never stored): Goals, Decisions, Notes, Check-ins, Threads, Weeks, People and Issues, with a closed set of typed edges (serves, decided_in, reviewed_in, cites, mentions, supersedes, and the links the person confirmed, ADR-0025). It holds nothing the person did not say; the coach reads it with `coach_graph`.
+_Avoid_: knowledge graph (it is not extracted from text), graph database
+
+**Person**:
+Someone the person works with, kept as a record only after they said yes: a name, other names, and a role in their own words, never taken from a connector or an account (ADR-0025). Shared by the Project's coaches. A record whose words name them `mentions` them; who decided or owns something is a link.
+_Avoid_: contact, user, stakeholder
+
+**Issue**:
+A blocker the person confirmed as a record: open until resolved, with what resolved it (ADR-0025). Text in a Check-in's blockers stays text until then.
+_Avoid_: ticket, bug, risk
+
+**Proposal**:
+A tie, a Person or an Issue the coach noticed in saved records and may offer; nothing is saved until the person says yes, and a "never" is remembered (ADR-0025).
+_Avoid_: suggestion (in the code), inference
+
 **Common profile**:
 The few facts true of the person in every Pack (name, timezone, role, how they like answers), read by every Pack and changed only on their yes. A Project fact reaches it only when they say so; money details never do.
 _Avoid_: global memory, user profile, account

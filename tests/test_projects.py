@@ -489,16 +489,14 @@ def test_two_coaches_write_the_common_profile_at_once():
 # --- ADR-0019: Projects shared by every coach; the one-time move of each coach's own Projects ---------------------
 def _old_layout_project(eng: Path, pack: str, pid: str, name: str, goal: str, created: str = "2026-01-01T00:00:00+00:00"):
     """A Project as a coach kept it before ADR-0019: eng/<pack>/projects/<pid>/ with a schema-6 store (no stamp)."""
-    from founder_coach.store import COACH_TABLES
+    from test_coach import _downgrade
     home = eng / pack / "projects" / pid
     home.mkdir(parents=True)
     (home / "project.json").write_text(json.dumps({"name": name, "created": created}))
     s = FounderStore(home, coach=pack)
     s.update_profile({"company": name})
     s.record({"kind": "goal", "text": goal})
-    for t in COACH_TABLES:
-        s.db.execute(f"ALTER TABLE {t} DROP COLUMN coach")
-    s.db.execute("UPDATE meta SET value='6' WHERE key='schema_version'")
+    _downgrade(s, 6)
     s.close()
     return home
 
@@ -905,16 +903,22 @@ def test_the_persons_own_facts_are_saved_only_in_their_own_words():
 # ---- the Project vault (ADR-0020 amendment): plain Markdown a graph viewer opens --------------------------------------
 
 def _vault_links_resolve(root: Path) -> None:
-    """Every [[link]] in the vault names a file in it (Obsidian links by file name)."""
+    """Every [[link]] in the vault names a file in it: links carry their folder ([[shared/goals/X|X]])."""
     import re
-    stems = {p.stem for p in root.rglob("*.md")}
-    for p in root.rglob("*.md"):
+    for p in list(root.rglob("*.md")):
         for target in re.findall(r"\[\[([^\]|#]+)", p.read_text(encoding="utf-8")):
-            assert target in stems, f"{p.relative_to(root)} links to [[{target}]], which is not in the vault"
+            assert (root / f"{target}.md").is_file(), f"{p.relative_to(root)} links to [[{target}]], not in the vault"
 
 
 def _vault_text(root: Path) -> str:
     return "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.rglob("*.md")))
+
+
+def _page(root: Path, rid: str) -> Path:
+    """The page of a record (its id is in the frontmatter, not in the file name)."""
+    hits = [p for p in root.rglob("*.md") if f'id: "{rid}"' in p.read_text(encoding="utf-8")[:600]]
+    assert len(hits) == 1, (rid, hits)
+    return hits[0]
 
 
 def _seed(home: Path, coach: str | None = None, **kw) -> tuple[FounderStore, dict]:
@@ -936,31 +940,43 @@ def test_a_save_writes_the_vault_slice_with_linked_tagged_files():
         s, ids = _seed(home)
         root = home / "vault"
         try:
-            names = {p.relative_to(root).as_posix() for p in root.rglob("*.md")}
-            assert any(n.startswith(f"shared/{ids['goal']}-") for n in names), names
-            assert any(n.startswith(f"shared/{ids['decision']}-") for n in names), names
-            assert any(n.startswith(f"founder/{ids['note']}-") for n in names), names
-            assert "shared/project.md" in names, "the hub note"
+            names = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+            for want in ("shared/goals/Ten paying design partners.md", "shared/threads/Email 20 dentists.md",
+                         "shared/decisions/Charge from day one.md", "founder/notes/Why charge early.md",
+                         "_meta/shared/home.md", "_meta/views/threads.base", "_meta/views/decisions.base"):
+                assert want in names, (want, names)
+            assert any(n.startswith("shared/weeks/20") for n in names), "the week a Decision was made has a page"
             _vault_links_resolve(root)
-            note = next(p for p in root.glob(f"founder/{ids['note']}-*.md")).read_text()
-            assert "tags: [kind/note, coach/founder]" in note and f"[[{ids['decision']}-charge-from-day-one]]" in note
-            goal = next(p for p in root.glob(f"shared/{ids['goal']}-*.md")).read_text()
-            assert f"[[{ids['commitment']}-email-20-dentists]]" in goal and "[[project]]" in goal
-            assert f"[[{ids['note']}-why-charge-early]]" in goal, "a Note about the Goal is listed on it"
-            hub = (root / "shared" / "project.md").read_text()
-            dec = next(p for p in root.glob(f"shared/{ids['decision']}-*.md")).read_text()
-            assert f"[[{ids['goal']}-ten-paying-design-partners]]" in hub, "the hub links the Goals"
-            assert ids["decision"] not in hub and ids["commitment"] not in hub and "[[project]]" not in dec, \
-                "only Goals link to the hub: a star of Decisions around it says nothing"
-            com = next(p for p in root.glob(f"shared/{ids['commitment']}-*.md")).read_text()
-            assert f"goal [[{ids['goal']}-ten-paying-design-partners]]" in com
-            # the same data gives the same files, and the colour file is written once and left alone after
+            goal_link = "[[shared/goals/Ten paying design partners|Ten paying design partners]]"
+            note = _page(root, ids["note"]).read_text()
+            assert "tags: [kind/note, coach/founder]" in note
+            assert "about:: [[shared/decisions/Charge from day one|Charge from day one]]" in note, "typed inline link"
+            assert f'supports: ["{goal_link}"]' in note, "the same link as a frontmatter property"
+            thread = _page(root, ids["commitment"]).read_text()
+            assert f"serves:: {goal_link}" in thread and "periods: 1" in thread and "## History" in thread
+            dec = _page(root, ids["decision"]).read_text()
+            assert "decided_in:: [[shared/weeks/20" in dec, "a Decision hangs on the week it was made"
+            goal = _page(root, ids["goal"]).read_text()
+            assert "[[shared/threads/Email 20 dentists|Email 20 dentists]]" in goal
+            assert "Why charge early" not in goal, "a shared page never names a coach's private Note"
+            hub = (root / "_meta" / "shared" / "home.md").read_text()
+            assert goal_link in hub and ids["decision"] not in hub, "the hub (out of the graph) lists the Goals"
+            # the same data gives the same files
             assert vault.sync_slice(s)["written"] == 0
+            # a carried task stays one thread, with its history
+            new = s.update(ids["commitment"], status="carried")["new_id"]
+            thread = _page(root, ids["commitment"]).read_text()
+            assert "periods: 2" in thread and new in thread and len(list((root / "shared" / "threads").glob("*.md"))) == 1
+            # graph.json: our colours and the _meta filter merged in, the person's own settings kept
             colours = root / ".obsidian" / "graph.json"
-            assert "tag:#kind/decision" in colours.read_text()
-            colours.write_text("{}")
-            vault.sync_slice(s)
-            assert colours.read_text() == "{}", "Obsidian rewrites this file itself; the coach must not"
+            g = json.loads(colours.read_text())
+            assert g["search"] == "-path:_meta" and any(x["query"] == "tag:#kind/thread" for x in g["colorGroups"])
+            colours.write_text(json.dumps({"search": "tag:#mine", "scale": 1.5,
+                                           "colorGroups": [{"query": "path:x", "color": {"a": 1, "rgb": 1}}]}))
+            s.record({"kind": "decision", "text": "Hire later", "reasoning": "r"})
+            g = json.loads(colours.read_text())
+            assert g["search"] == "tag:#mine" and g["scale"] == 1.5 and {"query": "path:x", "color": {"a": 1, "rgb": 1}} \
+                in g["colorGroups"] and any(x["query"] == "tag:#kind/goal" for x in g["colorGroups"])
             # the Notes folder of ADR-0020 is untouched by the vault
             assert (home / "notes" / "INDEX.md").exists()
         finally:
@@ -978,8 +994,8 @@ def test_a_full_build_reads_a_copy_and_keeps_each_private_coach_apart():
         s, ids = _seed(home)
         inv = FounderStore(home, coach="investor")
         ig = inv.record({"kind": "goal", "text": "Retire at 55 with ACME-secret fund", "measure": "x"})["ids"][0]
-        inv.record({"kind": "note", "title": "Rebalance thinking", "summary": "Bonds drifted.", "type": "insight",
-                    "origin": "user", "links": [{"to": ig, "type": "about"}]})
+        inn = inv.record({"kind": "note", "title": "Rebalance thinking", "summary": "Bonds drifted.", "type": "insight",
+                          "origin": "user", "links": [{"to": ig, "type": "about"}]})["ids"][0]
         inv.db.execute("INSERT INTO holdings_snapshots (id, founder_id, coach, account, as_of, imported_at, broker, "
                        "sha256, source, total_cents) VALUES ('h-1','me','investor','ACCT-9876','2026-10-01','2026-10-01',"
                        "'b','x','s',100)")
@@ -991,11 +1007,11 @@ def test_a_full_build_reads_a_copy_and_keeps_each_private_coach_apart():
         res = vault.build(home, out, engine)
         after = {p.relative_to(home).as_posix(): p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
         assert before == after, "the Project folder was touched by a build"
-        assert res["files"] > 0 and (out / "INDEX.md").exists()
+        assert res["files"] > 0 and (out / "_meta" / "INDEX.md").exists()
         shared = _vault_text(out / "shared")
         assert "ACME-secret" not in shared and "Rebalance" not in shared, "a private coach's record reached shared/"
-        assert any((out / "investor").glob(f"{ig}-*.md")), "the investor's Goal sits in its own folder"
-        assert any((out / "investor").glob("n-*.md"))
+        assert _page(out, ig).relative_to(out).as_posix().startswith("investor/goals/")
+        assert _page(out, inn).relative_to(out).as_posix().startswith("investor/notes/")
         everything = _vault_text(out)
         assert "ACCT-9876" not in everything and "ZZTOPSYM" not in everything, "holdings must never enter the vault"
         _vault_links_resolve(out)
@@ -1003,7 +1019,9 @@ def test_a_full_build_reads_a_copy_and_keeps_each_private_coach_apart():
         (engine / "installed" / "founder-coach.json").unlink()
         out2 = Path(tempfile.mkdtemp(prefix="vault-out-"))
         vault.build(home, out2, engine)
-        assert not (out2 / "shared").exists() and any((out2 / "founder").glob(f"{ids['goal']}-*.md"))
+        assert not (out2 / "shared").exists() and _page(out2, ids["goal"]).relative_to(out2).as_posix().startswith(
+            "founder/goals/")
+        _vault_links_resolve(out2)
 
 
 def test_a_slice_reads_only_what_the_coach_may_and_never_removes_another_coachs_files():
@@ -1022,14 +1040,16 @@ def test_a_slice_reads_only_what_the_coach_may_and_never_removes_another_coachs_
         try:
             s.record({"kind": "goal", "text": "Find ten customers", "measure": "ten"})
             root = home / "vault"
-            assert list(root.glob(f"shared/{og}-*.md")), "a shared Goal of a peer coach is in the slice"
-            assert not list(root.glob(f"shared/{ig}-*.md")) and not list(root.glob(f"founder/{ig}-*.md")), \
-                "a private coach's Goal is never read by another coach"
-            keep = next(root.glob(f"investor/{ig}-*.md"))          # the investor's own save wrote it in its own folder
+            assert _page(root, og).relative_to(root).as_posix().startswith("shared/goals/"), \
+                "a shared Goal of a peer coach is in the slice"
+            keep = _page(root, ig)                  # the investor's own save wrote it in its own folder
+            assert keep.relative_to(root).as_posix().startswith("investor/goals/")
+            assert "Private money goal" not in _vault_text(root / "shared") + _vault_text(root / "founder")
             (root / "investor" / "NOTES-by-hand.md").write_text("mine, not generated", encoding="utf-8")
             vault.sync_slice(s)
             assert keep.exists() and (root / "investor" / "NOTES-by-hand.md").exists(), \
                 "another coach's slice must not remove files it may not read"
+            assert (root / "_meta" / "investor" / "home.md").exists(), "nor another coach's hub"
         finally:
             s.close()
 
@@ -1080,7 +1100,7 @@ def test_the_vault_command_never_opens_the_store():
         backups = sorted(p.name for p in (home / "backups").glob("*")) if (home / "backups").exists() else []
         out = Path(tempfile.mkdtemp(prefix="vault-out-"))
         rc = cli.main(["vault", "build", "--home", str(home), "--out", str(out), "--engine-home", str(home)])
-        assert rc == 0 and (out / "INDEX.md").exists()
+        assert rc == 0 and (out / "_meta" / "INDEX.md").exists()
         assert digest == {p.name: hashlib.sha1(p.read_bytes()).hexdigest() for p in home.glob("founder.db*")}, \
             "the database files changed"
         assert backups == (sorted(p.name for p in (home / "backups").glob("*")) if (home / "backups").exists() else [])

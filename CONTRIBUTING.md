@@ -20,7 +20,7 @@ printf '#!/bin/sh\nexec sh scripts/check.sh\n' > .git/hooks/pre-commit && chmod 
 ## Tests
 
 ```bash
-for s in core eval pack coach projects invest plugin web books gaps docs; do YTBRAIN_DOTENV=0 python tests/test_$s.py || break; done
+for s in core eval pack coach projects graph invest plugin web books gaps docs; do YTBRAIN_DOTENV=0 python tests/test_$s.py || break; done
 python -m pytest tests -q -p no:cacheprovider       # all suites in one process
 ```
 
@@ -31,6 +31,7 @@ python -m pytest tests -q -p no:cacheprovider       # all suites in one process
 | `test_pack.py` | the Knowledge pack format, checksums, incremental rebuilds, shared search |
 | `test_coach.py` | the Founder store (history, idempotent writes, migrations, backups, forget/restore, Feedback, the usage log, Check-in warnings), Nudges, all 9 MCP tools through the SDK client, the tool-schema snapshot, stdio under both protocol versions, concurrent writers |
 | `test_projects.py` | Projects and the Common profile (M6e): each Project's memory kept apart, Projects shared by the coaches (the one-time move of every coach's Projects, a work folder linked to one Project, `PROJECT.md`), a session that asks which one, the write guard, sharing only on a yes and only a Pack's fields, the one-time move of `~/.founder-coach` (counts and change log kept, the old folder unchanged, once, damaged or busy), forget per Project, two coaches writing `you.db` at once, the command line, G7's grading |
+| `test_graph.py` | The Project graph (ADR-0024): a made-up Project written over three weeks and a 25-question graph benchmark (carried work, multi-hop, a path between records, what the store held on a date, what changed, honest "nothing recorded" answers); another coach's private records never in the graph; recall reads the shared core; People, Issues and typed links (ADR-0025): a closed vocabulary, links ended not deleted, why and by whom kept for every change, proposals saved only on a yes, the v7 to v8 migration; `expand` against words alone; the per-Goal canvas and the offline HTML page (nothing fetched, record text stays data). The made-up Project lives in `ytbrain/eval/graph_seed.py`, shared with gate G9 |
 | `test_invest.py` | the investor Pack: Fidelity, Schwab, Vanguard and named-column exports read or refused with what they need, allocation, drift and concentration to the cent across accounts (I1-I5), splits that add up exactly, the policy as profile facts, Holdings imported once, the tools end to end, nothing promoted to the shared profile (C3) |
 | `test_plugin.py` | manifest, skills and their invocation, the assembler (template filling, atomic swap, `--check`), each coach's identity living only in its `pack.toml`, releases (tags, version checks, renames) |
 | `test_books.py` | PDF Books on synthetic text and fixture PDFs only: probe, ligature repair, metadata, Chapters, ids and resume, private visibility, the sample sheet, folders found recursively |
