@@ -89,7 +89,8 @@ ytbrain domains restore               # put the latest tags.db backup back, and 
 ytbrain domains review                # high-tier tags awaiting your yes (--accept SOURCE:DOMAIN)
 ytbrain domains propose               # content no Domain fits, grouped, checked against the list
 ytbrain coach new <id> --person Engineer --project-noun system --domains coding --field "system=the system, in one line" [--modules goals,decisions,notes] [--owned] [--like coding]   # draft a Pack and its ask, coach and setup skills from templates (no model; never overwrites)
-ytbrain gaps [--pack P] [--days 30] [--json]  # what the dogfooded coaches could not answer well (their usage logs)
+ytbrain gaps [--pack P] [--days 30] [--json]  # what the dogfooded coaches could not answer well (their usage logs),
+                                              # and how they used memory: graph calls, follow-through, refused writes
 ytbrain gaps --replay [--pack P]              # those weak questions searched again against each installed pack: level then and now
 ytbrain gaps --pack P --replay-pack DIR       # ... against a pack built but not installed yet
 ytbrain eval run --config pack-oracle-domains|pack-oracle-topic --compare pack-no-rerank   # a perfect hard filter vs the whole Library

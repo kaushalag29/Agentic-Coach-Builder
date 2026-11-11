@@ -395,6 +395,28 @@ def _feedback(args) -> int:
     return 0
 
 
+def _clear_common_usage(home) -> int:
+    """This coach's calls from before a Project was chosen, kept in the Common profile's log (ADR-0026). Only for a
+    Project of the engine's Projects folder: a pinned data folder has no Projects, so no such rows."""
+    from . import installed
+    from .store import FounderStore
+    engine = installed.engine_home()
+    try:
+        in_projects = Path(home).expanduser().resolve().parent == (engine / "projects").resolve()
+    except OSError:
+        return 0
+    if not in_projects or not (engine / "you.db").exists():
+        return 0
+    try:
+        common = FounderStore(engine, name="you", fields=D.COMMON_FIELDS)
+    except Exception:                          # noqa: BLE001 -- the Project's log is cleared either way
+        return 0
+    try:
+        return common.clear_usage(coach=str(product.PACK.get("id") or "founder"))
+    finally:
+        common.close()
+
+
 def _usage(args) -> int:
     store = _open_or_explain(args.home)
     if store is None:
@@ -405,7 +427,7 @@ def _usage(args) -> int:
                 print(f"{product.ID}: this deletes the usage log (nothing else); pass --yes to confirm",
                       file=sys.stderr)
                 return 2
-            n = store.clear_usage()
+            n = store.clear_usage() + _clear_common_usage(args.home)
             print(f"{product.ID}: usage log cleared ({n} event(s) deleted)")
             return 0
         if args.action == "export":

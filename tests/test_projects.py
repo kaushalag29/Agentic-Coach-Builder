@@ -261,6 +261,61 @@ def test_the_common_profile_is_shared_only_on_a_yes_and_only_for_its_fields():
             acme.close()
 
 
+def test_calls_before_a_project_is_chosen_are_logged_in_the_common_profile_for_this_coach():
+    """ADR-0026: with two Projects and none chosen, a call has no Project store; it goes to the Common profile's usage
+    log, stamped with this coach, so what was asked before choosing is not lost. Once a Project is chosen, calls go to
+    its own log again, and `usage clear` empties both."""
+    import contextlib, io
+    from founder_coach import cli
+    from founder_coach import domain as D
+    pack = str(product.PACK.get("id") or "founder")
+    with _machine() as user:
+        async def setup(call):
+            await call("coach_project", {"action": "create", "name": "Acme"})
+            await call("coach_project", {"action": "create", "name": "Beta"})
+            res, _, err = await call("coach_update_profile", {"changes": {"timezone": "Asia/Kolkata"},
+                                                              "scope": "common", "request_id": _rid()})
+            assert not err, res
+        _serve(user, setup)
+
+        async def later(call):                           # a new session: nothing chosen yet
+            ctx, _, _ = await call("coach_get_context")
+            assert ctx["project"] is None
+            await call("coach_search", {"query": "how to price a pilot"})
+            _, _, err = await call("coach_record", {"entry": {"kind": "goal", "text": "x"}, "request_id": _rid()})
+            assert err
+            await call("coach_project", {"action": "switch", "project": "acme"})
+            await call("coach_get_context")
+        _serve(user, later)
+        eng = user / ".ytbrain"
+        common = FounderStore(eng, name="you", fields=D.COMMON_FIELDS)
+        try:
+            rows = common.usage_rows()
+            assert rows == [], "the Common profile's own coach stamp holds nothing"
+            mine = [dict(r) for r in common.db.execute("SELECT tool, outcome, coach, detail FROM usage ORDER BY id")]
+        finally:
+            common.close()
+        before = [r for r in mine if r["coach"] == pack]
+        tools = [r["tool"] for r in before]
+        assert tools[:3] == ["coach_get_context", "coach_search", "coach_record"], tools
+        assert before[0]["detail"] and json.loads(before[0]["detail"]).get("no_project") is True
+        assert before[2]["outcome"] == "error" and "how to price" not in json.dumps(mine)
+        acme = FounderStore(eng / "projects" / "acme")
+        try:
+            after = [r["tool"] for r in acme.usage_rows()]
+        finally:
+            acme.close()
+        assert after[-1] == "coach_get_context" and "coach_search" not in after, after
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cli.main(["usage", "clear", "--home", str(eng / "projects" / "acme"), "--yes"]) == 0
+        common = FounderStore(eng, name="you", fields=D.COMMON_FIELDS)
+        try:
+            left = common.db.execute("SELECT COUNT(*) FROM usage WHERE coach=?", (pack,)).fetchone()[0]
+        finally:
+            common.close()
+        assert left == 0, "usage clear also empties this coach's rows from before a Project"
+
+
 def test_a_pack_that_shares_nothing_never_reads_or_writes_the_common_profile():
     saved = product.PACK.get("common_fields")
     product.PACK["common_fields"] = []

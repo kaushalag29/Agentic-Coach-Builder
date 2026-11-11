@@ -44,7 +44,7 @@ from .search import DEFAULT_DOMAIN, Filter, diversify, search
 from .invest import ASSET_CLASSES, ImportProblem, latest_per_account, money, read_positions
 from .invest import split as split_sum
 from .projects import NAME_MAX, ProjectError, Workspace
-from .store import FounderStore, StoreError, _utc_now, iso_week, open_store, week_start
+from .store import RECORD_ID, WEEK_RE, FounderStore, StoreError, _utc_now, iso_week, open_store, week_start
 from . import product
 
 log = logging.getLogger("founder_coach")
@@ -641,6 +641,37 @@ USAGE_DAYS = int(product.env("USAGE_DAYS", "90"))     # older usage events are d
 _QUOTED = re.compile(r"""(['"]).*?\1""")   # a quoted value inside an error message
 
 
+MARKED_MAX = 20                                       # most record ids a usage row keeps per mark
+
+
+def _rid(v: Any) -> str | None:
+    """A record id as the usage log may keep it, or None: anything else the host passed (words) is never kept."""
+    return v if isinstance(v, str) and RECORD_ID.match(v) else None
+
+
+def _marked(sc: Any) -> dict:
+    """The record ids a read showed with a mark that asks for coach_graph (`edited`, `ties`) or says work was carried
+    (`planned`), wherever they sit in the result: what follow-through is counted from (ADR-0026)."""
+    out: dict[str, list[str]] = {"edited": [], "ties": [], "planned": []}
+
+    def walk(x: Any, depth: int) -> None:
+        if depth > 5:
+            return
+        if isinstance(x, dict):
+            rid = _rid(x.get("id"))
+            if rid:
+                for key, mark in (("edited", "edited"), ("ties", "ties"), ("planned", "planned_since")):
+                    if x.get(mark) and rid not in out[key]:
+                        out[key].append(rid)
+            for v in x.values():
+                walk(v, depth + 1)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, depth + 1)
+    walk(sc, 0)
+    return {k: v[:MARKED_MAX] for k, v in out.items() if v}
+
+
 def _usage_detail(tool: str, args: dict, sc: dict, text: bool) -> tuple[str, dict]:
     """(outcome, detail) for one successful call. Only shapes, counts and ids: never the Founder's
     words, which stay in their store (search text only with the opt-in)."""
@@ -669,9 +700,36 @@ def _usage_detail(tool: str, args: dict, sc: dict, text: bool) -> tuple[str, dic
         d = {"fields": sorted(ch)}
     elif tool == "coach_record":
         e = args.get("entry")
-        d = {"kind": getattr(e, "kind", None) or (e.get("kind") if isinstance(e, dict) else None)}
+        e = e.model_dump(exclude_none=True) if hasattr(e, "model_dump") else (e if isinstance(e, dict) else {})
+        d = {"kind": e.get("kind"), "ids": [i for i in (sc.get("ids") or [])[:5] if _rid(i)],
+             "links_added": len(e.get("links") or []) or None}
     elif tool == "coach_update":
-        d = {"status": args.get("status"), "changed": bool(args.get("changes"))}
+        links = [ln for ln in (args.get("links") or []) if isinstance(ln, dict)]
+        d = {"id": _rid(args.get("id")), "status": args.get("status"), "changed": bool(args.get("changes")),
+             "reason": bool(args.get("reason")) or None,
+             "links_added": sum(ln.get("action", "add") == "add" for ln in links) or None,
+             "links_ended": sum(ln.get("action") == "end" for ln in links) or None}
+    elif tool == "coach_recall":
+        q = str(args.get("query") or "")
+        hits = [h for h in (sc.get("hits") or []) if isinstance(h, dict)]
+        d = {"mode": "id" if args.get("id") else "timeline" if args.get("timeline") else "search",
+             "id": _rid(args.get("id")), "hits": len(hits), "total": sc.get("total"),
+             "ids": [i for i in (_rid(h.get("id")) for h in hits[:10]) if i],
+             "expand": bool(args.get("expand")) or None, "related": len(sc.get("related") or []) or None,
+             "window": bool(args.get("since") or args.get("until")) or None, "kinds": args.get("kinds"),
+             "query_chars": len(q) or None, **_marked({"hits": hits, "related": sc.get("related")})}
+        if text and q:
+            d["query"] = q[:500]
+        outcome = "ok" if hits else "empty"
+    elif tool == "coach_graph":
+        d = {"op": args.get("op"), "id": _rid(args.get("id")), "to": _rid(args.get("to")),
+             "week": args.get("id") if isinstance(args.get("id"), str) and WEEK_RE.match(args["id"]) else None,
+             "total": sc.get("total"), "path": len(sc.get("path") or []) or None, "kinds": args.get("kinds"),
+             "date": bool(args.get("date")) or None}
+        outcome = "ok" if (sc.get("total") or sc.get("path")) else "empty"
+    elif tool == "coach_get_context":
+        d = {"follow_ties": bool(sc.get("follow_ties")) or None,
+             "no_project": (sc.get("project") is None and bool(sc.get("projects"))) or None, **_marked(sc)}
     elif tool == "coach_holdings":
         d = {"action": args.get("action"), "imported": len(sc.get("imported") or []),
              "unlabelled": len(sc.get("unlabelled") or [])}
@@ -689,16 +747,29 @@ def _log_usage(ctx, tool: str, args: dict, res, err, t0: float) -> None:
     """One usage event per tool call, after it ran. Never raises: a broken log must not cost an answer."""
     try:
         st = ctx.request_context.lifespan_context if ctx is not None else None
-        if st is None or not st.usage_on or st.store is None:
+        if st is None or not st.usage_on:
+            return
+        # before a Project is chosen there is no Project store: the call goes to the Common profile's log, stamped
+        # with this coach (ADR-0026), so what was asked before choosing is not lost; with neither, nothing is kept
+        target, stamp = st.store, None
+        if target is None:
+            target, stamp = st.common, str(product.PACK.get("id") or "founder")
+        if target is None:
             return
         ms = int((time.monotonic() - t0) * 1000)
         if err is not None or (res is not None and getattr(res, "is_error", False)):
             msg = _QUOTED.sub("'…'", str(err)) if err is not None else ""     # values the Founder typed stay out
             outcome, detail = "error", {"error": (type(err).__name__ + ": " if err is not None else "") + msg[:160]}
+            if tool in ("coach_update", "coach_graph", "coach_recall") and _rid(args.get("id")):
+                detail["id"] = args["id"]                                       # which record a refusal was about
+            if tool == "coach_graph" and isinstance(args.get("op"), str):
+                detail["op"] = args["op"]
+            if tool == "coach_update" and isinstance(args.get("status"), str):
+                detail["status"] = args["status"]
         else:
             sc = getattr(res, "structured_content", None) or {}
             outcome, detail = _usage_detail(tool, args, sc, st.usage_text)
-        st.store.log_usage(tool, outcome, ms, run=st.run, version=__version__, detail=detail)
+        target.log_usage(tool, outcome, ms, run=st.run, version=__version__, detail=detail, coach=stamp)
     except Exception as e:                      # noqa: BLE001
         log.debug("usage event not logged: %s", e)
 
@@ -1021,11 +1092,14 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
             ws.projects.set_last(pid)
         if engine_home is not None and pk is not None:      # let the other coaches on this machine find this one
             installed.register(engine_home, path, pk.meta)
-        if store is not None and holder["state"].usage_on:
-            try:
-                store.prune_usage(USAGE_DAYS)
-            except sqlite3.Error as e:                 # busy: the next start prunes
-                log.debug("usage log not pruned: %s", e)
+        if holder["state"].usage_on:
+            for s, who in ((store, None), (common, str(product.PACK.get("id") or "founder"))):
+                if s is None:
+                    continue
+                try:
+                    s.prune_usage(USAGE_DAYS, coach=who)
+                except sqlite3.Error as e:             # busy: the next start prunes
+                    log.debug("usage log not pruned: %s", e)
         try:
             yield holder["state"]
         finally:

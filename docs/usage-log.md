@@ -36,6 +36,15 @@ without collecting what the Founder asked or was told.
 | D15 | **0.1.7 (2026-10-15):** a search row logs the effective `top_k` (10 unless the host or `<PREFIX>TOP_K` says otherwise). `ytbrain gaps` groups searches into asks and Search rounds by time (same session; 120 s and 5 s gaps), reports the share of searches whose Domains the host named, and attributes a search that named none to the Domain most of its logged hits belong to, read from the pack the coach registered under `~/.ytbrain/installed/`. | Searches now cover the whole Library by default, so what a weak search was about has to come from what it found. |
 | D16 | **2026-10-31:** a search's level is fixed when it ran, so `ytbrain gaps --replay` searches each distinct weak question (with its recorded text, Domains named and Stage) again, the way the server does, against the pack each coach registered under `installed/` (or `--replay-pack DIR` for one coach), and shows its level then and now. It reads the same copied `usage` tables and writes nothing. | After new Sources or a new build, the open question is whether the old weak questions are answered now; the logged levels can't say. |
 
+## Follow-up decided 2026-11-11 (ADR-0026)
+
+| # | Decision | Why |
+|---|---|---|
+| D17 | **Memory calls log record ids and marks.** `coach_recall`, `coach_get_context`, `coach_graph`, `coach_update` and `coach_record` rows carry the ids they touched, the ids a read showed marked `edited`, `ties` or `planned`, the graph operation, and ties added or ended; a refused call keeps the id it named. Only values shaped like a record id or a week are kept. Recall text only under D10's opt-in. | Without them nothing says whether the coach opened the history and ties a read pointed it to. |
+| D18 | **`ytbrain gaps` has a memory section**: calls by kind and graph operation, follow-through (strict and loose), ties and suggestion answers, refused writes, rows from before the details; it warns from 10 chances below 80 %. | The rate only means something with enough cases, and a warning must say which reads to look at. |
+| D19 | **Calls before a Project is chosen** go to the Common profile's log (`you.db`), stamped with the coach; `usage clear` also clears them. | They are the questions asked first in a session, and had nowhere to go. |
+| D20 | **Forget blanks ids, keeps rows.** Another coach's rows that named a forgotten record keep their counts; its id becomes `forgotten`. | A row never points at what was forgotten, and totals stay true. |
+
 ## Acceptance criteria (tests/test_coach.py, `test_u*`)
 
 - **U1** Every tool (9 in the founder coach, 12 in the investor coach), successful or not, adds one event with the fields in D2; a replayed write says so.
@@ -45,4 +54,5 @@ without collecting what the Founder asked or was told.
 - **U5** Events older than the retention window are pruned.
 - **U6** A v3 store migrates to v4 with a backup first; `forget` deletes the log; `export` includes it; usage adds no change-log rows and doesn't show in FOUNDER.md.
 - **U7** `usage summary` (text and JSON), `usage export` (usage only) and `usage clear` (needs `--yes`) work; `status` reports it.
+- **U8** Memory calls log ids and marks, never words (`test_u8`); **U9** recall text only with the opt-in; **U10** another coach's rows keep their counts and blank forgotten ids; calls before a Project land in the Common profile (`tests/test_projects.py`); the memory section (`tests/test_gaps.py`, `test_g12`-`g14`).
 - The MCP tool-schema snapshot is unchanged.

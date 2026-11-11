@@ -129,6 +129,11 @@ USAGE_OUTCOMES = ("ok", "empty", "gap", "error")
 USAGE_BUSY_MS = 250                  # a usage write waits this long for a busy store, then gives up
 DAILY_BACKUPS_KEPT = 7
 WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
+# a record id (g-1a2b, pe-3c4d, ...): what the usage log may keep of a memory call; never a word the person typed
+RECORD_ID = re.compile(r"^(?:" + "|".join(sorted(D.KIND_OF_PREFIX, key=len, reverse=True)) + r")-[0-9a-z]{2,16}$")
+USAGE_ID_KEYS = ("id", "to")                                   # usage detail fields holding one record id
+USAGE_ID_LISTS = ("ids", "edited", "ties", "planned")          # ... and a list of them (ADR-0026)
+FORGOTTEN = "forgotten"                                        # what a forgotten record's id becomes in the log
 
 
 class StoreError(ValueError):
@@ -1293,17 +1298,18 @@ class FounderStore:
 
     # ------------------------------------------------------------------ usage log
     def log_usage(self, tool: str, outcome: str, duration_ms: int, run: str, version: str | None = None,
-                  detail: dict | None = None) -> bool:
+                  detail: dict | None = None, coach: str | None = None) -> bool:
         """Append one usage event (docs/usage-log.md). Best effort by design: never raises, never
         waits more than USAGE_BUSY_MS for a busy store, adds no change-log row and no FOUNDER.md
-        rewrite. Returns whether the row was written."""
+        rewrite. `coach` stamps the row for a store that is no coach's own (the Common profile, which keeps the
+        calls a coach made before a Project was chosen: ADR-0026). Returns whether the row was written."""
         try:
             with self._lock:
                 self.db.execute(f"PRAGMA busy_timeout={USAGE_BUSY_MS}")
                 try:
                     self.db.execute("INSERT INTO usage (founder_id, coach, at, run, tool, outcome, duration_ms, version, "
                                     "detail) VALUES (?,?,?,?,?,?,?,?,?)",
-                                    (self.fid, self.coach, self._iso(), str(run)[:40], str(tool)[:60],
+                                    (self.fid, coach or self.coach, self._iso(), str(run)[:40], str(tool)[:60],
                                      outcome if outcome in USAGE_OUTCOMES else "error", max(0, int(duration_ms)),
                                      version, _j(detail or {})))
                 finally:
@@ -1314,11 +1320,42 @@ class FounderStore:
             logging.getLogger("founder_coach").debug("usage event not logged: %s", e)
             return False
 
-    def prune_usage(self, days: int) -> int:
-        """Delete usage events older than `days` days; returns how many."""
+    def prune_usage(self, days: int, coach: str | None = None) -> int:
+        """Delete usage events older than `days` days (`coach`: another coach's rows in a shared store, such as the
+        Common profile); returns how many."""
         cutoff = (self.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
         with self._lock:
-            n = self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=? AND at < ?", (self.fid, self.coach, cutoff)).rowcount
+            n = self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=? AND at < ?",
+                                (self.fid, coach or self.coach, cutoff)).rowcount
+        return n
+
+    def blank_usage_ids(self) -> int:
+        """After a forget, every coach's usage rows keep their counts, but the id of a record no longer in the store
+        becomes FORGOTTEN (ADR-0026): a row never points at what was forgotten. Returns how many rows changed."""
+        live: set[str] = set()
+        with self._lock:
+            for table in sorted(set(D.TABLE_OF.values())):
+                live |= {r[0] for r in self.db.execute(f"SELECT id FROM {table}")}
+            rows = self.db.execute("SELECT id, detail FROM usage").fetchall()
+            gone = lambda v: isinstance(v, str) and bool(RECORD_ID.match(v)) and v not in live   # noqa: E731
+            n = 0
+            for uid, raw in rows:
+                try:
+                    d = json.loads(raw or "{}")
+                except ValueError:
+                    continue
+                if not isinstance(d, dict):
+                    continue
+                before = json.dumps(d, sort_keys=True)
+                for k in USAGE_ID_KEYS:
+                    if gone(d.get(k)):
+                        d[k] = FORGOTTEN
+                for k in USAGE_ID_LISTS:
+                    if isinstance(d.get(k), list):
+                        d[k] = [FORGOTTEN if gone(v) else v for v in d[k]]
+                if json.dumps(d, sort_keys=True) != before:
+                    self.db.execute("UPDATE usage SET detail=? WHERE id=?", (_j(d), uid))
+                    n += 1
         return n
 
     def usage_rows(self, days: int | None = None) -> list[dict]:
@@ -1374,9 +1411,10 @@ class FounderStore:
         _atomic(path, "".join(json.dumps({**r, "product": product.ID}, ensure_ascii=False) + "\n" for r in rows))
         return {"path": path, "count": len(rows)}
 
-    def clear_usage(self) -> int:
+    def clear_usage(self, coach: str | None = None) -> int:
         with self._lock:
-            return self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=?", (self.fid, self.coach,)).rowcount
+            return self.db.execute("DELETE FROM usage WHERE founder_id=? AND coach=?",
+                                   (self.fid, coach or self.coach)).rowcount
 
     def _goal_visible(self, gid: str) -> bool:
         sql, who = self._in("goals", "SELECT 1 FROM goals WHERE id=? AND founder_id=? AND coach=?")
@@ -1862,6 +1900,11 @@ class FounderStore:
             except BaseException:
                 _rollback(self.db)
                 raise
+            try:                                       # other coaches' rows: counts kept, forgotten ids blanked
+                self.blank_usage_ids()
+            except sqlite3.Error as e:
+                import logging
+                logging.getLogger("founder_coach").warning("forget: usage ids not blanked (%s)", e)
             for stmt in ("VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"):
                 try:
                     self.db.execute(stmt)

@@ -360,6 +360,10 @@ _Avoid_: bug report, rating, complaint
 The coach's local record of its own tool calls (which tool, when, how long, how it went), kept on the Founder's machine for 90 days without their words unless they opt in; sent only if they export it.
 _Avoid_: telemetry, analytics, tracking
 
+**Follow-through**:
+The share of memory reads that showed a record marked as having history or ties (`edited`, `ties`) and were followed, in the same session, by a `coach_graph` call on one of those records. Counted from the usage log by `ytbrain gaps`, judged only from 10 such reads (ADR-0026).
+_Avoid_: graph usage rate, recall rate
+
 ## Pipeline
 
 **Step**:

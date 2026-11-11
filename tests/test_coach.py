@@ -1202,6 +1202,100 @@ def test_u5_u6_retention_migration_export_and_forget():
     assert sqlite3.connect(home / "founder.db").execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 1
 
 
+def test_u8_memory_calls_log_record_ids_and_marks_never_words():
+    """ADR-0026: a recall, context or graph call logs which records it touched and which of them carried a mark that
+    asks for coach_graph (`edited`, `ties`); an update logs its target and the ties it added or ended. Ids only: the
+    query, the record text and anything the host passed that is not a record id stay out."""
+    secret_decision, secret_reason = "Sell to orthodontists in Leeds", "the clinics in Leeds asked twice"
+
+    async def flow(c, tmp):
+        g = (await c.call_tool("coach_record", {"entry": {"kind": "goal", "text": "Ten pilots"},
+                                                "request_id": "g"})).structured_content["ids"][0]
+        d = (await c.call_tool("coach_record", {"entry": {"kind": "decision", "text": secret_decision,
+                                                          "reasoning": "they asked"},
+                                                "request_id": "d"})).structured_content["ids"][0]
+        await c.call_tool("coach_update", {"id": d, "changes": {"text": secret_decision + " first"},
+                                           "reason": secret_reason, "request_id": "u1"})
+        await c.call_tool("coach_update", {"id": d, "links": [{"to": g, "type": "serves", "action": "add"}],
+                                           "request_id": "u2"})
+        await c.call_tool("coach_recall", {"query": "orthodontists Leeds"})
+        await c.call_tool("coach_get_context", {})
+        await c.call_tool("coach_graph", {"op": "history", "id": d})
+        await c.call_tool("coach_graph", {"op": "around", "id": "d-ffff"})                 # an unknown record
+        bad = await c.call_tool("coach_graph", {"op": "around", "id": "the Leeds clinics"})   # words, not an id
+        assert bad.is_error
+        rows = _usage_rows(tmp / "home")
+        by = {}
+        for r in rows:
+            by.setdefault(r["tool"], []).append(r)
+        u1, u2 = by["coach_update"]
+        assert u1["detail"]["id"] == d and u1["detail"]["reason"] is True and u1["detail"]["changed"] is True
+        assert u2["detail"]["links_added"] == 1
+        (rc,) = by["coach_recall"]
+        assert rc["detail"]["mode"] == "search" and d in rc["detail"]["ids"] and rc["detail"]["hits"] >= 1
+        assert d in rc["detail"]["edited"] and d in rc["detail"]["ties"], rc["detail"]
+        assert rc["detail"]["query_chars"] == len("orthodontists Leeds") and "query" not in rc["detail"]
+        (cx,) = by["coach_get_context"]
+        assert cx["detail"].get("follow_ties") is True and d in cx["detail"].get("edited", []), cx["detail"]
+        h, unknown, words = by["coach_graph"]
+        assert h["detail"]["op"] == "history" and h["detail"]["id"] == d and h["outcome"] == "ok"
+        assert unknown["outcome"] == "error" and unknown["detail"]["id"] == "d-ffff" and unknown["detail"]["op"] == "around"
+        assert words["outcome"] == "error" and "id" not in words["detail"], "words passed as an id are never kept"
+        dump = json.dumps(rows)
+        for private in (secret_decision, secret_reason, "orthodontists", "Leeds", "Ten pilots"):
+            assert private not in dump, f"{private!r} leaked into the usage log"
+    _with_client(flow)
+
+
+def test_u9_recall_text_is_kept_only_with_the_opt_in():
+    def run(env):
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        seen = {}
+
+        async def flow(c, tmp):
+            await c.call_tool("coach_record", {"entry": {"kind": "goal", "text": "Ten pilots"}, "request_id": "g"})
+            await c.call_tool("coach_recall", {"query": "pilots"})
+            seen["rows"] = [r for r in _usage_rows(tmp / "home") if r["tool"] == "coach_recall"]
+        try:
+            ran = _with_client(flow)
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        return seen.get("rows") if ran else None
+    plain = run({product.env_name("USAGE_TEXT"): "0"})
+    if plain is None:
+        return
+    assert "query" not in plain[0]["detail"]
+    (row,) = run({product.env_name("USAGE_TEXT"): "1"})
+    assert row["detail"]["query"] == "pilots"
+
+
+def test_u10_forget_keeps_other_coaches_rows_and_blanks_the_forgotten_ids():
+    """ADR-0026: one coach's forget deletes its own usage rows; another coach's rows that named its records keep
+    their counts, with each forgotten id replaced by `forgotten`; a week and a record still kept stay as they were."""
+    from founder_coach.store import FORGOTTEN
+    home = Path(tempfile.mkdtemp())
+    a = FounderStore(home, clock=Clock())                      # the founder coach
+    b = FounderStore(home, clock=Clock(), coach="coding")      # another coach of the same Project
+    try:
+        gone = a.record({"kind": "goal", "text": "Ten pilots"})["ids"][0]
+        kept = b.record({"kind": "decision", "text": "Use Postgres", "reasoning": "one store"})["ids"][0]
+        a.log_usage("coach_recall", "ok", 3, run="r1", detail={"ids": [gone]})
+        b.log_usage("coach_recall", "ok", 3, run="r1", detail={"hits": 2, "ids": [gone, kept], "edited": [gone]})
+        b.log_usage("coach_graph", "ok", 3, run="r1", detail={"op": "around", "id": gone, "week": "2026-W40"})
+        b.log_usage("coach_graph", "ok", 3, run="r1", detail={"op": "history", "id": kept})
+        a.forget()
+        assert a.usage_rows() == []
+        rc, g1, g2 = b.usage_rows()
+        assert rc["detail"] == {"hits": 2, "ids": [FORGOTTEN, kept], "edited": [FORGOTTEN]}, rc["detail"]
+        assert g1["detail"] == {"op": "around", "id": FORGOTTEN, "week": "2026-W40"}
+        assert g2["detail"] == {"op": "history", "id": kept}
+    finally:
+        a.close()
+        b.close()
+
+
 def test_u7_usage_cli_summarises_exports_and_clears():
     import contextlib, io
     from founder_coach import cli

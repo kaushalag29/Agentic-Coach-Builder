@@ -9,6 +9,10 @@ backup, no write). A search is rated `strong`, `partial` or `none` (its coverage
 coach and Domain, shows where the border between strong and partial sits in similarity, and, when the question
 text was recorded (`<PREFIX>USAGE_TEXT=1`, your own machine only), lists the questions behind the weak ones.
 
+It also says how each coach used the Project's memory (ADR-0026): recall, context and graph calls, follow-through (a
+read that marked a record `edited` or `ties`, followed by coach_graph on that record), ties and suggestion answers, and
+refused writes, all from record ids; and the calls a coach made before a Project was chosen, from the Common profile.
+
 A search's level is fixed when it ran. `--replay` searches those weak questions again, the way the coach's server
 does, against the Knowledge pack each coach has installed now, and shows each one's level then and now: whether
 new Sources or a new build closed the gap. It logs nothing and writes nothing.
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import statistics
@@ -31,6 +36,11 @@ DB_NAME = "founder.db"
 ASK_GAP_S = 120          # searches of one session closer than this belong to one ask
 ROUND_GAP_S = 5          # ... and closer than this to one round (a round's searches go out together)
 SEARCH_GUARD = 12        # the skills' cap on searches per ask (0.1.7)
+FOLLOW_MIN = 10          # follow-through is only judged (a warning) on at least this many marked reads (ADR-0026)
+FOLLOW_BAR = 0.8         # ... and warns below this share, G9's bar
+FORGOTTEN = "forgotten"  # a forgotten record's id in the log (founder_coach.store.FORGOTTEN)
+ANSWERS = {"accepted": "yes", "rejected": "never", "snoozed": "later"}   # a proposal's answer, as the person says it
+COMMON_DB = "you.db"     # the Common profile: it keeps the calls made before a Project was chosen
 
 
 def engine_home() -> Path:
@@ -44,6 +54,7 @@ class Project:
     name: str
     db: Path
     shared: bool = False          # a store in the shared Projects folder: its rows say which coach made each
+    common: bool = False          # the Common profile's log: calls made before a Project was chosen (ADR-0026)
     rows: list[dict] = field(default_factory=list)
     note: str = ""                # why it has no rows (no usage table, unreadable)
 
@@ -91,6 +102,9 @@ def discover(home: Path | None = None, pack: str | None = None) -> list[Project]
                 continue
             out.append(Project(pack=pdir.name, project_id=d.name, name=str(_meta(d).get("name") or d.name),
                                db=d / DB_NAME))
+    if (home / COMMON_DB).is_file():                 # stamped per coach, like a shared store
+        out.append(Project(pack="", project_id="", name="(none chosen)", db=home / COMMON_DB, shared=True,
+                           common=True))
     return out
 
 
@@ -154,13 +168,16 @@ def load(home: Path | None = None, pack: str | None = None, days: int | None = 3
         by_coach: dict[str, list[dict]] = {}          # a shared store holds every coach's rows: one entry per coach
         for r in rows:
             by_coach.setdefault(r.pop("coach") or "unknown", []).append(r)
-        if not by_coach and p.note and not pack:
+        if not by_coach and p.note and not pack and not p.common:
             out.append(p)
         for coach, mine in sorted(by_coach.items()):
             if pack and coach != pack:
                 continue
+            kept = [r for r in mine if cutoff is None or r["at"] >= cutoff]
+            if p.common and not kept:
+                continue                              # no calls before a Project in this window: nothing to say
             out.append(Project(pack=coach, project_id=p.project_id, name=p.name, db=p.db, shared=True, note=p.note,
-                               rows=[r for r in mine if cutoff is None or r["at"] >= cutoff]))
+                               rows=kept, common=p.common))
     return out
 
 
@@ -293,7 +310,8 @@ def summarize(p: Project, questions: int = 15, hits: HitDomains | None = None) -
     with_text = [r for r in searches if r["detail"].get("query")]
     weak_text = [r for r in weak if r["detail"].get("query")]
     return {
-        "pack": p.pack, "project": p.name, "project_id": p.project_id, "note": p.note,
+        "pack": p.pack, "project": p.name, "project_id": p.project_id, "note": p.note, "common": p.common,
+        "memory": memory(p.rows, questions),
         "calls": len(p.rows), "searches": len(searches), "first": p.rows[0]["at"] if p.rows else None,
         "last": p.rows[-1]["at"] if p.rows else None, "levels": by_level,
         "similarity": {lv: _sims([r for r in searches if level_of(r) == lv]) for lv in ("strong", "partial", "none")},
@@ -313,6 +331,107 @@ def summarize(p: Project, questions: int = 15, hits: HitDomains | None = None) -
     }
 
 
+def memory(rows: list[dict], questions: int = 15) -> dict:
+    """How the coach used the Project's memory (ADR-0026): recall, context and graph calls, follow-through, ties and
+    suggestions answered, refused writes. Follow-through: a read (coach_recall or coach_get_context) that showed a
+    record marked `edited` or `ties` is one chance; it is followed when a later coach_graph call of the same session
+    names one of those records, and loosely followed when any later coach_graph call of the session ran."""
+    ok = [r for r in rows if r["outcome"] != "error"]
+    recall = [r for r in ok if r["tool"] == "coach_recall"]
+    ctx = [r for r in ok if r["tool"] == "coach_get_context"]
+    graph = [r for r in ok if r["tool"] == "coach_graph"]
+    graph_err = [r for r in rows if r["tool"] == "coach_graph" and r["outcome"] == "error"]
+    ops: dict[str, int] = {}
+    for r in graph:
+        if r["detail"].get("op"):
+            ops[r["detail"]["op"]] = ops.get(r["detail"]["op"], 0) + 1
+    not_rated = {"recall": sum("hits" not in r["detail"] for r in recall),
+                 "context": sum(not r["detail"] for r in ctx), "graph": sum("op" not in r["detail"] for r in graph)}
+    order = {id(r): i for i, r in enumerate(rows)}
+    chances, missed, strict, loose = 0, [], 0, 0
+    for r in sorted(recall + ctx, key=lambda r: order[id(r)]):      # in the order they ran: newest last
+        marks = {m: [v for v in r["detail"].get(m) or [] if v != FORGOTTEN] for m in ("edited", "ties")}
+        if not any(r["detail"].get(m) for m in ("edited", "ties")):
+            continue
+        chances += 1
+        want = set(marks["edited"]) | set(marks["ties"])
+        later = [g for g in graph if g.get("run") == r.get("run") and order[id(g)] > order[id(r)]]
+        if later:
+            loose += 1
+        if any({g["detail"].get("id"), g["detail"].get("to")} & want for g in later):
+            strict += 1
+        else:
+            missed.append({"at": r["at"][:19], "tool": r["tool"],
+                           "records": [f"{v} ({m})" for m in ("edited", "ties") for v in marks[m]][:4]})
+    links_added = sum(int(r["detail"].get("links_added") or 0) for r in ok if r["tool"] in ("coach_update", "coach_record"))
+    links_ended = sum(int(r["detail"].get("links_ended") or 0) for r in ok if r["tool"] == "coach_update")
+    answers = {"yes": 0, "never": 0, "later": 0}
+    for r in ok:
+        d = r["detail"]
+        if r["tool"] == "coach_update" and str(d.get("id") or "").startswith("p-") and d.get("status") in ANSWERS:
+            answers[ANSWERS[d["status"]]] += 1
+    refused = {"old_copy": [], "not_editable": 0, "other": 0}
+    for r in rows:
+        if r["tool"] not in ("coach_update", "coach_record") or r["outcome"] != "error":
+            continue
+        msg = str(r["detail"].get("error") or "")
+        if "the live copy" in msg:
+            live = re.search(r"carried to (\S+)", msg)
+            refused["old_copy"].append(f"{r['detail'].get('id') or '?'} → {live.group(1) if live else '?'}")
+        elif "can't change" in msg:
+            refused["not_editable"] += 1
+        else:
+            refused["other"] += 1
+    return {"recall": len(recall), "expand": sum(bool(r["detail"].get("expand")) for r in recall),
+            "recall_empty": sum(r["outcome"] == "empty" for r in recall), "context": len(ctx), "graph": len(graph),
+            "graph_ops": dict(sorted(ops.items(), key=lambda kv: -kv[1])),
+            "graph_empty": sum(r["outcome"] == "empty" for r in graph),
+            "graph_unknown_id": sum("no record" in str(r["detail"].get("error") or "") for r in graph_err),
+            "follow": {"chances": chances, "followed": strict, "any_graph": loose, "min": FOLLOW_MIN,
+                       "bar": FOLLOW_BAR, "rate": round(strict / chances, 3) if chances else None,
+                       "warn": chances >= FOLLOW_MIN and strict / chances < FOLLOW_BAR,
+                       "not_followed": list(reversed(missed))[:questions]},
+            "links": {"added": links_added, "ended": links_ended}, "suggestions": answers, "refused": refused,
+            "not_rated": not_rated}
+
+
+def _memory_lines(m: dict) -> list[str]:
+    """The memory section of one coach's Project, only the lines that have something to say."""
+    if not (m["recall"] or m["context"] or m["graph"] or any(m["refused"].values()) or m["links"]["added"]):
+        return []
+    out = ["  memory:"]
+    ops = ", ".join(f"{k} {v}" for k, v in m["graph_ops"].items())
+    out.append(f"    recall {m['recall']} (expand {m['expand']}, nothing found {m['recall_empty']}) · context "
+               f"{m['context']} · graph {m['graph']}" + (f": {ops}" if ops else "")
+               + f" (nothing found {m['graph_empty']}, unknown id {m['graph_unknown_id']})")
+    f = m["follow"]
+    if f["chances"]:
+        pct = round(100 * f["followed"] / f["chances"])
+        judged = "" if f["chances"] >= f["min"] else f"   [needs {f['min']} to warn]"
+        out.append(f"    follow-through {f['followed']} of {f['chances']} marked reads ({pct}%) went on to coach_graph "
+                   f"on a marked record; any coach_graph call after: {f['any_graph']} of {f['chances']}{judged}")
+        if f["warn"]:
+            out.append(f"    WARNING: follow-through is under {round(100 * f['bar'])}%: read the sessions below; the "
+                       f"coach answered about records whose history or ties it didn't open")
+        if f["not_followed"]:
+            out.append("      not followed: " + " · ".join(f"{x['at'][:10]} {', '.join(x['records'])}"
+                                                       for x in f["not_followed"]))
+    links, sug = m["links"], m["suggestions"]
+    if links["added"] or links["ended"] or any(sug.values()):
+        out.append(f"    ties: {links['added']} added, {links['ended']} ended · suggestions answered: {sug['yes']} yes, "
+                   f"{sug['never']} never, {sug['later']} later")
+    ref = m["refused"]
+    if any(ref.values()):
+        old = (f"{len(ref['old_copy'])} to an old copy ({', '.join(ref['old_copy'][:6])})" if ref["old_copy"]
+               else "0 to an old copy")
+        out.append(f"    writes refused: {old}, {ref['not_editable']} field not editable, {ref['other']} other")
+    nr = m["not_rated"]
+    if any(nr.values()):
+        out.append(f"    before details were logged: {nr['recall']} recall, {nr['context']} context, {nr['graph']} graph "
+                   "(not rated)")
+    return out
+
+
 def report(projects: list[Project], home: Path | None = None, days: int | None = 30, questions: int = 15) -> dict:
     home = home or engine_home()
     return {"home": str(home), "days": days,
@@ -326,14 +445,19 @@ def render(rep: dict, home: Path | None = None) -> str:
         return f"gaps: no coach Projects under {rep['home']} (use a coach in a Project first; `/setup` makes one)"
     span = f"last {rep['days']} days" if rep["days"] else "all time"
     for s in rep["projects"]:
-        lines.append(f"{s['pack']} coach · Project {s['project']} ({s['project_id']}) · {span}")
+        if s.get("common"):
+            lines.append(f"{s['pack']} coach · before a Project was chosen (the Common profile's log) · {span}")
+        else:
+            lines.append(f"{s['pack']} coach · Project {s['project']} ({s['project_id']}) · {span}")
         if s["note"]:
             lines.append(f"  {s['note']}")
             lines.append("")
             continue
         n, lv = s["searches"], s["levels"]
+        mem = _memory_lines(s["memory"]) if s.get("memory") else []
         if not n:
             lines.append(f"  {s['calls']} tool call(s), no searches in this window")
+            lines.extend(mem)
             lines.append("")
             continue
         rated = n - lv["unrated"]                      # percentages are of the searches that carry a coverage level
@@ -374,6 +498,7 @@ def render(rep: dict, home: Path | None = None) -> str:
             for q in s["weak_questions"]:
                 sim_s = "" if q["top_similarity"] is None else f" sim {q['top_similarity']}"
                 lines.append(f"    {q['at']} {q['level']:7}{sim_s} [{', '.join(q['domains'])}] {q['query']}")
+        lines.extend(mem)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

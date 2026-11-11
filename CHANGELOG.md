@@ -5,6 +5,14 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **Memory use is measured (ADR-0026).** The usage log now says what a memory call did: the records a recall or
+  context read returned and which of them were marked `edited` or `ties`, the graph operation and record, an update's
+  target and the ties it added or ended, and the record a refused call named. Ids only, never words (recall text only
+  with `<PREFIX>USAGE_TEXT=1`). `ytbrain gaps` gains a memory section: calls by kind, follow-through (a marked read
+  followed by `coach_graph` on that record in the same session), ties and suggestions answered, refused writes; it
+  warns from 10 marked reads below 80 % and lists the ones not followed. Calls made before a Project is chosen are
+  kept in the Common profile's log (per coach) instead of being lost; a forget keeps other coaches' rows and blanks
+  the forgotten ids.
 - **A change to carried work goes to the live copy (ADR-0025 amendment).** After a Commitment is carried, a change
   aimed at the old copy (its words, a note, a tie, a second carry, done or dropped) is refused with the id, week and
   status of the live copy, so the coach makes it there; real use had edits land on copies no read shows. A correction

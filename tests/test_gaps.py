@@ -323,6 +323,112 @@ def test_g10_a_shared_project_is_read_per_coach_and_a_moved_store_is_not_counted
     assert (p.pack, p.project_id, p.shared, len(p.rows)) == ("founder", "acme", True, 1)
 
 
+def _memory_project(home: Path, pid: str, rows: list[tuple], coach: str = "founder") -> None:
+    """One shared Project whose usage table holds (tool, outcome, detail, run) rows in this order."""
+    d = home / "projects" / pid
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "project.json").write_text(json.dumps({"name": pid.title()}))
+    s = FounderStore(d, clock=Clock("2026-10-10T09:00:00+00:00"), coach=coach)
+    try:
+        for tool, outcome, det, run in rows:
+            s.log_usage(tool, outcome, 5, run=run, version="0.1.27", detail=det)
+    finally:
+        s.close()
+
+
+OLD_COPY = ("ToolError: c-1a was carried to c-2b (2026-W46, open) on 4 Nov, the live copy: make this change on c-2b. "
+            "Only to correct what c-1a said")
+
+
+def test_g12_memory_counts_follow_through_ties_answers_and_refused_writes():
+    """ADR-0026: a read that showed a record marked `edited` or `ties` is one chance; it is followed when a later
+    coach_graph call of the same session names one of those records (strict), and any later graph call of the session
+    counts as loose. Ties and suggestion answers are counted, refused writes grouped, old rows not rated."""
+    home = _home()
+    _memory_project(home, "acme", [
+        ("coach_recall", "ok", {"mode": "search", "hits": 2, "ids": ["d-1a", "g-1a"], "edited": ["d-1a"]}, "r1"),
+        ("coach_graph", "ok", {"op": "history", "id": "d-1a", "total": 3}, "r1"),            # followed
+        ("coach_recall", "ok", {"mode": "search", "hits": 1, "ids": ["g-1a"], "ties": ["g-1a"]}, "r1"),
+        ("coach_graph", "ok", {"op": "around", "id": "g-2b", "total": 4}, "r1"),             # a graph call, not on it
+        ("coach_get_context", "ok", {"follow_ties": True, "edited": ["c-3c"]}, "r1"),        # nothing after: missed
+        ("coach_graph", "empty", {"op": "thread", "id": "c-9d", "total": 0}, "r2"),
+        ("coach_recall", "ok", {"mode": "search", "hits": 1, "ids": ["d-4d"], "edited": ["d-4d"]}, "r2"),  # graph before
+        ("coach_recall", "empty", {"mode": "search", "hits": 0, "expand": True}, "r2"),      # no mark: no chance
+        ("coach_recall", "ok", {}, "r0"),                                                    # before details
+        ("coach_get_context", "ok", {}, "r0"),
+        ("coach_graph", "error", {"error": "ToolError: no record '…' this coach can read", "op": "around"}, "r2"),
+        ("coach_update", "ok", {"id": "d-1a", "changed": False, "links_added": 2, "links_ended": 1}, "r2"),
+        ("coach_record", "ok", {"kind": "note", "ids": ["n-5e"], "links_added": 1}, "r2"),
+        ("coach_update", "ok", {"id": "p-1a", "status": "accepted"}, "r2"),
+        ("coach_update", "ok", {"id": "p-2b", "status": "rejected"}, "r2"),
+        ("coach_update", "ok", {"id": "p-3c", "status": "snoozed"}, "r2"),
+        ("coach_update", "error", {"error": OLD_COPY, "id": "c-1a"}, "r2"),
+        ("coach_update", "error", {"error": "ToolError: can't change week on a commitment; editable: action"}, "r2"),
+        ("coach_update", "error", {"error": "ToolError: no record '…'"}, "r2"),
+    ])
+    (p,) = G.load(home, days=None, now=NOW)
+    m = G.memory(p.rows)
+    assert (m["recall"], m["context"], m["graph"], m["expand"], m["recall_empty"]) == (5, 2, 3, 1, 1), m
+    assert m["graph_ops"] == {"history": 1, "around": 1, "thread": 1} and m["graph_empty"] == 1
+    assert m["graph_unknown_id"] == 1
+    f = m["follow"]
+    assert (f["chances"], f["followed"], f["any_graph"]) == (4, 1, 2), f
+    assert f["warn"] is False, "four chances are too few to judge"
+    assert [x["records"] for x in f["not_followed"]] == [["d-4d (edited)"], ["c-3c (edited)"], ["g-1a (ties)"]]
+    assert m["links"] == {"added": 3, "ended": 1} and m["suggestions"] == {"yes": 1, "never": 1, "later": 1}
+    assert m["refused"] == {"old_copy": ["c-1a → c-2b"], "not_editable": 1, "other": 1}
+    assert m["not_rated"] == {"recall": 1, "context": 1, "graph": 0}
+    text = G.render(G.report([p], home, days=None))
+    for line in ("memory:", "graph 3: history 1, around 1, thread 1", "follow-through 1 of 4 marked reads (25%)",
+                 "[needs 10 to warn]", "not followed: ", "ties: 3 added, 1 ended", "1 yes, 1 never, 1 later",
+                 "writes refused: 1 to an old copy (c-1a → c-2b), 1 field not editable, 1 other",
+                 "before details were logged: 1 recall, 1 context, 0 graph"):
+        assert line in text, (line, text)
+    assert "WARNING" not in text
+
+
+def test_g13_follow_through_warns_only_from_ten_chances_below_eighty_percent():
+    def chances(home, pid, n, followed):
+        rows = []
+        for i in range(n):
+            rid = f"d-{i:02x}a"
+            rows.append(("coach_recall", "ok", {"mode": "search", "hits": 1, "ids": [rid], "edited": [rid]}, f"r{i}"))
+            if i < followed:
+                rows.append(("coach_graph", "ok", {"op": "history", "id": rid, "total": 1}, f"r{i}"))
+        _memory_project(home, pid, rows)
+    home = _home()
+    chances(home, "low", 10, 7)
+    chances(home, "ok", 10, 8)
+    chances(home, "few", 9, 0)
+    rep = G.report(G.load(home, days=None, now=NOW), home, days=None)
+    by = {s["project_id"]: s["memory"]["follow"] for s in rep["projects"]}
+    assert by["low"]["warn"] and by["low"]["rate"] == 0.7
+    assert not by["ok"]["warn"] and not by["few"]["warn"], "80% passes; nine chances are never judged"
+    text = G.render(rep)
+    assert text.count("WARNING: follow-through is under 80%") == 1
+
+
+def test_g14_calls_before_a_project_are_reported_per_coach_from_the_common_profile():
+    """ADR-0026: the Common profile (you.db) keeps the calls each coach made before a Project was chosen; the report
+    shows them as their own block, and leaves it out when there are none in the window."""
+    from founder_coach import domain as D
+    home = _home()
+    _memory_project(home, "acme", [("coach_get_context", "ok", {"follow_ties": True}, "r1")])
+    s = FounderStore(home, clock=Clock("2026-10-10T09:00:00+00:00"), name="you", fields=D.COMMON_FIELDS)
+    try:
+        s.log_usage("coach_search", "ok", 9, run="r9", detail=_search("partial", 0.66, ["startup"]), coach="founder")
+        s.log_usage("coach_get_context", "ok", 3, run="r9", detail={"no_project": True}, coach="founder")
+    finally:
+        s.close()
+    ps = G.load(home, days=None, now=NOW)
+    common = [p for p in ps if p.common]
+    assert len(common) == 1 and common[0].pack == "founder" and len(common[0].rows) == 2
+    text = G.render(G.report(ps, home, days=None))
+    assert "founder coach · before a Project was chosen" in text and "partial 1" in text
+    assert not [p for p in G.load(home, days=1, now=NOW + dt.timedelta(days=30)) if p.common], \
+        "no calls before a Project in the window: no block"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_g")]
     for f in fns:
