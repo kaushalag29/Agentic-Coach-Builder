@@ -63,3 +63,25 @@ overwrote the old words with no reason kept, so "why did this change, and who ch
   them.
 - **dagre for the HTML layout:** a second library; Cytoscape's own breadth-first layout, turned left to right, is enough
   at a Project's size.
+
+## Amendment (2026-11-11): a write to a carried copy goes to the live copy
+
+Real use showed the gap. A week after two Commitments were carried, the coach changed the words of the carried copies
+and then tried to carry them again: the edits went through, onto copies no read shows as open work, and the live
+copies never got them. A carried Commitment's copy in the next period is its **live copy** (the end of its carries; a
+copy dropped when its carry was undone is passed over).
+
+- **Refused, naming the live copy.** A change to a carried copy's words, a note, a tie, a carry or a status (done,
+  dropped) is refused with the live copy's id, week and status, so the coach makes its next call there. A call that is
+  wrong anyway (an unknown status, a field no one may change) gets that error first.
+- **A correction says so.** Fixing what a carried copy said for its own period (a typo in last week's record) goes
+  through with `reason`, kept in its history like any correction. A status change has no such path: a carried copy
+  keeps the status carried.
+- **Undoing a carry still works.** A carried copy may be set back to open (and its copy dropped), as before.
+- **G9 checks it.** A write case names the record a `coach_update` must land on (`writes`) and the old copies none
+  may land on (`stale`); a refused call counts neither way. The founder set gains one such case.
+- Edits already made to carried copies stay as they are (nothing is lost); the person can copy them to the live copy.
+
+Considered and rejected: applying the change to the live copy automatically. It would change a record the call
+didn't name, and the coach would never learn which record is live.
+

@@ -200,6 +200,48 @@ def test_carrying_a_commitment_links_a_copy_and_counts_the_streak():
     assert s.update(d, changes={"revisit_on": "2026-12-01"})["after"]["revisit_on"] == "2026-12-01"
 
 
+def test_a_carried_copy_refuses_writes_and_names_the_live_copy():
+    """ADR-0025 amendment: once a Commitment is carried, its copy in the new period is the live one. A write aimed at
+    the old copy (carry it again, change its words, mark it done, add a tie) is refused with the live copy's id, so
+    the coach fixes its next call; a correction of what the old period's record said goes through with `reason`; a
+    carry undone (the old copy back to open) is still allowed."""
+    c = Clock()
+    s = _store(c)
+    old = s.record({"kind": "commitments", "items": [{"action": "send the pilot plan", "outcome": "plan sent"}]})["ids"][0]
+    c.advance(days=7)
+    live = s.update(old, status="carried")["new_id"]
+    # the stale writes seen in real use: carry the old copy again, and change its words
+    for call in (lambda: s.update(old, status="carried"),
+                 lambda: s.update(old, changes={"action": "the partner drafts the pilot plan"}),
+                 lambda: s.update(old, note="sent on Friday"),
+                 lambda: s.update(old, status="done", note="sent", reason="it was sent")):
+        try:
+            call()
+        except StoreError as e:
+            assert live in str(e) and "live" in str(e), str(e)
+        else:
+            raise AssertionError("a write to a carried copy went through")
+    _raises(lambda: s.update(old, status="carried"), "only an open Commitment")
+    assert s.get(old)["action"] == "send the pilot plan" and s.get(live)["status"] == "open"
+    goal = s.record({"kind": "goal", "text": "First paid pilot"})["ids"][0]
+    _raises(lambda: s.update(old, links=[{"to": goal, "type": "serves"}]), live)
+    # a correction of the old period's record, said to be one, goes through and keeps its why
+    r = s.update(old, changes={"outcome": "plan sent to both founders"}, reason="typo in last week's record")
+    assert r["after"]["outcome"] == "plan sent to both founders"
+    assert s.get(live)["outcome"] == "plan sent", "a correction of the old copy never touches the live one"
+    # the live copy at the end of a chain is the one named
+    c.advance(days=7)
+    newest = s.update(live, status="carried")["new_id"]
+    _raises(lambda: s.update(old, changes={"action": "x"}), newest)
+    _raises(lambda: s.update(live, status="carried"), newest)
+    # a carry undone is still allowed: the old copy back to open, its copy dropped
+    s.update(newest, status="dropped", reason="carried by mistake")
+    assert s.update(live, status="open")["after"]["status"] == "open"
+    assert s.update(live, changes={"cue": "Mon 9am"})["after"]["cue"] == "Mon 9am"
+    again = s.update(live, status="carried")["new_id"]
+    _raises(lambda: s.update(live, changes={"cue": "Tue"}), again)    # never the dropped copy of the undone carry
+
+
 def test_the_loop_follows_the_projects_interval_and_switch():
     """ADR-0022: the recurring Focus and Check-in. A Project sets `loop` (on/off) and `loop_every`; the overdue
     Nudge, the overdue Commitments, the carry week and the open-count warning all read the interval."""

@@ -3114,6 +3114,29 @@ def test_g9_runs_on_the_made_up_project_and_grades_graph_use_the_right_records_a
     assert C._run_case("g9", hire, run_with("Nothing about hiring a salesperson is recorded."), None, None,
                        fresh)["passed"]
     assert not C._run_case("g9", hire, run_with("We decided to hire one in October."), None, None, fresh)["passed"]
+    # a write case: the change must land on the live copy, never on a copy it was carried from
+    live = next(c for c in cases if c["id"] == "g9-live-copy")
+    assert live["writes"] == ["c_call3"] and set(live["stale"]) == {"c_call", "c_call2"}
+
+    def write_run(*targets):                             # coach_update calls on these seed names: (name, refused?)
+        def run(prompt, env=None, resume=None):
+            import sqlite3                                # each case seeds a fresh home: its own ids, oldest week first
+            db = sqlite3.connect(homes[-1] / "founder.db")
+            rows = [r[0] for r in db.execute("SELECT id FROM commitments WHERE action LIKE 'Call Marco%' ORDER BY week")]
+            db.close()
+            own = dict(zip(("c_call", "c_call2", "c_call3"), rows))
+            tools = [{"name": C.UPDATE, "input": {"id": own[n], "changes": {"outcome": "a signed pilot agreement"}},
+                      "result": "ok", "error": refused} for n, refused in targets]
+            return C.Turn(text="Saved: the outcome is now a signed pilot agreement.",
+                          tools=[{"name": C.CONTEXT, "input": {}, "result": own["c_call3"]}, *tools])
+        return run
+    assert C._run_case("g9", live, write_run(("c_call3", False)), None, None, fresh)["passed"]
+    r = C._run_case("g9", live, write_run(("c_call", False)), None, None, fresh)
+    assert not r["passed"] and r["stale_writes"] == ["c_call"] and r["missing_writes"] == ["c_call3"], r
+    r = C._run_case("g9", live, write_run(("c_call2", True), ("c_call3", False)), None, None, fresh)
+    assert r["passed"], "refused by the store, then moved to the live copy: passes"
+    r = C._run_case("g9", live, write_run(("c_call3", False), ("c_call", False)), None, None, fresh)
+    assert not r["passed"] and r["stale_writes"] == ["c_call"], "a write that also lands on an old copy fails"
     # a private case: a read-only copy of your own Project; the original is never opened for writing
     db = tmp_path / "seed" / "founder.db"
     before = db.read_bytes()

@@ -169,6 +169,15 @@ def next_week(week: str) -> str:
     return iso_week(week_start(week) + dt.timedelta(days=7))
 
 
+def _day_month(iso: str) -> str:
+    """'4 Nov' for an ISO timestamp or date (the day it was recorded, as messages show it)."""
+    try:
+        d = dt.date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return str(iso)[:10]
+    return f"{d.day} {d:%b}"
+
+
 def shift_week(week: str, n: int) -> str:
     """The ISO week `n` weeks after `week` (before it when n is negative)."""
     return iso_week(week_start(week) + dt.timedelta(days=7 * n))
@@ -1438,6 +1447,12 @@ class FounderStore:
         if rec is None:
             raise StoreError(f"no record {rid!r}; ids come from coach_get_context or coach_record")
         kind = rec["kind"]
+        # a write meant for the live copy, aimed at the copy it was carried from (ADR-0025): refused with the live id.
+        # A call that is wrong anyway (an unknown status, a field nobody may change) gets that error first.
+        if kind == "commitment" and rec["status"] == "carried" and status != "open" \
+                and (status is None or status in D.STATUSES[kind]) \
+                and all(k in D.EDITABLE[kind] for k in (changes or {})) and not (reason and status is None):
+            raise StoreError(self._carried_copy_error(rec, status))
         changes = dict(changes or {})
         link_ops = []
         for ln in links or []:
@@ -1536,6 +1551,39 @@ class FounderStore:
             out["warnings"] = self._warnings(week=rec.get("week"))
             return out
         return apply()
+
+    def _live_copy(self, rid: str) -> dict | None:
+        """The live copy of a carried Commitment: follow the carries to the copy that was not carried on. A copy
+        dropped when its carry was undone is passed over for the copy made by the carry that stands."""
+        cur, seen = self.get(rid, links=False), {rid}
+        while cur is not None and cur["status"] == "carried":
+            kids = self.db.execute("SELECT id, status FROM commitments WHERE carried_from=? "
+                                   "ORDER BY created_at DESC, rowid DESC", (cur["id"],)).fetchall()
+            pick = next((k for k in kids if k[1] != "dropped"), kids[0] if kids else None)
+            if pick is None or pick[0] in seen:
+                break
+            seen.add(pick[0])
+            cur = self.get(pick[0], links=False)
+        return cur
+
+    def _carried_copy_error(self, rec: dict, status: str | None) -> str:
+        """Why a write to a carried copy is refused, naming the live copy so the next call goes there (ADR-0025)."""
+        rid = rec["id"]
+        live = self._live_copy(rid)
+        if live is None or live["id"] == rid:
+            return (f"{rid} is carried and no copy of it was found; read it with coach_recall (id {rid}) "
+                    "before changing it")
+        when = f" on {_day_month(live['created_at'])}" if live.get("created_at") else ""
+        where = f"{live['id']} ({live['week']}, {live['status']})"
+        if status == "carried":
+            return (f"only an open Commitment can be carried; {rid} is carried: it was carried to {where}{when}, "
+                    f"the live copy: carry or update {live['id']} instead")
+        out = (f"{rid} was carried to {where}{when}, the live copy: make this change on {live['id']}. ")
+        if status is not None:
+            return out + (f"A carried copy keeps the status carried; to undo the carry, set {rid} back to open "
+                          f"and drop {live['id']}.")
+        return out + (f"Only to correct what {rid} said for its own period ({rec['week']}), pass `reason` "
+                      "(why the correction).")
 
     def _carry_streak(self, rid: str) -> int:
         n, cur = 0, rid

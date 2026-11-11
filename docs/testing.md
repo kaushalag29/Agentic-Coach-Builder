@@ -130,7 +130,7 @@ G9 runs for every coach, each on its own made-up Project (`ytbrain/eval/graph_se
 investor build to run theirs). For the founder coach it also asks questions about your own Project when `data/eval/private/coach/graph.jsonl` exists (never released): one
 JSON object per line with `id`, `prompt`, `store` (the Project's folder; the run works on a read-only copy), `ids` (the
 records the tools must return), `expect` (patterns the answer must contain) or `abstain: true`, an optional `now`, and `graph: true` (or `ops`, the coach_graph operations that count) when the
-answer needs coach_graph. `ids` entries may list alternatives as `a|b|c` (the rows of one carried task).
+answer needs coach_graph. `ids` entries may list alternatives as `a|b|c` (the rows of one carried task). A write case adds `writes` (the records a `coach_update` must land on) and `stale` (old copies none may land on); a call the store refused counts neither way.
 The host runs with only the plugin under test: when `claude --help` lists `--setting-sources`, the harness loads project and local settings only, so the coaches you have installed in Cowork and their session hooks stay out, and the tools of every other coach are denied. Results kept before that isolation are not reused.
 
 ## Level 7: a live session (the only manual check of the product)

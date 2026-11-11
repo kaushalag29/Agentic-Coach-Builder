@@ -69,11 +69,12 @@ SERVER = f"mcp__plugin_{product.ID}_coach"          # the plugin's MCP server, a
 SEARCH, READ = f"{SERVER}__coach_search", f"{SERVER}__coach_read"
 GRAPH, RECALL = f"{SERVER}__coach_graph", f"{SERVER}__coach_recall"
 CONTEXT = f"{SERVER}__coach_get_context"
+UPDATE = f"{SERVER}__coach_update"
 
 
 def use_plugin(plugin: Path | None) -> dict:
     """Point the harness at an assembled plugin: its id, settings prefix, Pack and required profile fields."""
-    global SERVER, SEARCH, READ, GRAPH, RECALL, CONTEXT
+    global SERVER, SEARCH, READ, GRAPH, RECALL, CONTEXT, UPDATE
     try:
         data = json.loads((Path(plugin) / "founder_coach" / "product.json").read_text()) if plugin else {}
     except (OSError, ValueError):
@@ -86,6 +87,7 @@ def use_plugin(plugin: Path | None) -> dict:
     SEARCH, READ = f"{SERVER}__coach_search", f"{SERVER}__coach_read"
     GRAPH, RECALL = f"{SERVER}__coach_graph", f"{SERVER}__coach_recall"
     CONTEXT = f"{SERVER}__coach_get_context"
+    UPDATE = f"{SERVER}__coach_update"
     return TARGET
 
 
@@ -955,8 +957,13 @@ def grade_graph(case: dict, turn: "Turn", ids: dict) -> dict:
     """A case's `ids` are records the coach's reads must return (`a|b|c`: any of them, such as the rows of one carried
     task). coach_graph is required only where the answer needs it (`graph: true` or `ops`: what changed, what was
     believed on a date, how long something was carried, how two records connect); elsewhere a right answer from
-    coach_get_context or coach_recall passes, and the graph calls are reported."""
+    coach_get_context or coach_recall passes, and the graph calls are reported. A write case names the record a
+    coach_update must land on (`writes`, `a|b` alternatives) and the old copies none may land on (`stale`): a call
+    the store refused doesn't count either way, so a coach that is told the live copy and moves to it passes."""
     graph = turn.calls(GRAPH)
+    landed = {str((t["input"] or {}).get("id") or "") for t in turn.calls(UPDATE) if not t.get("error")}
+    missing_writes = [alt for alt in case.get("writes", []) if not any(ids.get(n) in landed for n in alt.split("|"))]
+    stale_writes = [n for n in case.get("stale", []) if ids.get(n) and ids[n] in landed]
     seen = "\n".join(t["result"] for t in turn.tools if t["name"] in (GRAPH, RECALL, CONTEXT))
     ops = sorted({str((t["input"] or {}).get("op")) for t in graph})
     missing_ids = [alt for alt in case.get("ids", [])
@@ -966,9 +973,13 @@ def grade_graph(case: dict, turn: "Turn", ids: dict) -> dict:
     abstained = bool(ABSTAIN.search(turn.text))
     need = bool(case.get("graph") or case.get("ops"))
     used = not need or (bool(graph) and (not case.get("ops") or bool(set(case["ops"]) & set(ops))))
-    passed = used and not missing_ids and not missing and not forbidden and (abstained or not case.get("abstain"))
-    return {"passed": passed, "graph_calls": len(graph), "ops": ops, "missing_ids": missing_ids,
-            "missing": missing, "forbidden": forbidden, "abstained": abstained}
+    passed = used and not missing_ids and not missing and not forbidden and (abstained or not case.get("abstain")) \
+        and not missing_writes and not stale_writes
+    out = {"passed": passed, "graph_calls": len(graph), "ops": ops, "missing_ids": missing_ids,
+           "missing": missing, "forbidden": forbidden, "abstained": abstained}
+    if case.get("writes") or case.get("stale"):
+        out.update(missing_writes=missing_writes, stale_writes=stale_writes)
+    return out
 
 
 def domain_parts(expected: list[list[str]], searches: list[dict]) -> dict:
@@ -1338,7 +1349,14 @@ def _source(name: str) -> str:
     obj = globals()
     for part in name.split("."):
         obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
-    return inspect.getsource(obj)
+    try:
+        return inspect.getsource(obj)
+    except OSError as e:                     # say why, so a failure on one machine can be traced (where, from where)
+        import linecache
+        code = getattr(obj, "__code__", None)
+        file = code.co_filename if code else getattr(obj, "__file__", "?")
+        raise OSError(f"{e}: the grader {name} is defined in {file} (exists: {os.path.exists(file)}, "
+                      f"lines read: {len(linecache.getlines(file))}, cwd: {os.getcwd()})") from e
 
 
 def grading_inputs(gate: str, judges: list[str] | tuple[str, ...], max_turns: int) -> str:

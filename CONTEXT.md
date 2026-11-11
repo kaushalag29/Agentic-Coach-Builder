@@ -216,6 +216,10 @@ _Avoid_: workspace (the Workspace is where the person keeps their data), context
 A Commitment and every carry of it, read as one piece of work across the periods it was planned in (the Project graph, ADR-0024). Its id is the first Commitment's.
 _Avoid_: task chain, duplicate
 
+**Live copy**:
+The copy of a carried Commitment that is still in play: the end of its carries, where every change to that work goes (a copy dropped when its carry was undone is passed over). A change aimed at an older copy is refused with the live copy's id; only a correction of what the older copy said for its own period goes through, with a reason (ADR-0025).
+_Avoid_: current version, latest row
+
 **Project graph**:
 The ties between a Project's records, computed from the store on every read (never stored): Goals, Decisions, Notes, Check-ins, Threads, Weeks, People and Issues, with a closed set of typed edges (serves, decided_in, reviewed_in, cites, mentions, supersedes, and the links the person confirmed, ADR-0025). It holds nothing the person did not say; the coach reads it with `coach_graph`.
 _Avoid_: knowledge graph (it is not extracted from text), graph database

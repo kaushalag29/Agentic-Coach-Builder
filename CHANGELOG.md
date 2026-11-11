@@ -5,6 +5,11 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **A change to carried work goes to the live copy (ADR-0025 amendment).** After a Commitment is carried, a change
+  aimed at the old copy (its words, a note, a tie, a second carry, done or dropped) is refused with the id, week and
+  status of the live copy, so the coach makes it there; real use had edits land on copies no read shows. A correction
+  of what the old copy said for its own period goes through with `reason`; undoing a carry still works. G9 gains a
+  write case (`writes`/`stale`): the change must land on the live copy.
 - **People, Issues, typed links, and no change lost (ADR-0025).** Store schema v8 (migrated with a backup first).
   A Person and an Issue (a blocker) are records the person confirms; 13 link types join any two records (decided_by,
   owned_by, blocks, resolved_by, led_to, …), written by `coach_record` and `coach_update` and ended, never deleted. A
