@@ -198,7 +198,8 @@ def test_g8_searches_group_into_asks_and_rounds_by_session_and_time():
     asks = G.asks_of([r for r in p.rows if r["tool"] == "coach_search"])
     assert [len(a) for a in asks] == [2, 1, 1] and [sum(len(x) for x in a) for a in asks] == [3, 1, 1]
     s = G.summarize(p)
-    assert s["asks"] == {"n": 3, "searches_avg": 1.7, "searches_max": 3, "rounds_avg": 1.3, "rounds_max": 2, "at_guard": 0}
+    assert s["asks"] == {"n": 3, "searches_avg": 1.7, "searches_max": 3, "rounds_avg": 1.3, "rounds_max": 2, "at_guard": 0,
+                         "partial": {"left": 3, "rewritten": 2, "gain_median": None, "reached_strong": 0}}
     assert s["explicit_domains"] == {"n": 0, "of": 5}
 
 
@@ -365,6 +366,8 @@ def test_g12_memory_counts_follow_through_ties_answers_and_refused_writes():
         ("coach_update", "error", {"error": OLD_COPY, "id": "c-1a"}, "r2"),
         ("coach_update", "error", {"error": "ToolError: can't change week on a commitment; editable: action"}, "r2"),
         ("coach_update", "error", {"error": "ToolError: no record '…'"}, "r2"),
+        ("coach_record", "error", {"error": "ToolError: text is longer than 1000 characters (1122); shorten it"}, "r2"),
+        ("coach_update", "ok", {"id": "p-r3", "status": "accepted"}, "r2"),                  # a rule brought back
     ])
     (p,) = G.load(home, days=None, now=NOW)
     m = G.memory(p.rows)
@@ -376,12 +379,12 @@ def test_g12_memory_counts_follow_through_ties_answers_and_refused_writes():
     assert f["warn"] is False, "four chances are too few to judge"
     assert [x["records"] for x in f["not_followed"]] == [["d-4d (edited)"], ["c-3c (edited)"], ["g-1a (ties)"]]
     assert m["links"] == {"added": 3, "ended": 1} and m["suggestions"] == {"yes": 1, "never": 1, "later": 1}
-    assert m["refused"] == {"old_copy": ["c-1a → c-2b"], "not_editable": 1, "other": 1}
+    assert m["refused"] == {"old_copy": ["c-1a → c-2b"], "not_editable": 1, "too_long": 1, "other": 1}
     assert m["not_rated"] == {"recall": 1, "context": 1, "graph": 0}
     text = G.render(G.report([p], home, days=None))
     for line in ("memory:", "graph 3: history 1, around 1, thread 1", "follow-through 1 of 4 marked reads (25%)",
                  "[needs 10 to warn]", "not followed: ", "ties: 3 added, 1 ended", "1 yes, 1 never, 1 later",
-                 "writes refused: 1 to an old copy (c-1a → c-2b), 1 field not editable, 1 other",
+                 "writes refused: 1 to an old copy (c-1a → c-2b), 1 field not editable, 1 too long, 1 other",
                  "before details were logged: 1 recall, 1 context, 0 graph"):
         assert line in text, (line, text)
     assert "WARNING" not in text
@@ -427,6 +430,33 @@ def test_g14_calls_before_a_project_are_reported_per_coach_from_the_common_profi
     assert "founder coach · before a Project was chosen" in text and "partial 1" in text
     assert not [p for p in G.load(home, days=1, now=NOW + dt.timedelta(days=30)) if p.common], \
         "no calls before a Project in the window: no block"
+
+
+def test_g15_partial_results_left_without_a_rewrite_and_what_rewrites_gained():
+    """ADR-0028: a partial result in an ask's last round was not rewritten; one in an earlier round was, and the
+    report says what the later rounds gained and whether they reached strong."""
+    home = _home()
+    d = home / "founder" / "projects" / "p"
+    clock = Clock("2026-10-14T09:00:00+00:00")
+    st = FounderStore(d, clock=clock)
+    try:
+        def log(secs, cov, sim, run="r1"):
+            clock.advance(seconds=secs)
+            st.log_usage("coach_search", "ok", 10, run=run, version="0.1.30",
+                         detail={"hits": 5, "coverage": cov, "routing": "none", "top_similarity": sim})
+        log(0, "partial", 0.62)          # ask 1, round 1: rewritten ...
+        log(1, "strong", 0.70)
+        log(20, "strong", 0.77)          # ... round 2 reached strong: gain +0.15
+        log(400, "partial", 0.64)        # ask 2: one round, left as it was
+        log(1, "partial", 0.63, "r2")    # ask 3, round 1: rewritten ...
+        log(20, "partial", 0.66, "r2")   # ... round 2, still partial and the last round: left
+    finally:
+        st.close()
+    (p,) = G.load(home, days=None, now=NOW)
+    pr = G.summarize(p)["asks"]["partial"]
+    assert pr == {"left": 2, "rewritten": 2, "gain_median": 0.09, "reached_strong": 1}, pr
+    text = G.render(G.report([p], home, days=None))
+    assert "partial results: 2 left without a rewrite, 2 rewritten, median gain +0.090, 1 reached strong" in text, text
 
 
 if __name__ == "__main__":

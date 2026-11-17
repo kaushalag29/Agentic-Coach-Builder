@@ -1386,6 +1386,20 @@ def test_v8_a_build_that_fails_partway_deletes_nothing():
         s.close()
 
 
+def test_the_vault_action_with_no_project_chosen_names_the_projects_to_switch_to():
+    with _machine() as user:
+        async def make(call):
+            for name in ("Acme", "Beta Labs"):
+                _, text, err = await call("coach_project", {"action": "create", "name": name})
+                assert not err, text
+
+        async def later(call):
+            _, text, err = await call("coach_project", {"action": "vault"})
+            assert err and "no Project is active yet" in text and "acme (Acme)" in text and "beta-labs (Beta Labs)" in text
+        if _serve(user, make):
+            _serve(user, later)
+
+
 if __name__ == "__main__":
     import inspect
     import logging

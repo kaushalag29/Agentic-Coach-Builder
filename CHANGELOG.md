@@ -5,6 +5,14 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **Suggestions learn from your answers; a partial search is searched again (ADR-0028).** A link rule rejected 5
+  times in a Project with no yes stops suggesting there (the coach says so once; `p-r3` accepted brings it back). The
+  tie to the only active Goal is no longer pre-ticked. One suggestion per pair of records, never both directions. A
+  name is offered as a person only where a person is meant (after with, from, by, asked, told, emailed, call or met,
+  or as a task's first word), never a weekday, month, place or tool, and a surname after a confirmed Person is
+  offered as their other name. A partial search result asks the coach to rewrite the part and search again while the
+  question has room; `ytbrain gaps` reports partial results left without a rewrite and what rewrites gained, and
+  groups too-long writes on their own. The vault action without a Project names the Projects to switch to.
 - **The vault is current after every save, in every app (ADR-0027).** Whichever coach saved rebuilds the whole
   Project vault, the graph page (`_meta/graph.html`) and `INDEX.md` included, instead of only its own part; on a real
   Project that takes about 0.1 s. `/vault` now calls `coach_project action="vault"`, so it builds in hosted sessions

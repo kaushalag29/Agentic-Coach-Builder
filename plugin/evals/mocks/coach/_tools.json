@@ -1400,6 +1400,7 @@
         "title": "Supersedes"
        },
        "text": {
+        "description": "the decision itself in one or two sentences (at most 1,000 characters); the why, the options and the details go in `reasoning`, a longer account in a Note",
         "title": "Text",
         "type": "string"
        }

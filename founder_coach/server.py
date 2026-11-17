@@ -281,6 +281,22 @@ class State:
     common: FounderStore | None = None  # the Common profile (Projects mode only)
     folder: str | None = None           # the work folder the app gave (CLAUDE_PROJECT_DIR); it chooses the Project
     folder_note: str | None = None      # said once: a moved checkout was re-linked
+    searches: list | None = None        # when this session's recent searches ran (the search-again note's budget)
+
+
+SEARCH_ROUNDS_MAX = 12                  # the ask skill's searches per question
+SEARCH_WINDOW_S = 600                   # searches this close together are taken as one question
+PARTIAL_AGAIN = ("Partial: if this part is not answered yet, rewrite it as a new full question in the sources' terms "
+                 "(broader or narrower, not the same words) and search again in the next round; stop after two "
+                 "rewrites that don't beat this top_similarity, or at 12 searches for the question.")
+
+
+def _search_room(st: State) -> bool:
+    """Is there room under the ask's search limit for one more round? Counts this session's searches in the last
+    SEARCH_WINDOW_S seconds (this one included), so a long session never runs out."""
+    now = time.monotonic()
+    st.searches = [t for t in (st.searches or []) if now - t < SEARCH_WINDOW_S] + [now]
+    return len(st.searches) < SEARCH_ROUNDS_MAX
 
 
 def open_pack(path: Path) -> tuple[PackStore | None, str | None]:
@@ -485,7 +501,8 @@ class CommitmentsIn(BaseModel):
 
 class DecisionIn(BaseModel):
     kind: Literal["decision"]
-    text: str
+    text: str = Field(description="the decision itself in one or two sentences (at most 1,000 characters); the why, "
+                                  "the options and the details go in `reasoning`, a longer account in a Note")
     reasoning: str
     revisit_on: str | None = Field(None, description="YYYY-MM-DD to look at it again")
     citations: list[str] = Field(default_factory=list)
@@ -841,7 +858,9 @@ def _build_vault(st: State) -> tuple[dict, str]:
     """coach_project action vault (ADR-0027): the active Project's whole vault, now; the folder and counts only."""
     from . import vault as V
     if st.store is None:
-        raise ProjectError(st.store_error or "no Project is active yet: ask which one, then switch")
+        names = ", ".join(f"{p['id']} ({p['name']})" for p in _project_list(st))
+        raise ProjectError(st.store_error or "no Project is active yet: ask which one, then switch to it and build "
+                           "again" + (f". Projects: {names}" if names else ""))
     try:
         built = st.store.rebuild_vault(raise_errors=True) or {}
     except (sqlite3.Error, OSError):
@@ -1265,6 +1284,9 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
         if cov.stale:
             extra.append(f"What there is for {', '.join(cov.stale)} may be out of date (newest relevant result "
                          f"{cov.newest_year}): say so.")
+        room = _search_room(st)                         # every search counts toward the question's limit
+        if cov.level == "partial" and room:             # ADR-0028: the skill's next round, asked for
+            extra.append(PARTIAL_AGAIN)
         if extra:
             out.note = ((out.note + " ") if out.note else "") + " ".join(extra)
         links = [ResourceLink(type="resource_link", uri=f"corpus://item/{h.item_id}", name=h.talk or h.item_id,
@@ -1686,6 +1708,11 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
                 items, total = P.pending(store, limit=P.REVIEW_BATCH, mark_shown=True)
                 note = (f"{total} waiting; show them numbered, the high ones pre-ticked, and save each answer with "
                         "coach_update (status accepted, rejected or snoozed)" if items else "no proposal waiting")
+                news = P.muted_news(store)
+                if news:                                       # ADR-0028: said once, the person can bring it back
+                    note += ("; muted in this Project after repeated rejections with no yes (tell the person once; "
+                             "coach_update on the id with status accepted brings a rule back): "
+                             + "; ".join(f"{m['id']}: {m['what']} ({m['rejected']} rejected)" for m in news))
             else:                                              # open_loops
                 items = [G.card(g, t.id) for t in g.open_loops(min_periods)]
                 if not items:

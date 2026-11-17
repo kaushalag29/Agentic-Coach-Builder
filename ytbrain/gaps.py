@@ -40,6 +40,7 @@ FOLLOW_MIN = 10          # follow-through is only judged (a warning) on at least
 FOLLOW_BAR = 0.8         # ... and warns below this share, G9's bar
 FORGOTTEN = "forgotten"  # a forgotten record's id in the log (founder_coach.store.FORGOTTEN)
 ANSWERS = {"accepted": "yes", "rejected": "never", "snoozed": "later"}   # a proposal's answer, as the person says it
+RULE_ID = re.compile(r"^p-r[1-7]$", re.I)                   # a link rule muted or brought back (ADR-0028)
 COMMON_DB = "you.db"     # the Common profile: it keeps the calls made before a Project was chosen
 
 
@@ -284,6 +285,31 @@ def asks_of(searches: list[dict]) -> list[list[list[dict]]]:
     return asks
 
 
+def rewrites(asks: list[list[list[dict]]]) -> dict:
+    """ADR-0028: a partial result in an ask's last round was left without a rewrite; one in an earlier round was
+    followed by one, and `gain` is the best top similarity of the later rounds minus its own (an approximation: the
+    report can't tell which later search rewrote which part)."""
+    left, rewritten, gains, strong = 0, 0, [], 0
+    for a in asks:
+        for k, rd in enumerate(a):
+            for r in rd:
+                if level_of(r) != "partial":
+                    continue
+                if k == len(a) - 1:
+                    left += 1
+                    continue
+                rewritten += 1
+                later = [x for later_rd in a[k + 1:] for x in later_rd]
+                sims = [x["detail"]["top_similarity"] for x in later
+                        if isinstance(x["detail"].get("top_similarity"), (int, float))]
+                own = r["detail"].get("top_similarity")
+                if sims and isinstance(own, (int, float)):
+                    gains.append(max(sims) - own)
+                strong += any(level_of(x) == "strong" for x in later)
+    return {"left": left, "rewritten": rewritten, "gain_median": round(statistics.median(gains), 3) if gains else None,
+            "reached_strong": strong}
+
+
 def _sims(rows: list[dict]) -> dict | None:
     xs = [r["detail"]["top_similarity"] for r in rows if isinstance(r["detail"].get("top_similarity"), (int, float))]
     if not xs:
@@ -318,7 +344,8 @@ def summarize(p: Project, questions: int = 15, hits: HitDomains | None = None) -
         "domains": dict(sorted(domains.items())), "domains_from_hits": by_hits,
         "asks": {"n": len(asks), "searches_avg": round(sum(per_ask) / len(asks), 1) if asks else None,
                  "searches_max": max(per_ask, default=None), "rounds_avg": round(sum(rounds) / len(asks), 1) if asks else None,
-                 "rounds_max": max(rounds, default=None), "at_guard": sum(n >= SEARCH_GUARD for n in per_ask)},
+                 "rounds_max": max(rounds, default=None), "at_guard": sum(n >= SEARCH_GUARD for n in per_ask),
+                 "partial": rewrites(asks)},
         "explicit_domains": {"n": sum(x == "explicit" for x in routed), "of": len(routed)},
         "errors": sum(r["outcome"] == "error" for r in p.rows),
         "error_list": [{"at": r["at"][:19], "tool": r["tool"], "error": str(r["detail"].get("error") or "")}
@@ -368,9 +395,10 @@ def memory(rows: list[dict], questions: int = 15) -> dict:
     answers = {"yes": 0, "never": 0, "later": 0}
     for r in ok:
         d = r["detail"]
-        if r["tool"] == "coach_update" and str(d.get("id") or "").startswith("p-") and d.get("status") in ANSWERS:
+        if r["tool"] == "coach_update" and str(d.get("id") or "").startswith("p-") and d.get("status") in ANSWERS \
+                and not RULE_ID.match(str(d.get("id"))):                  # p-r3 is a rule brought back, not an answer
             answers[ANSWERS[d["status"]]] += 1
-    refused = {"old_copy": [], "not_editable": 0, "other": 0}
+    refused = {"old_copy": [], "not_editable": 0, "too_long": 0, "other": 0}
     for r in rows:
         if r["tool"] not in ("coach_update", "coach_record") or r["outcome"] != "error":
             continue
@@ -380,6 +408,8 @@ def memory(rows: list[dict], questions: int = 15) -> dict:
             refused["old_copy"].append(f"{r['detail'].get('id') or '?'} → {live.group(1) if live else '?'}")
         elif "can't change" in msg:
             refused["not_editable"] += 1
+        elif "is longer than" in msg:
+            refused["too_long"] += 1
         else:
             refused["other"] += 1
     return {"recall": len(recall), "expand": sum(bool(r["detail"].get("expand")) for r in recall),
@@ -424,7 +454,8 @@ def _memory_lines(m: dict) -> list[str]:
     if any(ref.values()):
         old = (f"{len(ref['old_copy'])} to an old copy ({', '.join(ref['old_copy'][:6])})" if ref["old_copy"]
                else "0 to an old copy")
-        out.append(f"    writes refused: {old}, {ref['not_editable']} field not editable, {ref['other']} other")
+        out.append(f"    writes refused: {old}, {ref['not_editable']} field not editable, {ref['too_long']} too long, "
+                   f"{ref['other']} other")
     nr = m["not_rated"]
     if any(nr.values()):
         out.append(f"    before details were logged: {nr['recall']} recall, {nr['context']} context, {nr['graph']} graph "
@@ -474,6 +505,11 @@ def render(rep: dict, home: Path | None = None) -> str:
             lines.append(f"  asks (grouped by time, approximate) {a['n']}: searches per ask {a['searches_avg']} (max "
                          f"{a['searches_max']}), rounds per ask {a['rounds_avg']} (max {a['rounds_max']}); "
                          f"{a['at_guard']} at the {SEARCH_GUARD}-search guard")
+            pr = a.get("partial") or {}
+            if pr.get("left") or pr.get("rewritten"):
+                gain = f", median gain {pr['gain_median']:+.3f}" if pr.get("gain_median") is not None else ""
+                lines.append(f"  partial results: {pr['left']} left without a rewrite, {pr['rewritten']} rewritten"
+                             f"{gain}, {pr['reached_strong']} reached strong in a later round")
         e = s["explicit_domains"]
         if e["of"]:
             lines.append(f"  Domains named by the host in {e['n']} of {e['of']} searches "

@@ -2207,6 +2207,27 @@ def test_a_coach_is_read_only_while_it_is_registered_here_and_forget_stays_its_o
     assert b.get(gb) is not None
 
 
+def test_a_partial_result_asks_for_a_rewritten_search_while_the_question_has_room():
+    """ADR-0028: the ask skill's next round, said by the server on a partial result; never on strong or none, and not
+    once the question has used its 12 searches."""
+    async def flow(c, tmp):
+        notes = []
+        for _ in range(12):
+            sc = (await c.call_tool("coach_search", {"query": "give feedback to your team"})).structured_content
+            assert sc["coverage"] == "partial"
+            notes.append("rewrite it as a new full question" in (sc["note"] or ""))
+        assert notes == [True] * 11 + [False], notes
+        sc = (await c.call_tool("coach_search", {"query": "zebra quantum harpsichord"})).structured_content
+        assert sc["coverage"] == "none" and "rewrite it as a new full question" not in (sc["note"] or "")
+    _with_client(flow, rows=_lead_rows())
+
+    async def strong(c, tmp):
+        sc = (await c.call_tool("coach_search", {"query": "give feedback early and in private to your team",
+                                                 "domains": ["leadership"]})).structured_content
+        assert sc["coverage"] == "strong" and "rewrite it" not in (sc["note"] or "")
+    _with_client(strong, models=_Models(), rows=_lead_rows())
+
+
 if __name__ == "__main__":
     import inspect
     fns = [f for n, f in sorted(globals().items()) if n.startswith("test_") and inspect.isfunction(f)]

@@ -85,3 +85,8 @@ copy dropped when its carry was undone is passed over).
 Considered and rejected: applying the change to the live copy automatically. It would change a record the call
 didn't name, and the coach would never learn which record is live.
 
+## Amendment 2026-11-17: what the answers teach (ADR-0028)
+
+A rule rejected 5 times in a Project with no yes is muted there (said once; `p-r3` accepted brings it back); the tie
+to the only active Goal is review tier; one suggestion per pair of records; a name is offered only where a person is
+meant, and a name right after a confirmed Person's is offered as their alias.

@@ -237,7 +237,7 @@ A blocker the person confirmed as a record: open until resolved, with what resol
 _Avoid_: ticket, bug, risk
 
 **Proposal**:
-A tie, a Person or an Issue the coach noticed in saved records and may offer; nothing is saved until the person says yes, and a "never" is remembered (ADR-0025).
+A tie, a Person or an Issue the coach noticed in saved records and may offer; nothing is saved until the person says yes, and a "never" is remembered (ADR-0025). One per pair of records; a rule rejected 5 times in a Project with no yes is muted there until the person brings it back (ADR-0028).
 _Avoid_: suggestion (in the code), inference
 
 **Common profile**:

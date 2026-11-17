@@ -459,6 +459,117 @@ def test_a_read_says_when_a_record_changed_and_how_long_work_was_carried():
             s.close()
 
 
+# --- ADR-0028: what the person's answers teach the link rules -----------------------------------------------------
+def test_a_rule_rejected_five_times_with_no_yes_is_muted_said_once_and_can_come_back():
+    from founder_coach import proposals as P
+    with _machine():
+        s = FounderStore(Path(tempfile.mkdtemp(prefix="graph-mute-")), clock=Clock())
+        try:
+            s.record({"kind": "goal", "text": "Ten paying design partners", "measure": "ten"})
+            for name in ("Lena", "Tomas", "Neha", "Dana", "Omar", "Priya"):
+                for i in range(3):
+                    s.record({"kind": "note", "title": f"Call {i}", "summary": f"We met {name} about pricing ({i}).",
+                              "type": "discussion", "origin": "user"})
+            P.refresh(s)
+            people = [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R4"]
+            assert len(people) == 6, [i["what"] for i in people]
+            _raises(lambda: s.update("p-r4", status="accepted"), "not muted")
+            for i in people[:4]:
+                s.update(i["id"], status="rejected")
+            assert not P.muted(s), "four rejections are not enough"
+            s.update(people[4]["id"], status="rejected")
+            assert P.muted(s) == {"R4": 5}
+            assert not [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R4"], "a muted rule shows nothing"
+            for i in range(3):
+                s.record({"kind": "note", "title": f"More {i}", "summary": f"We met Zoran about a pilot ({i}).",
+                          "type": "discussion", "origin": "user"})
+            P.refresh(s)
+            assert not s.db.execute("SELECT 1 FROM proposals WHERE payload LIKE '%Zoran%'").fetchone(), \
+                "a muted rule queues nothing new"
+            news = P.muted_news(s)
+            assert [m["id"] for m in news] == ["p-r4"] and news[0]["rejected"] == 5
+            assert P.muted_news(s) == [], "said once"
+            s.update("p-r4", status="accepted", reason="I want name suggestions again")
+            assert not P.muted(s)
+            P.refresh(s)
+            back = [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R4"]
+            assert people[5]["id"] in {i["id"] for i in back}, "the rule is back with what it had waiting"
+            assert any("Zoran" in i["what"] for i in back), "and finds new names again"
+            s.update(people[5]["id"], status="accepted")
+            for name in ("Yusuf", "Wren", "Vera", "Ugo", "Tess"):
+                for i in range(3):
+                    s.record({"kind": "note", "title": f"Intro {i}", "summary": f"Emailed {name} the deck ({i}).",
+                              "type": "discussion", "origin": "user"})
+            P.refresh(s)
+            for i in [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R4"]:
+                s.update(i["id"], status="rejected")
+            assert not P.muted(s), "a rule with a yes since it came back is never muted"
+            assert s.db.execute("SELECT 1 FROM changes WHERE entity_id='p-r4' AND op='unmute'").fetchone()
+        finally:
+            s.close()
+
+
+def test_one_suggestion_per_pair_of_records_and_r3_is_only_a_review():
+    from founder_coach import proposals as P
+    with _machine():
+        s, ids = acme(Path(tempfile.mkdtemp(prefix="graph-pair-")))
+        try:
+            new = s.record({"kind": "decision", "text": f"Price at 99 a month, replaces {ids['d_charge']}",
+                            "reasoning": "pilots stalled"})["ids"][0]
+            P.refresh(s)
+            sup = [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R1"]
+            assert len(sup) == 1, [i["what"] for i in sup]
+            s.update(sup[0]["id"], status="accepted")
+            s.update(ids["d_charge"], changes={"text": f"[Superseded by {new}] Charge from day one"},
+                     reason="say what replaced it")
+            P.refresh(s)
+            pair = {new, ids["d_charge"]}
+            for r in s.db.execute("SELECT payload, status FROM proposals"):
+                p = __import__("json").loads(r["payload"])
+                if P._pair(p) == frozenset(pair):
+                    assert r["status"] == "accepted", ("a second suggestion for a tied pair", p)
+            a = s.record({"kind": "decision", "text": "Hire a designer", "reasoning": "x"})["ids"][0]
+            b = s.record({"kind": "decision", "text": f"No longer hire, instead of {a} use a template",
+                          "reasoning": "x", "links": [{"to": a, "type": "related"}]})["ids"][0]
+            P.refresh(s)
+            assert not [i for i in P.pending(s, limit=20)[0] if a in i["why"] or b in i["why"]], \
+                "a pair already tied gets no suggestion"
+        finally:
+            s.close()
+        s = FounderStore(Path(tempfile.mkdtemp(prefix="graph-r3-")), clock=Clock())
+        try:
+            s.record({"kind": "goal", "text": "Ten paying design partners", "measure": "ten"})
+            s.record({"kind": "commitments", "items": [{"action": "Renew the domain", "outcome": "renewed"}]})
+            P.refresh(s)
+            r3 = [i for i in P.pending(s, limit=20)[0] if i["rule"] == "R3"]
+            assert r3 and all(i["tier"] == "review" for i in r3), "R3 is a guess: never pre-ticked"
+        finally:
+            s.close()
+
+
+def test_r4_offers_people_not_companies_places_days_or_tools_and_a_surname_as_an_alias():
+    """Made-up names, none of them the ones the cue words were chosen from (ADR-0028)."""
+    from founder_coach import proposals as P
+    with _machine():
+        s, ids = acme(Path(tempfile.mkdtemp(prefix="graph-r4-")), people=True)      # Marco is a confirmed Person
+        try:
+            for i in range(3):
+                s.record({"kind": "note", "title": f"Market notes {i}", "type": "research", "origin": "user",
+                          "summary": f"We compared Zentrix and Acmeflow ({i}); suppliers from Texas and Ohio; "
+                                     f"the parser is in Python; review on Tue. We met Dana at the fair ({i}). "
+                                     f"The quote went to Marco Rivera ({i}). Notes for Ines ({i})."})
+            s.record({"kind": "commitments", "items": [{"action": "Ines drafts the pilot brief", "outcome": "a draft"}]})
+            P.refresh(s)
+            r4 = {i["what"] for i in P.pending(s, limit=30)[0] if i["rule"] == "R4"}
+            assert "add Dana as a person in this Project" in r4, r4          # after "met"
+            assert "add Ines as a person in this Project" in r4, r4          # a task's first word
+            assert any(w.startswith("Rivera is another name for Marco") for w in r4), r4
+            for wrong in ("Zentrix", "Acmeflow", "Texas", "Ohio", "Python", "Tue"):
+                assert not any(wrong in w for w in r4), (wrong, r4)
+        finally:
+            s.close()
+
+
 if __name__ == "__main__":
     import inspect
     import logging

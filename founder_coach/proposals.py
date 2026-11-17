@@ -8,11 +8,17 @@ with the proposal's reason), rejected (never proposed again: its fingerprint is 
 The rules:
   R1 a Decision's words name another Decision's id    -> supersedes (a replace word near it) or related
   R2 a Decision says it replaces something, and an earlier Decision matches its words -> supersedes
-  R3 an open task with no Goal while exactly one Goal is active -> set its goal
-  R4 a capitalised name in three or more records       -> a Person
+  R3 an open task with no Goal while exactly one Goal is active -> set its goal (review tier: a guess, ADR-0028)
+  R4 a capitalised name in three or more records, at least once where a person is meant (after with, from, by,
+     asked, told, emailed, call or met, or as a task's first word) -> a Person; a name right after a confirmed
+     Person's name -> another name (alias) of that Person. Weekdays, months, places and tools are never names.
   R5 a task's words start with a Person's name ("Lena drafts ...") -> owned_by; "<Person> decided" -> decided_by
   R6 the same blocker in two or more Check-ins         -> an Issue that blocks the closest task or Goal
   R7 a Note with no links                              -> about the record it matches best
+
+What the person's answers teach (ADR-0028): one suggestion per pair of records (a pair already tied in any way, in
+either direction, or already suggested, is skipped), and a rule rejected MUTE_AFTER times in a Project with no yes is
+muted there: the coach says so once, and `coach_update` on the rule's id (`p-r3`) with status accepted brings it back.
 """
 from __future__ import annotations
 
@@ -23,6 +29,14 @@ import re
 
 
 SNOOZE_DAYS = 28
+MUTE_AFTER = 5                    # rejections in a Project, with no yes, that mute a rule there (ADR-0028)
+RULES = {"R1": "tie a Decision to another Decision it names", "R2": "mark a Decision as replacing an earlier one",
+         "R3": "serve the only active Goal with a task that has none", "R4": "add a name seen in several records as a "
+         "person", "R5": "name a task's owner from its first word", "R6": "track a blocker that recurs as an Issue",
+         "R7": "tie a Note with no links to the record it matches"}
+_RULE_ID = re.compile(r"^p-(r[1-7])$", re.I)
+_CUES = {"with", "from", "by", "asked", "ask", "asks", "told", "tell", "tells", "emailed", "email", "emails", "call",
+         "called", "calls", "met", "meet", "meets"}
 SHOW_MAX = 2                      # a proposal skipped twice is not shown again until the rules find it anew
 REVIEW_BATCH = 8
 CHECKIN_MAX = 5
@@ -42,6 +56,18 @@ Team Teams Goal Goals Decision Decisions Note Notes Draft Drafts Plan Plans Call
 Google Drive Gmail Slack Notion Linear Jira Zoom Meet WhatsApp Telegram Discord Claude ChatGPT OpenAI Anthropic GitHub
 Figma Excel Sheets Word Docs LinkedIn Twitter Apple Microsoft Amazon AWS YC Techstars Speedrun Winter Summer Spring
 Fall Batch Demo Day Hour Expert Partner Partners Customer Customers Founder Founders Investor Investors Pilot Pilots
+Mon Tue Tues Wed Thu Thur Thurs Fri Sat Sun Noon Midnight Morning Evening Tonight Yesterday Weekend Quarter Python
+Java Javascript Typescript Rust Swift Kotlin Scala Golang React Vue Angular Node Django Flask Fastapi Rails Docker
+Kubernetes Linux Windows Ubuntu Postgres Postgresql Mysql Sqlite Redis Mongo Mongodb Kafka Spark Airflow Pandas Numpy
+Jupyter Chrome Safari Firefox Android Iphone Ipad Macos Obsidian Markdown Cursor Gemini Copilot Vercel Heroku Netlify
+Supabase Firebase Stripe Shopify Hubspot Salesforce Canva Loom Calendly Typeform Airtable Zapier Trello Asana Dropbox
+Outlook Teams Webex Youtube Instagram Facebook Meta Tiktok Reddit Substack Medium Wordpress Webflow Alabama Alaska
+Arizona Arkansas California Colorado Connecticut Delaware Florida Hawaii Idaho Illinois Indiana Iowa Kansas Kentucky
+Louisiana Maine Maryland Massachusetts Michigan Minnesota Mississippi Missouri Montana Nebraska Nevada Hampshire
+Jersey Mexico York Ohio Oklahoma Oregon Pennsylvania Rhode Tennessee Texas Utah Vermont Wisconsin Wyoming America
+Canada India China Japan Germany France Italy Spain Brazil Europe Asia Africa Australia England Britain London Berlin
+Tokyo Singapore Dubai Seattle Boston Chicago Denver Atlanta Detroit Angeles Bangalore Bengaluru Mumbai Delhi Pune
+Hyderabad Chennai Toronto Vancouver Silicon Valley Bay Area
 """.split())
 
 
@@ -122,8 +148,8 @@ def candidates(snap, profile_words: set[str] | None = None) -> list[dict]:
         last = rows[-1]
         if last.get("status") == "open" and not any(c.get("goal_id") for c in rows) and len(active) == 1:
             out.append({"payload": {"op": "goal_id", "commitment": last["id"], "goal": active[0]["id"]}, "rule": "R3",
-                        "tier": "high", "why": f"{last['id']} serves no Goal and {active[0]['id']} is the only "
-                                               "active one"})
+                        "tier": "review", "why": f"{last['id']} serves no Goal and {active[0]['id']} is the only "
+                                                 "active one"})
         # R5: owners
         m = re.match(r"\s*([A-Z][\w'-]+)\b", last.get("action") or "")
         if m and m.group(1).lower() in names and last.get("status") == "open":
@@ -137,25 +163,44 @@ def candidates(snap, profile_words: set[str] | None = None) -> list[dict]:
     seen: dict[str, set[str]] = {}
     lower_seen: set[str] = set()
     follows: dict[str, set[str]] = {}
+    cued: set[str] = set()                                   # a person is meant here at least once
+    after_person: dict[str, dict[str, set[str]]] = {}         # name -> confirmed Person it follows -> records
     for kind, r in texts:
         t = _text_of(kind, r)
         lower_seen |= set(re.findall(r"\b[a-z][a-z]{2,}\b", t))
+        if kind == "commitment":                               # a task's first word is who does it ("Lena drafts")
+            first = _NAME.match((r.get("action") or "").lstrip())
+            if first:
+                cued.add(first.group(1))
         for sent in re.split(r"(?<=[.!?:;])\s+|\n", t):
             toks = list(_NAME.finditer(sent))
             for k, mt in enumerate(toks):
                 w = mt.group(1)
+                prev = sent[:mt.start()].rstrip().split(" ")[-1] if mt.start() else ""
+                bare = prev.strip("(,;:").lower()
+                if bare in _CUES:
+                    cued.add(w)
+                if bare in names and prev.strip("(")[:1].isupper():
+                    after_person.setdefault(w, {}).setdefault(names[bare], set()).add(r["id"])
                 if mt.start() == len(sent) - len(sent.lstrip()):
                     continue                                   # a sentence's first word proves nothing
                 seen.setdefault(w, set()).add(r["id"])
-                prev = sent[:mt.start()].rstrip().split(" ")[-1] if mt.start() else ""
                 follows.setdefault(w, set()).add(prev)
     skip = set(_STOP) | {w.capitalize() for w in (profile_words or set())}
+    person_name = {p["id"]: p["name"] for p in people}
     for w, ids in sorted(seen.items()):
         if len(ids) < 3 or w in skip or w.lower() in lower_seen or w.lower() in names:
+            continue
+        if after_person.get(w):                                # right after a confirmed Person: their other name
+            pid, recs = max(after_person[w].items(), key=lambda kv: (len(kv[1]), kv[0]))
+            out.append({"payload": {"op": "alias", "person": pid, "alias": w}, "rule": "R4", "tier": "review",
+                        "why": f"{w} follows {person_name.get(pid, pid)} in {len(recs)} record(s)"})
             continue
         prevs = follows.get(w, set())
         if prevs and all(p[:1].isupper() and p in seen for p in prevs):
             continue                                           # always after another name: a surname
+        if w not in cued:
+            continue                                           # never where a person is meant: a company, a place
         out.append({"payload": {"op": "person", "name": w}, "rule": "R4", "tier": "review",
                     "why": f"{w} appears in {len(ids)} records"})
     # R6: blockers that recur
@@ -213,12 +258,27 @@ def refresh(store) -> int:
             words |= {w for w in re.findall(r"[A-Za-z]{3,}", str(p["value"]))}
     words |= {w for w in re.findall(r"[A-Za-z]{3,}", snap.name)}
     new = 0
+    off = muted(store)
+    tied = _tied_pairs(snap)
     with store._lock:
+        asked = {}
+        for r in store.db.execute("SELECT fingerprint, payload FROM proposals WHERE founder_id=? AND coach=?",
+                                  (store.fid, store.coach)):
+            pr = _pair(json.loads(r["payload"]))
+            if pr:
+                asked.setdefault(pr, set()).add(r["fingerprint"])
         now = store._iso()
         store.db.execute("BEGIN IMMEDIATE")
         try:
             for c in candidates(snap, {w.lower() for w in words}):
+                if c["rule"] in off:
+                    continue                                   # muted in this Project (ADR-0028)
                 fp = _fp(c["payload"])
+                pr = _pair(c["payload"])
+                if pr and (pr in tied or asked.get(pr, {fp}) - {fp}):
+                    continue                                   # one suggestion per pair of records
+                if pr:
+                    asked.setdefault(pr, set()).add(fp)
                 pid = store._new_id("proposal")
                 cur = store.db.execute(
                     "INSERT OR IGNORE INTO proposals (id, founder_id, coach, fingerprint, rule, tier, payload, why, "
@@ -242,9 +302,10 @@ def pending(store, limit: int = REVIEW_BATCH, mark_shown: bool = False) -> tuple
             "snoozed_until<=?)) AND shown<? ORDER BY CASE tier WHEN 'high' THEN 0 ELSE 1 END, shown, created_at, id",
             (store.fid, store.coach, today, SHOW_MAX))]
     live = []
+    off = muted(store)
     for r in rows:
         r["payload"] = json.loads(r["payload"])
-        if _still_applies(store, r["payload"]):
+        if r["rule"] not in off and _still_applies(store, r["payload"]):
             live.append(r)
     page = live[:limit]
     if mark_shown and page:
@@ -255,9 +316,15 @@ def pending(store, limit: int = REVIEW_BATCH, mark_shown: bool = False) -> tuple
 
 def _still_applies(store, p: dict) -> bool:
     op = p.get("op")
-    ids = [p.get(k) for k in ("src", "dst", "new", "old", "commitment", "goal", "blocks") if p.get(k)]
+    ids = [p.get(k) for k in ("src", "dst", "new", "old", "commitment", "goal", "blocks", "person") if p.get(k)]
     if any(store.get(i, links=False) is None for i in ids):
         return False
+    if op in ("link", "supersede") and _tied(store, *sorted(_pair(p) or ())):
+        return False                                           # the pair got a tie meanwhile: one per pair
+    if op == "alias":
+        per = store.get(p["person"], links=False) or {}
+        have = {str(a).lower() for a in [per.get("name"), *(_aliases(per))]}
+        return per.get("status", "active") == "active" and p["alias"].lower() not in have
     if op == "supersede":
         return (store.get(p["old"], links=False) or {}).get("status", "accepted") == "accepted"
     if op == "goal_id":
@@ -287,6 +354,8 @@ def describe(store, r: dict) -> dict:
         what = f"{_title(store, p['commitment'])} —serves→ {_title(store, p['goal'])}"
     elif op == "person":
         what = f"add {p['name']} as a person in this Project"
+    elif op == "alias":
+        what = f"{p['alias']} is another name for {_title(store, p['person'])}"
     else:
         what = f"track as an Issue: {p['text'][:100]}" + (f" (blocks {_title(store, p['blocks'])})"
                                                           if p.get("blocks") else "")
@@ -297,6 +366,8 @@ def decide(store, pid: str, status: str | None, source: str) -> dict:
     """The person's answer to one proposal, inside the caller's transaction: accepted saves the tie (logged with the
     proposal's reason unless the person gave their own), rejected is kept so it is never proposed again, snoozed
     comes back in four weeks."""
+    if _RULE_ID.match(pid or ""):
+        return _answer_rule(store, _RULE_ID.match(pid).group(1).upper(), status, source)
     row = store.db.execute("SELECT * FROM proposals WHERE id=? AND founder_id=? AND coach=?",
                            (pid, store.fid, store.coach)).fetchone()
     if row is None:
@@ -344,9 +415,117 @@ def _apply(store, p: dict, now: str, source: str) -> dict:
     if op == "person":
         return {"person": store._record_entity({"kind": "person", "name": p["name"]}, source,
                                                *store._why)["ids"][0]}
+    if op == "alias":
+        before = store.get(p["person"], links=False)
+        aliases = [*_aliases(before), p["alias"]]
+        store.db.execute("UPDATE people SET aliases=? WHERE id=?", (json.dumps(aliases), p["person"]))
+        store._change("person", p["person"], "update", before, store.get(p["person"], links=False), source,
+                      reason=store._why[0], actor=store._why[1])
+        return {"person": p["person"], "aliases": aliases}
     links = [{"to": p["blocks"], "type": "blocks"}] if p.get("blocks") else []
     return {"issue": store._record_entity({"kind": "issue", "text": p["text"], "links": links}, source,
                                           *store._why)["ids"][0]}
+
+
+# ---- one suggestion per pair; a rule the person keeps rejecting is muted in the Project (ADR-0028) -----------------
+
+def _pair(p: dict) -> frozenset | None:
+    """The two records a suggestion would tie, in either order; None for one that ties no pair (a person, an Issue)."""
+    a, b = {"link": ("src", "dst"), "supersede": ("new", "old"), "goal_id": ("commitment", "goal"),
+            "alias": ("person", "alias")}.get(p.get("op"), (None, None))
+    return frozenset((p[a], p[b])) if a and p.get(a) and p.get(b) else None
+
+
+def _tied_pairs(snap) -> set[frozenset]:
+    out = {frozenset((ln["src"], ln["dst"])) for ln in snap.links}
+    out |= {frozenset((d["id"], d["superseded_by"])) for d in snap.decisions if d.get("superseded_by")}
+    out |= {frozenset((c["id"], c["goal_id"])) for c in snap.commitments if c.get("goal_id")}
+    return out
+
+
+def _tied(store, a: str, b: str) -> bool:
+    out, into = store.links_of(a)
+    if any(x.get("to") == b for x in out) or any(x.get("from") == b for x in into):
+        return True
+    for x, y in ((a, b), (b, a)):
+        r = store.get(x, links=False) or {}
+        if r.get("superseded_by") == y or r.get("goal_id") == y:
+            return True
+    return False
+
+
+def _aliases(person: dict | None) -> list[str]:
+    al = (person or {}).get("aliases") or []
+    if isinstance(al, str):
+        try:
+            al = json.loads(al)
+        except ValueError:
+            al = []
+    return [str(a) for a in al]
+
+
+def _key(store, rule: str, what: str) -> str:
+    return f"proposals:{store.coach}:{rule}:{what}"
+
+
+def _meta(store, key: str) -> str | None:
+    row = store.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def muted(store) -> dict[str, int]:
+    """rule -> rejections, for the rules this coach has muted in this Project: MUTE_AFTER rejections and no yes
+    since the rule was last brought back."""
+    out: dict[str, int] = {}
+    with store._lock:
+        rows = store.db.execute("SELECT rule, status, decided_at FROM proposals WHERE founder_id=? AND coach=? AND "
+                                "status IN ('accepted', 'rejected')", (store.fid, store.coach)).fetchall()
+        since = {rule: _meta(store, _key(store, rule, "revived_at")) or "" for rule in RULES}
+    counts: dict[str, list[int]] = {}
+    for r in rows:
+        if (r["decided_at"] or "") <= since.get(r["rule"], ""):
+            continue
+        c = counts.setdefault(r["rule"], [0, 0])
+        c[0 if r["status"] == "accepted" else 1] += 1
+    for rule, (yes, no) in counts.items():
+        if no >= MUTE_AFTER and not yes:
+            out[rule] = no
+    return out
+
+
+def muted_news(store) -> list[dict]:
+    """Rules muted since the person was last told, each told once: {id, rule, what, rejected}."""
+    news = []
+    for rule, n in sorted(muted(store).items()):
+        key = _key(store, rule, "told")
+        with store._lock:
+            told = _meta(store, key)
+            if told:
+                continue
+            store.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, store._iso()))
+        news.append({"id": f"p-{rule.lower()}", "rule": rule, "what": RULES[rule], "rejected": n})
+    return news
+
+
+def _answer_rule(store, rule: str, status: str | None, source: str) -> dict:
+    """coach_update on `p-r3`: accepted brings a muted rule back in this Project (its answers start again from
+    zero); rejected keeps it muted. Inside the caller's transaction."""
+    if status not in ("accepted", "rejected"):
+        raise _err(f"answer p-{rule.lower()} with status accepted (suggest again) or rejected (keep it muted)")
+    was = muted(store)
+    if rule not in was:
+        raise _err(f"rule p-{rule.lower()} is not muted in this Project; it keeps suggesting")
+    if status == "accepted":
+        now = store._iso()
+        store.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                         (_key(store, rule, "revived_at"), now))
+        store.db.execute("DELETE FROM meta WHERE key=?", (_key(store, rule, "told"),))
+    reason, actor = getattr(store, "_why", (None, None))
+    store._change("proposal", f"p-{rule.lower()}", "unmute" if status == "accepted" else "mute",
+                  {"muted": rule in was}, {"muted": status != "accepted"}, source,
+                  reason=reason or f"{status} rule {rule}: {RULES[rule]}", actor=actor)
+    return {"id": f"p-{rule.lower()}", "before": {"muted": rule in was}, "after": {"muted": status != "accepted"},
+            "warnings": []}
 
 
 def _err(msg: str):
