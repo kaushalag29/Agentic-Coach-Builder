@@ -139,3 +139,9 @@ through `coach_graph`.
   are facts about saved rows, not new claims. "Existing records are not linked retroactively" still holds for the links
   a person makes.
 - `forget` now writes the slice again from what is left, so the other coaches' shared records stay.
+
+## Amendment 2026-11-16: one whole build after every save (ADR-0027)
+
+"Two writers, one renderer" is replaced: whichever coach saved rebuilds the whole vault, the graph page and
+`INDEX.md` included, under a lock that never waits; `coach_project action="vault"` runs the same build on request,
+so it works where the host's shell can't reach the store. Every date is a day in the Project's time zone.

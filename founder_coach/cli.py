@@ -188,8 +188,9 @@ def _open_or_explain(home):
 
 
 def _vault(args) -> int:
-    """`vault build` writes the whole Project vault (every coach's folder) from a read-only copy of the database. It
-    never opens the store, so nothing migrates, backs up or rewrites there; `--out` puts the files elsewhere."""
+    """`vault build` writes the whole Project vault (every coach's folder) from a read-only copy of the database: the
+    same build every coach runs after a save (ADR-0027). It never opens the store, so nothing migrates, backs up or
+    rewrites there; `--out` puts the files elsewhere."""
     from pathlib import Path
     from . import installed, vault
     from .projects import ProjectError, Workspace
@@ -206,11 +207,14 @@ def _vault(args) -> int:
         return 1
     engine = Path(args.engine_home).expanduser() if args.engine_home else installed.engine_home()
     try:
-        res = vault.build(home, Path(args.out).expanduser() if args.out else None, engine,
-                          with_html=bool(getattr(args, "html", False)))
+        res = vault.build(home, Path(args.out).expanduser() if args.out else None, engine)
     except (vault.VaultError, OSError) as e:
         print(f"{product.ID}: {e}", file=sys.stderr)
         return 1
+    if res.get("deferred"):
+        print(f"{product.ID}: a coach is building the vault of {home.name} at {res['path']} right now; it builds once "
+              "more for this request.")
+        return 0
     print(f"{product.ID}: vault of {home.name} at {res['path']} ({res['files']} file(s): {res['written']} written, "
           f"{res['removed']} removed). The database was read from a copy. Open the folder in Obsidian.")
     return 0
@@ -627,8 +631,8 @@ def main(argv: list[str] | None = None) -> int:
     vl.add_argument("--out", default=None, help="folder for the vault (default: vault/ inside the Project's folder)")
     vl.add_argument("--engine-home", default=None, help="the engine home whose installed/ registry says which coaches "
                                                          "keep their records private (default ~/.ytbrain)")
-    vl.add_argument("--html", action="store_true", help="also write _meta/graph.html, one page that shows the graph "
-                                                        "in a browser, offline")
+    vl.add_argument("--html", action="store_true", help="kept for old scripts: _meta/graph.html (the graph in a "
+                                                        "browser, offline) is always written now")
     nt = sub.add_parser("notes", help="the Notes folder beside the store: rebuild it, or lint the Notes (report-only)")
     nt.add_argument("action", choices=["lint", "rebuild"])
     nt.add_argument("--json", action="store_true", help="lint: the findings as JSON")

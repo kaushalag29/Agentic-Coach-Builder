@@ -104,7 +104,7 @@ founder-coach forget --confirm "Acme"        # the same without a prompt (requir
 founder-coach forget --all                   # every Project and the Common profile (type 'forget all')
 founder-coach notes lint [--json]               # report-only: Notes past their revisit date, broken links, duplicates, drift of the derived files
 founder-coach notes rebuild                      # regenerate the search index and the notes/ folder (INDEX.md, one file per Note) from the store
-founder-coach vault build [--out DIR] [--html]   # the Project vault (plain Markdown for Obsidian): every coach's folder and a board per Goal, from a read-only copy of the database; --html adds an offline graph page
+founder-coach vault build [--out DIR]            # the Project vault (plain Markdown for Obsidian): every coach's folder, a board per Goal and an offline graph page, from a read-only copy of the database
 founder-coach restore --list                 # backups, newest first, each with its integrity check
 founder-coach restore [LABEL]                # restore a backup (default: newest good one); old file set aside
 founder-coach feedback list|export [--out D] # the Founder's Feedback; export writes only that, to send
@@ -140,14 +140,17 @@ ytbrain gaps --replay                                                # the weak 
 - **Also served:** 4 prompts (`ask`, `weekly-focus`, `check-in`, `setup`) and the resources
   `founder://profile`, `founder://this-week`, `founder://notes` (the Notes index), `corpus://status` and
   `corpus://item/{id}`.
-- **The Project vault** (`vault/` in the Project's folder, ADR-0020 amendments 2026-11-05 and 2026-11-09) is the same
+- **The Project vault** (`vault/` in the Project's folder, ADR-0020 amendments, ADR-0027) is the same
   memory as plain Markdown a graph viewer can open, written from the Project graph (ADR-0024): a page per Goal,
   Decision, Note and Check-in, one page per task with every week it was carried (a Thread), a week spine, typed links
   (`serves`, `decided_in`, `reviewed_in`, `about` ...) as frontmatter properties and inline fields, and saved views for
   Obsidian Bases in `_meta/views/`. `shared/` holds what the coaches of a Project share; each coach has its own folder,
-  and a coach that keeps everything private (the investor) never appears in `shared/`. Every save refreshes the part
-  its coach may read; `founder-coach vault build` (or `/founder-coach:vault`) rebuilds all of it from a read-only copy
-  of the database. Open the folder as a vault in Obsidian (free, not open source) and the graph view; hubs and the
+  and a coach that keeps everything private (the investor) never appears in `shared/`. Every save, by any coach,
+  rebuilds all of it, `_meta/graph.html` (offline, in a browser) and `_meta/INDEX.md` included; `/founder-coach:vault`
+  rebuilds it on request through the coach's own server (`coach_project action="vault"`), so it works in hosted
+  sessions too, and `founder-coach vault build --out DIR` writes a copy elsewhere. A build that fails never fails the
+  save; one that keeps failing becomes a Nudge. Open the folder itself as a vault in Obsidian (free, not open source)
+  and the graph view; hubs and the
   index are in `_meta/`, which the graph view leaves out. Foam, Quartz and Logseq read the same files. It is a
   read-only view: an edit is overwritten, and Holdings never enter it.
 - **Founder data** lives in one folder per Project, `~/.ytbrain/projects/<id>/`, shared by every coach with each record

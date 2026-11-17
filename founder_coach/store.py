@@ -229,6 +229,7 @@ class FounderStore:
         self.vault_dir = f"notes-{self.coach}" if own else "notes"
         self.clock = clock or _utc_now
         self.cite_check: Callable[[list[str]], list[str]] | None = None    # -> unknown ids
+        self.usage_run: str | None = None    # the server's session id when usage is logged: a failed vault build is a row
         self.cite_lookup: Callable[[str], dict | None] | None = None       # id -> {title, deep_link}
         self._lock = threading.RLock()
         self._why: tuple[str | None, str | None] = (None, None)   # why and by whom, for the write running now
@@ -1914,9 +1915,9 @@ class FounderStore:
             self.md_path.unlink(missing_ok=True)
             self._write_project_md()                   # what the other coaches left (or the file's end)
             try:
-                from . import notes_view, vault
+                from . import notes_view
                 notes_view.clear_vault(self)
-                vault.clear(self)
+                self.rebuild_vault()               # the whole vault again, from what the other coaches left
             except OSError as e:
                 import logging
                 logging.getLogger("founder_coach").warning("forget: the notes folder was not cleared (%s)", e)
@@ -1935,7 +1936,7 @@ class FounderStore:
 
     def _write_vault(self) -> None:
         """The derived, read-only views beside the store (ADR-0020): the notes/ folder (a Pack that keeps Notes, none
-        when there are no Notes) and this coach's slice of the Project vault (what ADR-0019 lets it read)."""
+        when there are no Notes) and the whole Project vault, rebuilt by whichever coach saved (ADR-0027)."""
         if self.name != "founder":
             return
         if product.has("notes"):
@@ -1946,13 +1947,68 @@ class FounderStore:
             except Exception as e:            # noqa: BLE001 -- a view; never fail a write for it
                 import logging
                 logging.getLogger("founder_coach").warning("the notes folder was not updated: %s", e)
-        try:                                  # the Project vault (ADR-0020 amendment): the slice this coach may read
-            from . import vault
-            with self._lock:
-                vault.sync_slice(self)
+        self.rebuild_vault()
+
+    VAULT_META = ("vault_built_at", "vault_failures", "vault_error", "vault_failed_since")
+
+    def rebuild_vault(self, raise_errors: bool = False) -> dict | None:
+        """The whole Project vault (ADR-0027), after a save or on request. A failure never fails a save: it is a usage
+        row, and kept in `meta` so a Nudge can say so once it persists (two in a row, or more than a day)."""
+        import time
+        from . import vault
+        t0 = time.monotonic()
+        try:
+            res = vault.build_store(self)
         except Exception as e:                # noqa: BLE001 -- a view; never fail a write for it
+            self._vault_failed(e, int((time.monotonic() - t0) * 1000))
+            if raise_errors:
+                raise
             import logging
             logging.getLogger("founder_coach").warning("the vault was not updated: %s", e)
+            return None
+        if not res.get("deferred"):
+            self._vault_meta({"vault_built_at": self._iso()}, drop=self.VAULT_META[1:])
+        return res
+
+    def vault_state(self) -> dict:
+        """{built_at, failures, error, failed_since} of the Project vault, from `meta` (shared by its coaches)."""
+        try:
+            with self._lock:
+                rows = dict(self.db.execute(f"SELECT key, value FROM meta WHERE key IN "
+                                            f"({','.join('?' * len(self.VAULT_META))})", self.VAULT_META).fetchall())
+        except sqlite3.Error:
+            rows = {}
+        return {"built_at": rows.get("vault_built_at"), "failures": int(rows.get("vault_failures") or 0),
+                "error": rows.get("vault_error"), "failed_since": rows.get("vault_failed_since")}
+
+    def _vault_failed(self, e: BaseException, ms: int) -> None:
+        err = f"{type(e).__name__}: {e}"[:300]
+        now = self.vault_state()
+        self._vault_meta({"vault_failures": str(now["failures"] + 1), "vault_error": err,
+                          "vault_failed_since": now["failed_since"] or self._iso()})
+        if self.usage_run is not None:
+            self.log_usage("vault", "error", ms, run=self.usage_run, detail={"error": err})
+
+    def _vault_meta(self, put: dict[str, str], drop: tuple[str, ...] = ()) -> None:
+        """Best effort, never waits long: the vault's state is a view's bookkeeping, not memory."""
+        try:
+            with self._lock:
+                self.db.execute(f"PRAGMA busy_timeout={USAGE_BUSY_MS}")
+                try:
+                    self.db.execute("BEGIN IMMEDIATE")
+                    try:
+                        if drop:
+                            self.db.execute(f"DELETE FROM meta WHERE key IN ({','.join('?' * len(drop))})", drop)
+                        self.db.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", list(put.items()))
+                        self.db.execute("COMMIT")
+                    except BaseException:
+                        _rollback(self.db)
+                        raise
+                finally:
+                    self.db.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error as e:
+            import logging
+            logging.getLogger("founder_coach").debug("vault state not kept: %s", e)
 
     def _write_project_md(self) -> None:
         try:

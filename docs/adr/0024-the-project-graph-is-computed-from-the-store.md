@@ -57,3 +57,8 @@ about this Goal" was never built.
   text-to-Cypher by more, and text stored in memory can carry an injection. Fixed operations with parameters instead.
 - **Community summaries (GraphRAG, RAPTOR):** worth it for themes over a large corpus, not for one Project; Threads and
   Weeks are the clusters.
+
+## Amendment 2026-11-16: the vault's days (ADR-0027)
+
+A node's day (a Goal's, a Thread's, a Note's, a Check-in's, a Person's, an Issue's) is taken in the Project's time
+zone, as a Decision's already was; the vault is the whole Project, rebuilt after every save (ADR-0027).

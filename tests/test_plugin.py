@@ -1124,10 +1124,15 @@ def test_every_pack_gives_an_opinion_when_asked_and_declines_only_its_declared_l
     assert "Never a security call" not in investor and "never pick, rate or time a security" not in investor
     assert "price target" in investor and "market-timing" in investor, "the hard limits stay"
 
-def test_the_vault_skill_names_the_project_it_builds_and_never_guesses():
-    """One Project at a time: the skill takes the id from the conversation's chosen Project and passes it to the command."""
+def test_the_vault_skill_builds_through_the_server_for_the_chosen_project_and_never_guesses():
+    """ADR-0027: one Project at a time, the one the conversation chose, built by the coach's own server
+    (coach_project action vault), so it works where the host's shell can't see the store: no shell command, no copy."""
     text = (ROOT / "plugin" / "skills" / "vault" / "SKILL.md").read_text(encoding="utf-8")
-    assert "coach_get_context" in text and '--project "<id>"' in text and "vault build" in text and "guess" in text
+    assert "coach_get_context" in text and "guess" in text
+    assert '`coach_project` with `action` `"vault"`' in text
+    assert "uvx" not in text and "Bash" not in text and "CLAUDE_SKILL_DIR" not in text, "no shell in the skill"
+    assert "disable-model-invocation: true" in text, "only the person starts a rebuild"
+    assert "don't run a shell command" in text and "Don't copy or move the database" in text
 
 
 def test_every_coach_offers_assumption_notes_and_the_loop_skills_read_the_loop():

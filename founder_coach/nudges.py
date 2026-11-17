@@ -60,6 +60,9 @@ def nudges(store: FounderStore) -> list[dict]:
     if rev:
         out.append({"kind": "decision_revisit", "ids": [d["id"] for d in rev],
                     "message": f"{len(rev)} Decision(s) due for a revisit"})
+    vault = _vault_nudge(store)
+    if vault:
+        out.append(vault)
     try:                                             # ADR-0025: ties the link rules found, waiting for a yes
         from . import proposals as P
         _, waiting = P.pending(store, limit=1)
@@ -77,6 +80,24 @@ def nudges(store: FounderStore) -> list[dict]:
                         "message": f"{len(due)} Note(s) due for a revisit: "
                                    + "; ".join(f"{n['title'][:60]} (by {n['revisit_on']})" for n in due[:3])})
     return out
+
+
+def _vault_nudge(store: FounderStore) -> dict | None:
+    """ADR-0027: the vault is rebuilt after every save; a failure is said once it persists (two builds in a row, or
+    failing for more than a day), never for a single one the next save repairs."""
+    vs = store.vault_state()
+    if not vs["failures"]:
+        return None
+    since = dt.datetime.fromisoformat(vs["failed_since"]) if vs["failed_since"] else None
+    if vs["failures"] < 2 and not (since and store.now() - since > dt.timedelta(days=1)):
+        return None
+    built = (dt.datetime.fromisoformat(vs["built_at"]).astimezone(store.tz()).date().isoformat()
+             if vs["built_at"] else None)
+    return {"kind": "vault_stale",
+            "message": "The Project's vault (the Markdown folder and graph page) hasn't updated "
+                       + (f"since {built}" if built else "yet")
+                       + f": the last {vs['failures']} build(s) failed ({vs['error']}). Tell the person once, and "
+                       f"offer to rebuild it with /{product.ID}:vault; their records are safe either way."}
 
 
 def _holdings_nudges(store: FounderStore, prof: dict, today: dt.date) -> list[dict]:

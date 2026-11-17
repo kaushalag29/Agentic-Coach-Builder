@@ -1004,11 +1004,11 @@
    "open_world_hint": false,
    "read_only_hint": false
   },
-  "description": "Projects keep separate memory: one per company or product the Founder works on with this coach, shared by\ntheir coaches. The work folder the app gives chooses the Project, and a folder linked to nothing gets no\nmemory until the Founder links it (link) or makes a Project for it (create links it). Without a folder a\nsession works on one active Project; with several and none chosen, ask which one, then switch. create\nmakes a Project and switches to it (setup does this first); rename changes its name, never its memory;\nsummary shows another Project's profile and Goals, read-only, only when the Founder asks to look at or\ncompare it. Nothing is ever copied between Projects. Call create, switch, rename, link or unlink only when the Founder asks,\nor in setup for the one they named; never to organise memory on your own.",
+  "description": "Projects keep separate memory: one per company or product the Founder works on with this coach, shared by\ntheir coaches. The work folder the app gives chooses the Project, and a folder linked to nothing gets no\nmemory until the Founder links it (link) or makes a Project for it (create links it). Without a folder a\nsession works on one active Project; with several and none chosen, ask which one, then switch. create\nmakes a Project and switches to it (setup does this first); rename changes its name, never its memory;\nsummary shows another Project's profile and Goals, read-only, only when the Founder asks to look at or\ncompare it. Nothing is ever copied between Projects. Call create, switch, rename, link or unlink only when the Founder asks,\nor in setup for the one they named; never to organise memory on your own. vault rebuilds the active Project's\nvault (it is also rebuilt after every save) and reports only the folder and file counts.",
   "input": {
    "properties": {
     "action": {
-     "description": "list; switch to `project`; create `name` and switch to it; rename `project` (default: the active one) to `name`; summary of `project`, read-only; link `folder` (default: the work folder the app gave) to `project` (default: the active one); unlink it",
+     "description": "list; switch to `project`; create `name` and switch to it; rename `project` (default: the active one) to `name`; summary of `project`, read-only; link `folder` (default: the work folder the app gave) to `project` (default: the active one); unlink it; vault: rebuild the active Project's vault now (only when the person asks, e.g. /vault)",
      "enum": [
       "list",
       "switch",
@@ -1016,7 +1016,8 @@
       "rename",
       "summary",
       "link",
-      "unlink"
+      "unlink",
+      "vault"
      ],
      "title": "Action",
      "type": "string"
@@ -1158,6 +1159,20 @@
      "default": null,
      "description": "another Project's profile and Goals (read-only)",
      "title": "Summary"
+    },
+    "vault": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "action vault: {path, files, written, removed, deferred} (deferred: another coach is building it now and will build once more for this request)",
+     "title": "Vault"
     }
    },
    "required": [

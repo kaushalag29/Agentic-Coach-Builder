@@ -5,6 +5,14 @@ released benchmark carries its version in `eval/VERSION`.
 
 ## Unreleased
 
+- **The vault is current after every save, in every app (ADR-0027).** Whichever coach saved rebuilds the whole
+  Project vault, the graph page (`_meta/graph.html`) and `INDEX.md` included, instead of only its own part; on a real
+  Project that takes about 0.1 s. `/vault` now calls `coach_project action="vault"`, so it builds in hosted sessions
+  where the host's shell can't see the store. The build reads one consistent snapshot, takes a lock that never makes a
+  save wait (a coach that finds a build running asks it for one more pass), writes every page before removing stale
+  ones, and leaves files the person made alone. Every day in the vault is in the Project's time zone: the command
+  used the UTC day before, so Check-in pages and Decision dates could be a day off. A failed build keeps the save, is
+  logged in the usage log, and becomes a Nudge after two failures in a row or a day.
 - **Memory use is measured (ADR-0026).** The usage log now says what a memory call did: the records a recall or
   context read returned and which of them were marked `edited` or `ties`, the graph operation and record, an update's
   target and the ties it added or ended, and the record a refused call named. Ids only, never words (recall text only

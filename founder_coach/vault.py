@@ -10,14 +10,19 @@ Layout (inside the Project folder, or wherever `vault build --out` says):
 
     vault/shared/      Goals, Commitments and Decisions the coaches of a Project share, each stamped with its coach
     vault/<coach>/     that coach's Notes and Check-ins; and everything else it keeps to itself (ADR-0019: the investor)
-    vault/INDEX.md     the folders (a full build only)
+    vault/_meta/       hubs, a board per Goal, the saved views, the offline graph page and INDEX.md
 
-Two ways to write it, one renderer:
+One build, the whole Project, one renderer (ADR-0027):
 
-* `sync_slice(store)` after a save: a coach writes what ADR-0019 lets it read (its own folder, the shared records
-  its `readers()` name). It never reads or removes another coach's private files.
-* `build(home, out)`, the person's command: reads the whole database through a READ-ONLY copy (the original is never
-  opened, so nothing migrates, backs up or rewrites there) and writes every coach's folder.
+* `build_store(store)` after every save, by whichever coach saved, and on request (`coach_project action="vault"`):
+  every record of the Project, read in one read transaction on the coach's own connection.
+* `build(home, out)`, the person's command: the same build from a READ-ONLY copy of the database (the original is
+  never opened, so nothing migrates, backs up or rewrites there).
+
+Both take `vault/.lock` without waiting: a coach that finds a build running leaves `vault/.again` and returns, and
+the holder builds once more before it lets go. Pages are written before stale ones are removed, so a failed build
+deletes nothing. Every date is a day in the Project's time zone. Building files puts nothing into a conversation:
+ADR-0019 governs what a coach reads (`from_store`, the slice `coach_graph` walks), not what is written here.
 
 A coach whose privacy is unknown (not in the installed registry) is treated as keeping everything to itself.
 Holdings, positions and account data are never read here.
@@ -26,6 +31,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -36,6 +42,8 @@ from pathlib import Path
 from . import notes_view as NV
 
 VAULT_DIR = "vault"
+LOCK_FILE = ".lock"                  # held while a build writes the vault (never waited for)
+AGAIN_FILE = ".again"                # left by a coach that found a build running: the holder builds once more
 SHARED = "shared"
 META = "_meta"
 HOME = "home"
@@ -95,7 +103,7 @@ class Snapshot:
     people: list[dict] = field(default_factory=list)
     issues: list[dict] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)  # change-log rows of the Decisions (ADR-0025)
-    readable: dict[str, set[str]] | None = None        # kind -> coaches whose files a slice may rewrite or remove
+    tz: object = None                                   # the Project's time zone: every day in the vault is in it
 
 
 def _slug(text: str) -> str:
@@ -289,9 +297,17 @@ def _loads(v):
     return v
 
 
+def _day(ts: object, tz) -> str | None:
+    """The day a timestamp falls on in the Project's time zone, as YYYY-MM-DD (ADR-0027: one date rule)."""
+    from . import graph as G
+    d = G.local_day(str(ts), tz) if ts else None
+    return d.isoformat() if d else None
+
+
 def _history(lay: _Layout, snap: Snapshot, nid: str, scope: str) -> list[str]:
     """A Decision's change log as a table: when, what, why and by whom (ADR-0025: nothing about a change is lost)."""
     from . import graph as G
+    tz = G._tz(snap, snap.tz)
     rows = [c for c in snap.history if c.get("entity_id") == nid]
     if not rows:
         return []
@@ -311,7 +327,7 @@ def _history(lay: _Layout, snap: Snapshot, nid: str, scope: str) -> list[str]:
                else (lay.link(actor, scope) or actor))
         cell = lambda x: str(x or "").replace("|", "/").replace("\n", " ")       # noqa: E731
         why = c.get("reason") or ("" if c["op"] == "create" else "not recorded")
-        out.append(f"| {str(c.get('at') or '')[:10]} | {cell(what)} | {cell(why)} | {cell(who)} |")
+        out.append(f"| {_day(c.get('at'), tz) or ''} | {cell(what)} | {cell(why)} | {cell(who)} |")
     return out + [""]
 
 
@@ -320,8 +336,12 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
     with `with_html` the offline graph page)."""
     from . import graph as G
     from .store import week_start
-    g = G.build(snap)
+    tz = G._tz(snap, snap.tz)
+    g = G.build(snap, tz)
     lay = _Layout(snap, g)
+
+    def day(ts: object) -> str | None:
+        return _day(ts, tz)
     files: dict[str, str] = {}
 
     def put(rel: str, fm: str, body: list[str]) -> None:
@@ -335,7 +355,7 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
             typed = _typed(lay, nid, scope, OUT_TYPES["goal"])
             fm = _front({"id": nid, "title": n.title, "aliases": aliases, "status": r.get("status"),
                          "target_date": r.get("target_date"), "created": r.get("created_at"),
-                         "start": (r.get("created_at") or "")[:10], "end": r.get("target_date"), **typed},
+                         "start": day(r.get("created_at")), "end": r.get("target_date"), **typed},
                         n.coach, "goal")
             body = [GENERATED, "", f"# {n.title}", ""]
             if r.get("measure"):
@@ -359,7 +379,7 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
                          "goal": typed.get("serves", [None])[0], "serves": typed.get("serves"),
                          "reviewed_in": typed.get("reviewed_in"),
                          "start": week_start(weeks[0]).isoformat() if weeks else None,
-                         "end": ((last.get("closed_at") or "")[:10] or (week_start(weeks[-1]).isoformat()
+                         "end": (day(last.get("closed_at")) or (week_start(weeks[-1]).isoformat()
                                                                          if weeks else None)),
                          "group": goal.title if goal else None,
                          **{k: v for k, v in typed.items() if k not in ("serves", "reviewed_in")},
@@ -389,12 +409,12 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
                          "superseded_at": r.get("superseded_at"),
                          "mentions": _typed(lay, nid, scope, ("mentions",)).get("mentions"),
                          "revisit_on": r.get("revisit_on"), "start": n.date or None,
-                         "end": (r.get("superseded_at") or "")[:10] or None,
+                         "end": day(r.get("superseded_at")),
                          "citations": G._cites(r)}, n.coach, "decision")
             body = [GENERATED, "", f"# {n.title}", ""]
             if status != "accepted":
                 by = lay.link(r["superseded_by"], scope) if r.get("superseded_by") else None
-                body += [f"_{status.capitalize()}" + (f" on {(r.get('superseded_at') or '')[:10]} by {by}" if by else "")
+                body += [f"_{status.capitalize()}" + (f" on {day(r.get('superseded_at')) or ''} by {by}" if by else "")
                          + "._", ""]
             body += [str(r.get("reasoning") or ""), "", *_inline(typed), ""]
             for title, types, kinds in INCOMING["decision"]:
@@ -414,7 +434,7 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
                 body += ["_The coach's own conclusion: a lead to check, not something the person said._", ""]
             if r.get("superseded_by"):
                 ln = lay.link(r["superseded_by"], scope) or f"`{r['superseded_by']}`"
-                body += [f"_Superseded on {(r.get('superseded_at') or '')[:10]} by {ln}._", ""]
+                body += [f"_Superseded on {day(r.get('superseded_at')) or ''} by {ln}._", ""]
             body += [str(r.get("summary") or ""), "", *_inline(typed), ""]
             ev = [e for e in (r.get("evidence") or []) if isinstance(e, dict)]
             if ev:
@@ -435,7 +455,7 @@ def render(snap: Snapshot, full: bool = False, with_html: bool = False) -> dict[
                     al = []
             fm = _front({"id": nid, "title": n.title, "aliases": [nid, *al], "status": r.get("status"),
                          "role": r.get("role"), "created": r.get("created_at"), "start": n.date or None,
-                         "end": (r.get("closed_at") or "")[:10] or None, **typed}, n.coach, n.kind)
+                         "end": day(r.get("closed_at")), **typed}, n.coach, n.kind)
             body = [GENERATED, "", f"# {n.title}", ""]
             if r.get("role"):
                 body += [f"Role: {r['role']}", ""]
@@ -573,27 +593,6 @@ def graph_json() -> str:
     return merge_graph_json(None)
 
 
-def _front_of(path: Path) -> dict[str, str]:
-    """The frontmatter of a generated page; for a Goal's canvas, the kind and coach it records at its top."""
-    try:
-        text = path.read_text(encoding="utf-8")[:1500]
-    except OSError:
-        return {}
-    if path.suffix == ".canvas":
-        try:
-            d = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return {"kind": "goal", "coach": d.get("_coach")} if isinstance(d, dict) and d.get("_coach") else {}
-    if not text.startswith("---\n"):
-        return {}
-    out = {}
-    for line in text[4:].split("\n---\n", 1)[0].splitlines():
-        k, _, v = line.partition(": ")
-        out[k] = v.strip().strip('"')
-    return out
-
-
 def _generated(path: Path) -> bool:
     try:
         return GENERATED in path.read_text(encoding="utf-8")[:2000]
@@ -604,10 +603,10 @@ def _generated(path: Path) -> bool:
 _EXTS = (".md", ".base", ".canvas", ".html")
 
 
-def write(root: Path, files: dict[str, str], readable: dict[str, set[str]] | None, own: str | None = None) -> dict:
-    """Write the files that differ; remove generated files that no longer belong. With `readable` (a slice) a file is
-    removed only when it is in the writer's own folders (`own/`, `_meta/own/`) or its frontmatter names a kind and a
-    coach the writer may read; a person's own file (no generated marker) never is."""
+def write(root: Path, files: dict[str, str]) -> dict:
+    """Write the files that differ, each atomically; then, and only then, remove the generated files that no longer
+    belong, so a build that fails partway deletes nothing. A person's own file (no generated marker: their canvases,
+    `.obsidian/`) is never touched."""
     from .store import _atomic
     written = removed = 0
     for rel, text in files.items():
@@ -630,16 +629,11 @@ def write(root: Path, files: dict[str, str], readable: dict[str, set[str]] | Non
         if new != old:
             gp.parent.mkdir(parents=True, exist_ok=True)
             _atomic(gp, new)
-    mine = (f"{own}/", f"{META}/{own}/") if own else ()
     if root.exists():
         for p in sorted(x for x in root.rglob("*") if x.suffix in _EXTS and x.is_file()):
             rel = p.relative_to(root).as_posix()
             if rel in files or rel.startswith(".obsidian/") or not _generated(p):
                 continue
-            if readable is not None and not rel.startswith(mine):
-                fm = _front_of(p)
-                if fm.get("coach") is None or fm.get("coach") not in readable.get(fm.get("kind", ""), set()):
-                    continue
             p.unlink(missing_ok=True)
             removed += 1
         for d in sorted((x for x in root.rglob("*") if x.is_dir() and not x.name.startswith(".")), reverse=True):
@@ -648,7 +642,7 @@ def write(root: Path, files: dict[str, str], readable: dict[str, set[str]] | Non
     return {"files": len(files), "written": written, "removed": removed}
 
 
-# ---- a coach after a save: only what it may read ---------------------------------------------------------------
+# ---- what a coach may read (ADR-0019): the slice `coach_graph` walks; never used to write the vault ----------------
 
 def from_store(store) -> Snapshot:
     from . import product
@@ -684,34 +678,8 @@ def from_store(store) -> Snapshot:
                 f"SELECT seq, at, entity, entity_id, op, before, after, reason, actor FROM changes WHERE founder_id=? "
                 f"AND entity='decision' AND entity_id IN ({','.join('?' * len(ids))}) ORDER BY seq",
                 (store.fid, *ids))]
-    snap.readable = readable(store, owned)
+    snap.tz = store.tz()
     return snap
-
-
-def readable(store, owned: dict[str, tuple[str, ...]]) -> dict[str, set[str]]:
-    """kind -> the `coach` stamps whose generated files this coach's slice may rewrite or remove."""
-    me = _slug(store.coach) or "coach"
-    shared_writer = not keeps(owned, store.coach, "decision") or not keeps(owned, store.coach, "commitment")
-    out = {"note": {me}, "checkin": {me}, "hub": {me}, "week": {me},
-           "goal": set(store.readers("goals")), "decision": set(store.readers("decisions")),
-           "thread": set(store.readers("commitments")), "person": set(store.readers("people")),
-           "issue": set(store.readers("issues"))}
-    if shared_writer:
-        out["week"].add(SHARED)
-        out["hub"].add(SHARED)
-    return out
-
-
-def sync_slice(store) -> dict:
-    """After a save: refresh the part of the vault this coach may read. Best effort (the caller never fails a save)."""
-    snap = from_store(store)
-    return write(store.home / VAULT_DIR, render(snap), snap.readable, _slug(store.coach) or "coach")
-
-
-def clear(store) -> dict:
-    """After `forget`: write the slice again from what is left, so this coach's records go and the shared records of
-    the Project's other coaches stay."""
-    return sync_slice(store)
 
 
 def _project_name(home: Path) -> str:
@@ -724,7 +692,7 @@ def _project_name(home: Path) -> str:
     return home.name
 
 
-# ---- the person's command: every coach, from a read-only copy ----------------------------------------------------
+# ---- reading every record: on a coach's own connection, or from a read-only copy (the person's command) -----------
 
 def _decode(row: sqlite3.Row) -> dict:
     d = dict(row)
@@ -754,10 +722,83 @@ def registry(engine_home: Path | None) -> dict[str, tuple[str, ...]]:
     return out
 
 
+def _schema(con: sqlite3.Connection, db: Path) -> int:
+    from .store import SCHEMA_VERSION
+    try:
+        ver = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        ver = int(ver[0]) if ver else 0
+    except sqlite3.Error as e:
+        raise VaultError(f"{db} is not a coach database ({e})") from e
+    if ver > SCHEMA_VERSION:
+        raise VaultError(f"{db} is from a newer coach (schema {ver}); update this coach first")
+    if ver < 7:
+        raise VaultError(f"{db} is from an older coach (schema {ver}); open the Project once with its coach "
+                         "so it migrates, then build again. Nothing was changed.")
+    return ver
+
+
+def _read(con: sqlite3.Connection, ver: int, snap: Snapshot) -> Snapshot:
+    """Every coach's records (never Holdings, positions or account data)."""
+    def all_(table: str, order: str) -> list[dict]:
+        return [_decode(r) for r in con.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+    snap.notes = all_("notes", "created_at, id")
+    snap.links = [ln for ln in all_("links", "created_at, dst") if not ln.get("ended_at")]
+    if ver >= 8:
+        snap.people = all_("people", "created_at, id")
+        for r_ in snap.people:
+            r_["aliases"] = _loads(r_.get("aliases")) or []
+        snap.issues = all_("issues", "created_at, id")
+    why = "reason, actor" if ver >= 8 else "NULL AS reason, NULL AS actor"    # v7 kept no why or who
+    snap.history = [dict(r) for r in con.execute(
+        f"SELECT seq, at, entity, entity_id, op, before, after, {why} FROM changes "
+        "WHERE entity='decision' ORDER BY seq")]
+    snap.goals = all_("goals", "created_at, id")
+    snap.commitments = all_("commitments", "week, created_at, id")
+    snap.decisions = all_("decisions", "decided_at, id")
+    snap.checkins = all_("checkins", "created_at, id")
+    snap.profile = [{"field": r["field"], "value": r["value"], "coach": r["coach"] or "founder"}
+                    for r in con.execute("SELECT field, value, coach FROM profile_facts "
+                                         "WHERE superseded_at IS NULL ORDER BY field")]
+    return snap
+
+
+def _zone(name: object):
+    """A time zone by name, or None for a missing or unknown one."""
+    from zoneinfo import ZoneInfo
+    try:
+        return ZoneInfo(str(_loads(name))) if name else None
+    except Exception:                                   # noqa: BLE001 -- a bad name: the next source decides
+        return None
+
+
+def _stored_tz(con: sqlite3.Connection) -> str | None:
+    """The Project's own `timezone` fact, whichever coach recorded it (so every coach builds the same days)."""
+    try:
+        row = con.execute("SELECT value FROM profile_facts WHERE field='timezone' AND superseded_at IS NULL "
+                          "ORDER BY valid_from DESC, id DESC LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def _common_tz(engine_home: Path | None) -> str | None:
+    """The Common profile's `timezone` (a shared field lives there, not in the Project's store), read-only."""
+    if engine_home is None or not (engine_home / "you.db").is_file():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{engine_home / 'you.db'}?mode=ro", uri=True)
+        try:
+            return _stored_tz(con)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
 def from_db_file(db: Path, engine_home: Path | None) -> Snapshot:
     """Every coach's records, read from a COPY of the database in a scratch folder: the original (and its -wal and
     -shm) is only ever read as bytes. A copy taken while a coach writes may miss the last change; build again."""
-    from .store import SCHEMA_VERSION
+    from . import domain as D
     if not db.is_file():
         raise VaultError(f"no coach database at {db}")
     with tempfile.TemporaryDirectory(prefix="vault-read-") as tmp:
@@ -769,48 +810,109 @@ def from_db_file(db: Path, engine_home: Path | None) -> Snapshot:
         con = sqlite3.connect(dst)
         con.row_factory = sqlite3.Row
         try:
-            try:
-                ver = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-                ver = int(ver[0]) if ver else 0
-            except sqlite3.Error as e:
-                raise VaultError(f"{db} is not a coach database ({e})") from e
-            if ver > SCHEMA_VERSION:
-                raise VaultError(f"{db} is from a newer coach (schema {ver}); update this coach first")
-            if ver < 7:
-                raise VaultError(f"{db} is from an older coach (schema {ver}); open the Project once with its coach "
-                                 "so it migrates, then build again. Nothing was changed.")
-
-            def all_(table: str, order: str) -> list[dict]:
-                return [_decode(r) for r in con.execute(f"SELECT * FROM {table} ORDER BY {order}")]
-            snap = Snapshot(name=_project_name(db.parent), owned=registry(engine_home))
-            snap.notes = all_("notes", "created_at, id")
-            snap.links = [ln for ln in all_("links", "created_at, dst") if not ln.get("ended_at")]
-            if ver >= 8:
-                snap.people = all_("people", "created_at, id")
-                for r_ in snap.people:
-                    r_["aliases"] = _loads(r_.get("aliases")) or []
-                snap.issues = all_("issues", "created_at, id")
-            why = "reason, actor" if ver >= 8 else "NULL AS reason, NULL AS actor"    # v7 kept no why or who
-            snap.history = [dict(r) for r in con.execute(
-                f"SELECT seq, at, entity, entity_id, op, before, after, {why} FROM changes "
-                "WHERE entity='decision' ORDER BY seq")]
-            snap.goals = all_("goals", "created_at, id")
-            snap.commitments = all_("commitments", "week, created_at, id")
-            snap.decisions = all_("decisions", "decided_at, id")
-            snap.checkins = all_("checkins", "created_at, id")
-            snap.profile = [{"field": r["field"], "value": r["value"], "coach": r["coach"] or "founder"}
-                            for r in con.execute("SELECT field, value, coach FROM profile_facts "
-                                                 "WHERE superseded_at IS NULL ORDER BY field")]
-            return snap
+            snap = _read(con, _schema(con, db), Snapshot(name=_project_name(db.parent), owned=registry(engine_home)))
+            own = _stored_tz(con)
         finally:
             con.close()
+    snap.tz = (_zone(own) or _zone(_common_tz(engine_home)) or _zone(D.system_timezone()) or dt.timezone.utc)
+    return snap
 
 
-def build(home: Path, out: Path | None = None, engine_home: Path | None = None, with_html: bool = False) -> dict:
-    """The full vault of the Project in `home` (a folder holding founder.db), written to `out` (default
-    <home>/vault). Reads a copy of the database; writes only inside `out`. `with_html` adds `_meta/graph.html`."""
-    snap = from_db_file(Path(home) / "founder.db", engine_home)
+def from_live(store) -> Snapshot:
+    """Every coach's records of a coach's own store, read in ONE read transaction on its connection: a consistent
+    snapshot of everything committed (WAL: it never waits for, or holds up, another coach's write)."""
+    owned = {store.coach: tuple(store.owned), **{p: tuple(o) for p, o in store._peer_map().items()}}
+    snap = Snapshot(name=_project_name(store.home), owned=owned)
+    with store._lock:
+        con = store.db
+        con.execute("BEGIN")
+        try:
+            _read(con, _schema(con, store.path), snap)
+            own = _stored_tz(con)
+        finally:
+            con.execute("COMMIT")                       # a read: nothing to keep or undo
+    snap.tz = _zone(own) or store.tz()
+    return snap
+
+
+# ---- one build, by whichever coach saved or by the person's command (ADR-0027) -------------------------------------
+
+try:
+    import fcntl
+except ImportError:                                     # Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+PASSES = 3                                              # a build, then at most two more for saves made meanwhile
+
+
+def _try_lock(fd: int) -> bool:
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (BlockingIOError, PermissionError):
+            return False
+    if msvcrt is not None:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, 0)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def rebuild(root: Path, snapshot, with_html: bool = True, _again: bool = True) -> dict:
+    """Write the whole vault at `root` from `snapshot()` (called under the lock, so it sees every save committed
+    before it). Never waits: when another build holds the lock, leave AGAIN_FILE for it and return `deferred`; the
+    holder builds once more before it lets go, and looks once more after it has let go."""
+    root.mkdir(parents=True, exist_ok=True)
+    again = root / AGAIN_FILE
+    fd = os.open(root / LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o600)
+    res: dict = {}
+    try:
+        if not _try_lock(fd):
+            again.touch()
+            return {"path": str(root), "files": 0, "written": 0, "removed": 0, "deferred": True}
+        try:
+            for _ in range(PASSES):
+                again.unlink(missing_ok=True)
+                res = write(root, render(snapshot(), full=True, with_html=with_html))
+                if not again.exists():
+                    break
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
+    if _again and again.exists():                       # left between our last look and the unlock
+        more = rebuild(root, snapshot, with_html, _again=False)
+        if not more.get("deferred"):
+            res = {**more, "written": res.get("written", 0) + more["written"],
+                   "removed": res.get("removed", 0) + more["removed"]}
+    return {**res, "path": str(root), "deferred": False}
+
+
+def build_store(store) -> dict:
+    """After every save, and on request: the whole Project vault, from the coach's own connection."""
+    return rebuild(store.home / VAULT_DIR, lambda: from_live(store))
+
+
+def build(home: Path, out: Path | None = None, engine_home: Path | None = None, with_html: bool = True) -> dict:
+    """The person's command: the same build of the Project in `home` (a folder holding founder.db), written to `out`
+    (default <home>/vault). Reads a copy of the database; writes only inside `out`."""
+    db = Path(home) / "founder.db"
+    if not db.is_file():
+        raise VaultError(f"no coach database at {db}")
     root = Path(out) if out else Path(home) / VAULT_DIR
-    res = write(root, render(snap, full=True, with_html=with_html), None)
-    res["path"] = str(root)
-    return res
+    return rebuild(root, lambda: from_db_file(db, engine_home), with_html)

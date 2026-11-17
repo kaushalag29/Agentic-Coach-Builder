@@ -219,6 +219,12 @@ def local_day(ts: str | None, tz) -> dt.date | None:
     return t.astimezone(tz).date()
 
 
+def _iso_day(ts: str | None, tz) -> str:
+    """A record's day in the Project's time zone (ADR-0027), or "" without a timestamp."""
+    d = local_day(ts, tz)
+    return d.isoformat() if d else ""
+
+
 def week_node(g: Graph, week: str) -> str:
     from .store import week_start
     if week not in g.nodes:
@@ -274,14 +280,14 @@ def build(snap, tz=None) -> Graph:
     g = Graph(snap.name)
     for r in snap.goals:
         g.add(Node(r["id"], "goal", str(r.get("text") or r["id"]).strip(), r.get("coach") or "",
-                   (r.get("created_at") or "")[:10], r.get("status"), {"row": r}))
+                   _iso_day(r.get("created_at"), tz), r.get("status"), {"row": r}))
     threads = thread_rows(snap.commitments)
     for tid, rows in threads.items():
         live = live_rows(rows)
         last = live[-1]
         goal = next((c["goal_id"] for c in reversed(live) if c.get("goal_id")), None)
         g.add(Node(tid, "thread", str(last.get("action") or tid).strip(), last.get("coach") or "",
-                   (rows[0].get("created_at") or "")[:10], last.get("status"),
+                   _iso_day(rows[0].get("created_at"), tz), last.get("status"),
                    {"rows": rows, "live": live, "goal_id": goal,
                     "weeks": [c.get("week") for c in live if c.get("week")]}))
         for c in rows:
@@ -292,18 +298,18 @@ def build(snap, tz=None) -> Graph:
                    day.isoformat() if day else "", r.get("status") or "accepted", {"row": r}))
     for r in snap.notes:
         g.add(Node(r["id"], "note", str(r.get("title") or r["id"]).strip(), r.get("coach") or "",
-                   (r.get("created_at") or "")[:10], "superseded" if r.get("superseded_by") else None, {"row": r}))
+                   _iso_day(r.get("created_at"), tz), "superseded" if r.get("superseded_by") else None, {"row": r}))
     for r in snap.checkins:                     # a week can hold several Check-ins: the day tells them apart
         day = local_day(r.get("created_at"), tz)
         when = f" ({day.day} {day:%b})" if day else ""
         g.add(Node(r["id"], "checkin", f"Check-in {r.get('week') or ''}{when}".strip(), r.get("coach") or "",
-                   (r.get("created_at") or "")[:10], None, {"row": r}))
+                   _iso_day(r.get("created_at"), tz), None, {"row": r}))
     for r in getattr(snap, "people", []):
         g.add(Node(r["id"], "person", str(r.get("name") or r["id"]).strip(), r.get("coach") or "",
-                   (r.get("created_at") or "")[:10], r.get("status"), {"row": r}))
+                   _iso_day(r.get("created_at"), tz), r.get("status"), {"row": r}))
     for r in getattr(snap, "issues", []):
         g.add(Node(r["id"], "issue", str(r.get("text") or r["id"]).strip(), r.get("coach") or "",
-                   (r.get("created_at") or "")[:10], r.get("status"), {"row": r}))
+                   _iso_day(r.get("created_at"), tz), r.get("status"), {"row": r}))
     # derived edges
     for t in g.threads():
         if t.data["goal_id"]:

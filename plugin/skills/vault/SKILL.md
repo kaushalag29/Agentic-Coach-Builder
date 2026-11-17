@@ -1,21 +1,21 @@
 ---
 name: vault
-description: Builds the Project's vault, a read-only folder of plain Markdown (one file per Note, Decision, Goal, Commitment, person and blocker, linked) that Obsidian or another graph viewer can open, plus a board per Goal and one graph page for a browser. Use when the person types /{{id}}:vault.
+description: Rebuilds the Project's vault now, a read-only folder of plain Markdown (one file per Note, Decision, Goal, Commitment, person and blocker, linked) that Obsidian or another graph viewer can open, plus a board per Goal and one graph page for a browser. Use when the person types /{{id}}:vault.
 disable-model-invocation: true
-argument-hint: "[output folder]"
 ---
 
 # Vault
 
-The coach already refreshes the part of the vault it may read after every save. This builds all of it again: the first time on a Project that already has records, after a coach was added or removed, or to repair a folder that drifted.
+Every coach of the {{project_noun}} rebuilds the whole vault after each save, so it is normally current already. This rebuilds it now: to repair a folder that drifted, after a Nudge says a build failed, or to check it is up to date. It runs in the coach's own server, where the {{project_noun}}'s records are, so it works in every app, hosted sessions included: no shell is needed.
 
-1. **Which {{project_noun}}.** One at a time: the one this conversation chose. Call `coach_get_context` and take the {{project_noun}}'s `id` from its `project`. If no {{project_noun}} has been chosen yet, ask which one first, as for any save, and don't guess. If the context has no `project` (a single data folder), leave `--project` out.
-2. **Run** with Bash: `uvx --from "${CLAUDE_SKILL_DIR}/../.." {{id}} vault build --project "<id>" --html` — add `--out "<folder>"` if the {{person}} gave one: $ARGUMENTS. It reads a copy of the database, never the live one, and writes only the vault folder (by default `vault/` inside the {{project_noun}}'s own folder). It builds everything from the saved records, so a {{project_noun}} with no vault yet gets one now, and one that has a vault is brought up to date.
-3. **Report** the folder it printed and how many files it wrote. Tell the {{person}} to open that folder as a vault in Obsidian (File → Open folder as vault) and open the graph view; Foam, Quartz and Logseq read the same files. Each Goal also has a board in `_meta/<folder>/canvas/` (Obsidian opens `.canvas` files), and `_meta/graph.html` opens in any browser, offline, with no Obsidian: search, filter by kind or week, click two records to see how they connect.
-4. **Say what it is**: a read-only view. Edits to these files are overwritten at the next save; to change a record, change it through the coach. Records a coach keeps private (the investor's) are in that coach's own folder, never in `shared/`.
+1. **Which {{project_noun}}.** The one this conversation chose (`coach_get_context` names it in `project`). If none has been chosen yet, ask which one first, as for any save, and don't guess.
+2. **Build:** call `coach_project` with `action` `"vault"`. It reads every record in one consistent snapshot and writes only the {{project_noun}}'s own `vault/` folder. If it says another coach is building right now, that build runs once more for this request: say so.
+3. **Report** the folder (`vault.path`) and how many files it wrote and removed. Tell the {{person}} to open that folder itself (not a folder inside it) as a vault in Obsidian (File → Open folder as vault) and open the graph view; Foam, Quartz and Logseq read the same files. Each Goal also has a board in `_meta/<folder>/canvas/` (Obsidian opens `.canvas` files), and `_meta/graph.html` opens in any browser, offline, with no Obsidian: search, filter by kind or week, click two records to see how they connect.
+4. **Say what it is**: a read-only view. Edits to these files are overwritten at the next save; to change a record, change it through the coach. Files the {{person}} made in the folder (their own canvases, `.obsidian/`) are never touched. Records a coach keeps to itself (the investor's) are in that coach's own folder, never in `shared/`.
 5. Don't open or summarise the files unless asked; they hold the {{person}}'s private notes and decisions.
 
 ## Gotchas
 
-- If `uvx` can't be found or the command can't see the {{project_noun}}'s folder, say so plainly and stop: the vault still refreshes by itself on every save. Don't copy or move the database to make it work.
-- A full build is the {{person}}'s own command, so it shows every coach's folder. It is not one coach reading another's memory.
+- If the build fails, say what the error says and stop: the records are unchanged, and the next save tries again. Don't copy or move the database, and don't run a shell command, to make it work.
+- To write the vault to another folder, the {{person}} runs `{{id}} vault build --out <folder>` in a terminal; the tool writes only the {{project_noun}}'s own folder.
+- Building files is not one coach reading another's memory: nothing from the vault enters this conversation.

@@ -398,8 +398,8 @@ def test_the_vault_draws_a_canvas_per_goal_and_one_offline_html_page_that_text_c
         assert "<img" not in page.replace(data, "") or "onerror" not in page.replace(data, "")
         assert json.loads(data)["nodes"] and any(n["title"] == evil for n in json.loads(data)["nodes"])
         assert page.count("</script>") == 3                                # data, library, viewer: none injected
-        V.build(home, out, None)                                           # without --html the page goes
-        assert not (out / "_meta" / "graph.html").exists()
+        V.build(home, out, None)                             # ADR-0027: one build, the graph page always in it
+        assert (out / "_meta" / "graph.html").read_text() == page
 
 
 def test_an_undone_carry_never_closes_its_task_and_page_names_read_cleanly():

@@ -224,6 +224,10 @@ _Avoid_: current version, latest row
 The ties between a Project's records, computed from the store on every read (never stored): Goals, Decisions, Notes, Check-ins, Threads, Weeks, People and Issues, with a closed set of typed edges (serves, decided_in, reviewed_in, cites, mentions, supersedes, and the links the person confirmed, ADR-0025). It holds nothing the person did not say; the coach reads it with `coach_graph`.
 _Avoid_: knowledge graph (it is not extracted from text), graph database
 
+**Project vault**:
+The Project's records as a folder of plain Markdown a graph viewer opens (`vault/` in the Project's folder), with a board per Goal and one offline graph page. Rebuilt whole after every save by whichever coach saved, and on request (`coach_project action="vault"`); a read-only view, never the source of truth, and nothing from it enters a conversation (ADR-0027).
+_Avoid_: export, notes folder, slice
+
 **Person**:
 Someone the person works with, kept as a record only after they said yes: a name, other names, and a role in their own words, never taken from a connector or an account (ADR-0025). Shared by the Project's coaches. A record whose words name them `mentions` them; who decided or owns something is a link.
 _Avoid_: contact, user, stakeholder

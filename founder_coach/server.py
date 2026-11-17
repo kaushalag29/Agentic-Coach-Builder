@@ -447,6 +447,9 @@ class ProjectOut(BaseModel):
     folder: dict[str, Any] | None = Field(None, description="the work folder the app gave: {path, linked_to (the Project "
                                                            "id, or null when it is linked to nothing)}")
     folders: list[str] | None = Field(None, description="the folders the active Project is linked to")
+    vault: dict[str, Any] | None = Field(None, description="action vault: {path, files, written, removed, deferred} "
+                                                           "(deferred: another coach is building it now and will "
+                                                           "build once more for this request)")
     note: str | None = None
 
 
@@ -735,6 +738,9 @@ def _usage_detail(tool: str, args: dict, sc: dict, text: bool) -> tuple[str, dic
              "unlabelled": len(sc.get("unlabelled") or [])}
     elif tool == "coach_project":
         d = {"action": args.get("action")}
+        v = sc.get("vault") or {}
+        if v:
+            d.update({k: v[k] for k in ("files", "written", "removed", "deferred") if k in v})
     elif tool == "coach_feedback":
         f = args.get("feedback")
         d = {"category": getattr(f, "category", None) or (f.get("category") if isinstance(f, dict) else None)}
@@ -797,8 +803,11 @@ def _need_pack(st: State) -> PackStore:
     return st.pack
 
 
-def _wire(store: FounderStore, pk: PackStore | None) -> None:
-    """Citations are checked against the pack the server has open."""
+def _wire(store: FounderStore, pk: PackStore | None, st: "State | None" = None) -> None:
+    """Citations are checked against the pack the server has open; a failed vault build is logged with the
+    session's usage (ADR-0027) when usage is on."""
+    if st is not None:
+        store.usage_run = st.run if st.usage_on else None
     if pk is None:
         return
     store.cite_check = lambda ids: [i for i in ids if pk.get(i) is None]
@@ -824,8 +833,26 @@ def _open_active(st: State) -> tuple[FounderStore | None, str | None]:
     else:
         store, err = open_store(st.home, st.clock)
     if store is not None:
-        _wire(store, st.pack)
+        _wire(store, st.pack, st)
     return store, err
+
+
+def _build_vault(st: State) -> tuple[dict, str]:
+    """coach_project action vault (ADR-0027): the active Project's whole vault, now; the folder and counts only."""
+    from . import vault as V
+    if st.store is None:
+        raise ProjectError(st.store_error or "no Project is active yet: ask which one, then switch")
+    try:
+        built = st.store.rebuild_vault(raise_errors=True) or {}
+    except (sqlite3.Error, OSError):
+        raise
+    except V.VaultError as e:
+        raise ProjectError(f"the vault was not built: {e}") from None
+    except Exception as e:                                # noqa: BLE001 -- said plainly; the records are untouched
+        raise ProjectError(f"the vault was not built ({type(e).__name__}: {e}); the records are unchanged") from None
+    note = ("another coach is building the vault right now; it builds once more for this request"
+            if built.get("deferred") else "rebuilt from every record of the Project")
+    return built, note
 
 
 def _choosing(st: State) -> bool:
@@ -867,7 +894,7 @@ def _activate(st: State, pid: str) -> None:
     old = st.store
     store, err = ws.open_store(pid, st.clock, st.common)
     if store is not None:
-        _wire(store, st.pack)
+        _wire(store, st.pack, st)
     home = ws.store_home(pid)
     st.store, st.store_error, st.project, st.home, st.store_path = store, err, pid, home, home / "founder.db"
     if old is not None and old is not store:
@@ -1088,6 +1115,8 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
                                 workspace=ws, project=pid, common=common, folder=folder, folder_note=ws.folder_note)
         if not ws.single:
             holder["state"].home = ws.store_home(pid) if pid else None
+        if store is not None:
+            _wire(store, None, holder["state"])
         if pid:
             ws.projects.set_last(pid)
         if engine_home is not None and pk is not None:      # let the other coaches on this machine find this one
@@ -1346,10 +1375,11 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
     # 4b -----------------------------------------------------------------------------
     @_tool(name="coach_project", title="List, switch, create or rename Projects", annotations=WRITE)
     def coach_project(
-        action: Annotated[Literal["list", "switch", "create", "rename", "summary", "link", "unlink"], Field(
+        action: Annotated[Literal["list", "switch", "create", "rename", "summary", "link", "unlink", "vault"], Field(
             description="list; switch to `project`; create `name` and switch to it; rename `project` (default: the "
                         "active one) to `name`; summary of `project`, read-only; link `folder` (default: the work "
-                        "folder the app gave) to `project` (default: the active one); unlink it")],
+                        "folder the app gave) to `project` (default: the active one); unlink it; vault: rebuild the "
+                        "active Project's vault now (only when the person asks, e.g. /vault)")],
         ctx: Context,
         project: Annotated[str | None, Field(max_length=80, description="a Project's id or name")] = None,
         name: Annotated[str | None, Field(max_length=80, description="the Project's name, e.g. the company")] = None,
@@ -1363,15 +1393,23 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
         makes a Project and switches to it (setup does this first); rename changes its name, never its memory;
         summary shows another Project's profile and Goals, read-only, only when the Founder asks to look at or
         compare it. Nothing is ever copied between Projects. Call create, switch, rename, link or unlink only when the Founder asks,
-        or in setup for the one they named; never to organise memory on your own."""
+        or in setup for the one they named; never to organise memory on your own. vault rebuilds the active Project's
+        vault (it is also rebuilt after every save) and reports only the folder and file counts."""
         st = _state(ctx)
         ws = st.workspace
+        summary, note, built = None, None, None
+        if action == "vault":
+            try:
+                built, note = _build_vault(st)
+            except ProjectError as e:
+                raise ToolError(str(e)) from None
+            except (sqlite3.Error, OSError) as e:
+                raise ToolError(_storage_error(e)) from None
         if ws is None or ws.single:
-            return _result(ProjectOut(mode="single", active=None, projects=[],
-                                      note=f"Projects are off: {product.env_name('HOME')} names one data folder "
-                                           f"({st.home}), and all memory is in it."))
+            return _result(ProjectOut(mode="single", active=None, projects=[], vault=built,
+                                      note=note or f"Projects are off: {product.env_name('HOME')} names one data "
+                                                   f"folder ({st.home}), and all memory is in it."))
         assert ws.projects is not None
-        summary, note = None, None
         try:
             if action == "create":
                 made = ws.projects.create(name or project or "")["id"]
@@ -1425,7 +1463,7 @@ def create_server(pack: str | Path | None = None, home: str | Path | None = None
             linked_to, _ = ws.projects.for_folder(st.folder)
             where = {"path": st.folder, "linked_to": linked_to["id"] if linked_to else None}
         return _result(ProjectOut(mode="projects", active=ws.describe(st.project), projects=_project_list(st),
-                                  summary=summary, note=note, folder=where,
+                                  summary=summary, note=note, folder=where, vault=built,
                                   folders=[f["path"] for f in ws.projects.folders(st.project)] if st.project else None))
 
     # 5 ------------------------------------------------------------------------------

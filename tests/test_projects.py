@@ -1017,7 +1017,7 @@ def test_a_save_writes_the_vault_slice_with_linked_tagged_files():
             hub = (root / "_meta" / "shared" / "home.md").read_text()
             assert goal_link in hub and ids["decision"] not in hub, "the hub (out of the graph) lists the Goals"
             # the same data gives the same files
-            assert vault.sync_slice(s)["written"] == 0
+            assert vault.build_store(s)["written"] == 0
             # a carried task stays one thread, with its history
             new = s.update(ids["commitment"], status="carried")["new_id"]
             thread = _page(root, ids["commitment"]).read_text()
@@ -1079,7 +1079,7 @@ def test_a_full_build_reads_a_copy_and_keeps_each_private_coach_apart():
         _vault_links_resolve(out2)
 
 
-def test_a_slice_reads_only_what_the_coach_may_and_never_removes_another_coachs_files():
+def test_a_save_builds_the_whole_project_keeping_private_records_in_their_coachs_folder_and_the_persons_files():
     from founder_coach import vault
     with _machine():
         home = Path(tempfile.mkdtemp(prefix="vault-"))
@@ -1093,18 +1093,20 @@ def test_a_slice_reads_only_what_the_coach_may_and_never_removes_another_coachs_
         s = FounderStore(home)
         s.peers = {"coding": [], "investor": ["*"]}
         try:
-            s.record({"kind": "goal", "text": "Find ten customers", "measure": "ten"})
             root = home / "vault"
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)       # only the founder coach's save below writes the vault
+            s.record({"kind": "goal", "text": "Find ten customers", "measure": "ten"})
             assert _page(root, og).relative_to(root).as_posix().startswith("shared/goals/"), \
-                "a shared Goal of a peer coach is in the slice"
-            keep = _page(root, ig)                  # the investor's own save wrote it in its own folder
+                "a shared Goal of another coach is in the whole-Project build"
+            keep = _page(root, ig)                  # written by the founder coach's save (ADR-0027), in its owner's folder
             assert keep.relative_to(root).as_posix().startswith("investor/goals/")
             assert "Private money goal" not in _vault_text(root / "shared") + _vault_text(root / "founder")
+            assert (root / "_meta" / "investor" / "home.md").exists() and (root / "_meta" / "graph.html").exists()
             (root / "investor" / "NOTES-by-hand.md").write_text("mine, not generated", encoding="utf-8")
-            vault.sync_slice(s)
+            s.record({"kind": "goal", "text": "Find twenty customers", "measure": "twenty"})
             assert keep.exists() and (root / "investor" / "NOTES-by-hand.md").exists(), \
-                "another coach's slice must not remove files it may not read"
-            assert (root / "_meta" / "investor" / "home.md").exists(), "nor another coach's hub"
+                "a build never removes a file the person made"
         finally:
             s.close()
 
@@ -1159,6 +1161,229 @@ def test_the_vault_command_never_opens_the_store():
         assert digest == {p.name: hashlib.sha1(p.read_bytes()).hexdigest() for p in home.glob("founder.db*")}, \
             "the database files changed"
         assert backups == (sorted(p.name for p in (home / "backups").glob("*")) if (home / "backups").exists() else [])
+
+
+# --- ADR-0027: one whole-Project vault, rebuilt after every save by any coach ---------------------------------------
+def _vault_bytes(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*"))
+            if p.is_file() and p.name not in (".lock", ".again")}
+
+
+def test_v1_a_save_by_any_coach_leaves_the_same_whole_vault():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, ids = _seed(home)
+        s.peers = {"coding": []}
+        coding = FounderStore(home, coach="coding")
+        coding.peers = {"founder": []}
+        try:
+            coding.record({"kind": "goal", "text": "Ship the importer", "measure": "merged"})    # the coding coach builds
+            root = home / "vault"
+            by_coding = _vault_bytes(root)
+            assert any("Ship the importer" in b.decode() for b in by_coding.values())
+            assert _page(root, ids["note"]).exists(), "the founder coach's Note is in the coding coach's build"
+            assert "_meta/graph.html" in by_coding and "_meta/INDEX.md" in by_coding
+            assert not vault.build_store(s)["written"], "the founder coach's build changes nothing"
+            assert _vault_bytes(root) == by_coding
+        finally:
+            coding.close()
+            s.close()
+
+
+def test_v2_every_day_in_the_vault_is_in_the_projects_time_zone_whatever_the_machines():
+    import time
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        clock = Clock("2026-10-01T20:00:00+00:00")       # 2 Oct, 05:00 in Tokyo
+        s = FounderStore(home, clock=clock)
+        s.update_profile({"timezone": "Asia/Tokyo"})
+        s.record({"kind": "checkin", "summary": "late-night review"})
+        d = s.record({"kind": "decision", "text": "Ship on Fridays", "reasoning": "x"})["ids"][0]
+        s.close()
+        builds = []
+        saved = os.environ.get("TZ")
+        try:
+            for zone in ("UTC", "America/Los_Angeles", "Pacific/Kiritimati"):
+                os.environ["TZ"] = zone
+                time.tzset()
+                out = Path(tempfile.mkdtemp(prefix="vault-out-"))
+                vault.build(home, out, None)
+                builds.append(_vault_bytes(out))
+        finally:
+            if saved is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = saved
+            time.tzset()
+        assert builds[0] == builds[1] == builds[2], "the machine's time zone changed the vault"
+        names = set(builds[0])
+        assert any(n.startswith("founder/checkins/") and n.endswith("(2 Oct).md") for n in names), names
+        page = next(v.decode() for k, v in builds[0].items() if d in v.decode() and "/decisions/" in k)
+        assert 'start: "2026-10-02"' in page and "| 2026-10-02 | decided |" in page
+
+
+def test_v3_the_vault_action_builds_through_the_server_with_no_shell():
+    with _machine() as user:
+        seen = {}
+
+        async def fn(call):
+            out, _, err = await call("coach_project", {"action": "create", "name": "Acme"})
+            assert not err
+            await call("coach_record", {"entry": {"kind": "goal", "text": "Ten paying design partners"},
+                                        "request_id": _rid()})
+            out, text, err = await call("coach_project", {"action": "vault"})
+            home = Path(out["vault"]["path"]).parent
+            assert home.name == "acme" and (home / "founder.db").exists()
+            import shutil
+            shutil.rmtree(home / "vault")                  # as if it drifted away
+            out, text, err = await call("coach_project", {"action": "vault"})
+            assert not err, text
+            v = out["vault"]
+            seen.update(v)
+            assert v["files"] > 0 and v["written"] == v["files"] and not v["deferred"]
+            assert Path(v["path"]) == home / "vault" and (home / "vault" / "_meta" / "graph.html").exists()
+            assert "Ten paying design partners" not in text, "the tool reports counts, never record text"
+            out, _, err = await call("coach_project", {"action": "vault"})
+            assert not err and out["vault"]["written"] == 0, "nothing changed, nothing rewritten"
+        if _serve(user, fn, home=None):
+            assert seen
+
+
+def test_v4_a_save_made_during_another_coachs_build_reaches_the_vault():
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, _ = _seed(home)
+        coding = FounderStore(home, coach="coding")
+        root = home / "vault"
+        calls = []
+
+        def snapshot():
+            if not calls:                                  # the coding coach saves while the founder coach builds
+                calls.append(coding.record({"kind": "goal", "text": "Saved during the build", "measure": "x"}))
+            return vault.from_live(s)
+        try:
+            res = vault.rebuild(root, snapshot)
+            assert calls and not res["deferred"]
+            assert "Saved during the build" in _vault_text(root), "the holder built once more for the deferred save"
+            assert not (root / vault.AGAIN_FILE).exists()
+            # a coach that finds the lock taken never waits: its save stands, its build is left to the holder
+            import fcntl
+            fd = os.open(root / vault.LOCK_FILE, os.O_RDWR)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                g = coding.record({"kind": "goal", "text": "Saved while locked", "measure": "x"})["ids"][0]
+                assert (root / vault.AGAIN_FILE).exists() and "Saved while locked" not in _vault_text(root)
+                assert coding.get(g) is not None, "the save stands"
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            s.record({"kind": "decision", "text": "Next save", "reasoning": "x"})
+            assert "Saved while locked" in _vault_text(root) and not (root / vault.AGAIN_FILE).exists()
+        finally:
+            coding.close()
+            s.close()
+
+
+def test_v5_a_failing_build_keeps_the_save_logs_a_row_and_nudges_only_once_it_persists():
+    from founder_coach import nudges as N
+    from founder_coach import vault
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        clock = Clock()
+        s, _ = _seed(home, clock=clock)
+        s.update_profile({"company": "Acme", "stage": "mvp"})
+        s.usage_run = "run-1"
+        real = vault.render
+
+        def broken(*a, **k):
+            raise RuntimeError("disk on fire")
+        try:
+            vault.render = broken
+            g = s.record({"kind": "goal", "text": "Saved while the vault is broken", "measure": "x"})["ids"][0]
+            assert any(x["id"] == g for x in s.goals()), "the save stands"
+            rows = s.db.execute("SELECT tool, outcome, detail, run FROM usage WHERE tool='vault'").fetchall()
+            assert len(rows) == 1 and rows[0]["outcome"] == "error" and "disk on fire" in rows[0]["detail"]
+            assert rows[0]["run"] == "run-1"
+            assert not [n for n in N.nudges(s) if n["kind"] == "vault_stale"], "one failure is not a Nudge"
+            clock.advance(days=2)
+            assert [n for n in N.nudges(s) if n["kind"] == "vault_stale"], "failing for more than a day is one"
+            clock.advance(days=-2)
+            s.record({"kind": "decision", "text": "Second save", "reasoning": "x"})
+            nudge = [n for n in N.nudges(s) if n["kind"] == "vault_stale"]
+            assert nudge and "disk on fire" in nudge[0]["message"] and ":vault" in nudge[0]["message"]
+            assert s.vault_state()["failures"] == 2
+        finally:
+            vault.render = real
+        s.record({"kind": "decision", "text": "Third save", "reasoning": "x"})
+        assert s.vault_state() == {"built_at": s.vault_state()["built_at"], "failures": 0, "error": None,
+                                   "failed_since": None} and s.vault_state()["built_at"]
+        assert not [n for n in N.nudges(s) if n["kind"] == "vault_stale"]
+        assert "Third save" in _vault_text(home / "vault")
+        s.close()
+
+
+def test_v6_every_check_in_has_its_own_page_even_two_on_one_day():
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        clock = Clock("2026-11-02T18:00:00+00:00")
+        s = FounderStore(home, clock=clock)
+        s.update_profile({"timezone": "America/Los_Angeles"})
+        for hours in (0, 24, 72, 3):                       # 2, 3 and 5 Nov, then a second one on 5 Nov
+            clock.advance(hours=hours)
+            s.record({"kind": "checkin", "summary": f"review after {hours} hours"})
+        pages = sorted((home / "vault" / "founder" / "checkins").glob("*.md"))
+        assert len(pages) == 4, [p.name for p in pages]
+        assert all("2026-W45" in p.name for p in pages)
+        s.close()
+
+
+def test_v7_a_build_never_touches_what_the_person_made_in_the_vault():
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, _ = _seed(home)
+        root = home / "vault"
+        mine = {"founder/Untitled.canvas": '{"nodes": [], "edges": []}',
+                "founder/.obsidian/app.json": "{}", ".obsidian/workspace.json": '{"main": 1}',
+                "my notes.md": "# kept by hand\n", "shared/goals/My own page.md": "written by me\n"}
+        for rel, text in mine.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        s.record({"kind": "goal", "text": "Another goal", "measure": "x"})
+        s.forget()                                         # even a forget rebuilds around them
+        for rel, text in mine.items():
+            assert (root / rel).read_text(encoding="utf-8") == text, rel
+        s.close()
+
+
+def test_v8_a_build_that_fails_partway_deletes_nothing():
+    from founder_coach import store as S
+    with _machine():
+        home = Path(tempfile.mkdtemp(prefix="vault-"))
+        s, ids = _seed(home)
+        root = home / "vault"
+        old = _page(root, ids["goal"])
+        before = set(_vault_bytes(root))
+        real, n = S._atomic, [0]
+
+        def flaky(path, text):
+            if root in Path(path).parents:                 # the vault's pages only: the other views write as usual
+                n[0] += 1
+                if n[0] == 2:
+                    raise OSError("no space left on device")
+            return real(path, text)
+        try:
+            S._atomic = flaky
+            s.update(ids["goal"], changes={"text": "Twelve paying design partners"}, reason="the target grew")
+        finally:
+            S._atomic = real
+        assert n[0] == 2, "the build stopped at the failing write"
+        assert old.exists() and before <= set(_vault_bytes(root)), "a failed build removed a page"
+        s.record({"kind": "decision", "text": "Retry by saving", "reasoning": "x"})
+        assert not old.exists() and "Twelve paying design partners" in _vault_text(root), "the next save repairs it"
+        s.close()
 
 
 if __name__ == "__main__":
